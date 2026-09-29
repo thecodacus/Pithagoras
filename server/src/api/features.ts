@@ -19,12 +19,10 @@ import {
 import { readPiSettings, updatePiSettings } from "../pi-settings.js";
 import { sessions } from "../session-manager.js";
 import { switchPackage } from "./extensions.js";
-import { readMcpFile, writeMcpFile } from "./mcp.js";
+import { ADAPTER_SPEC, readMcpFile, writeMcpFile } from "./mcp.js";
 import * as service from "../extensions/understory-service.js";
 import { readModelsJson } from "../providers.js";
 import { pi } from "./packages.js";
-
-const ADAPTER = "pi-mcp-adapter";
 
 const adapterEntry = () => mcpAdapter();
 
@@ -96,7 +94,7 @@ async function switchUnderstory(enabled: boolean, url?: string): Promise<void> {
   if (enabled) {
     // The adapter is what makes an MCP server into tools; without it the entry does nothing.
     const adapter = adapterEntry();
-    if (!adapter) await pi(["install", `npm:${ADAPTER}`]);
+    if (!adapter) await pi(["install", ADAPTER_SPEC]);
     else if (!adapter.enabled) await switchPackage(adapter.source, true);
     // Kept: whatever else somebody put in the entry by hand, except how it signs in, which is said anew.
     const { disabled: _off, auth: _a, bearerToken: _t, bearerTokenEnv: _e, ...had } = (config.mcpServers[UNDERSTORY] ?? {}) as Record<string, unknown>;

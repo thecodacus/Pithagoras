@@ -22,6 +22,17 @@ const run = promisify(execFile);
 export const mcpConfigPath = (): string => path.join(piAgentDir(), "mcp.json");
 
 const ADAPTER = "pi-mcp-adapter";
+
+/**
+ * Pinned, not whatever npm has today.
+ *
+ * 3.0 stopped reading `<agentDir>/mcp.json` — the file this portal writes — in
+ * favour of `mcp-adapter.json`, and from 2.21.1 the adapter wants pi-ai 0.84 or
+ * later where the portal runs 0.82. An unpinned install picked up 3.3 and the
+ * agent saw no servers at all. 2.18.0 is the release the portal runs with.
+ */
+export const ADAPTER_SPEC = `npm:${ADAPTER}@2.18.0`;
+
 const NAME_RE = /^[A-Za-z0-9][\w.-]*$/;
 
 export interface McpFile {
@@ -192,7 +203,7 @@ export function mcpRouter(): Router {
         path: mcpConfigPath(),
         exists: existsSync(mcpConfigPath()),
         adapterInstalled: await adapterInstalled(),
-        adapterSpec: `npm:${ADAPTER}`,
+        adapterSpec: ADAPTER_SPEC,
         servers,
         settings: config.settings ?? {},
         raw,
