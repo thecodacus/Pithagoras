@@ -30,6 +30,20 @@ const CDP = BROWSER_CDP;
 const MCP_NAME = BROWSER_MCP;
 
 /**
+ * Pointer tools by screen position, which `--caps vision` adds.
+ *
+ * A screenshot costs a local model far less to read than the page's text, and
+ * it carries no element references. These let the agent act on what it sees
+ * there when a search turns up no reference for it.
+ */
+const VISION_TOOLS = [
+  "browser_mouse_click_xy",
+  "browser_mouse_move_xy",
+  "browser_mouse_drag_xy",
+  "browser_mouse_wheel",
+];
+
+/**
  * The tools worth putting in the prompt, and the one worth hiding.
  *
  * Behind the adapter's proxy a tool's schema is not in context, so the agent
@@ -50,6 +64,7 @@ const DIRECT_TOOLS = [
   "browser_press_key",
   "browser_wait_for",
   "browser_take_screenshot",
+  ...VISION_TOOLS,
 ];
 
 /**
@@ -71,20 +86,22 @@ const MCP_VERSION = "0.0.79";
 
 const mcpEntry = () => ({
   command: "npx",
-  args: ["-y", `@playwright/mcp@${MCP_VERSION}`, "--cdp-endpoint", CDP, "--snapshot-mode", "none"],
+  args: ["-y", `@playwright/mcp@${MCP_VERSION}`, "--cdp-endpoint", CDP, "--snapshot-mode", "none", "--caps", "vision"],
   lifecycle: "lazy",
   directTools: DIRECT_TOOLS,
   excludeTools: EXCLUDE_TOOLS,
 });
 
 /**
- * Pin existing connections and enable on-demand snapshots.
+ * Pin existing connections, enable on-demand snapshots and add vision.
  *
  * The pin only reaches a config the portal writes, and nobody rewrites theirs
  * — an install from before this would go on tracking whatever npm publishes
  * next. Migrate only our package and debugging endpoint. Suppressing automatic
  * snapshots avoids repeating a whole page after every click or keystroke;
  * explicit snapshot and find calls still return their requested content.
+ * Vision gives a connection made before it the pointer tools the reading rule
+ * falls back to.
  */
 export function pinConnection(): void {
   const { config, error } = readMcpFile();
@@ -107,10 +124,21 @@ export function pinConnection(): void {
       args[mode + 1] = "none";
       changed = true;
     }
+    // Vision joins whatever capabilities the entry already asks for, and its
+    // pointer tools join the prompt-listed ones where the portal wrote that list.
+    const caps = args.indexOf("--caps");
+    const had = caps === -1 ? [] : String(args[caps + 1] ?? "").split(",").filter(Boolean);
+    if (!had.includes("vision")) {
+      if (caps === -1) args.push("--caps", "vision");
+      else args[caps + 1] = [...had, "vision"].join(",");
+      const direct = (entry as { directTools?: unknown }).directTools;
+      if (Array.isArray(direct)) direct.push(...VISION_TOOLS.filter((t) => !direct.includes(t)));
+      changed = true;
+    }
   }
   if (changed) {
     writeMcpFile(config);
-    console.log(`[portal] configured browser MCP @playwright/mcp@${MCP_VERSION} with on-demand snapshots`);
+    console.log(`[portal] configured browser MCP @playwright/mcp@${MCP_VERSION} with on-demand snapshots and vision`);
   }
 }
 
