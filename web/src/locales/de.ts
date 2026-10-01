@@ -95,6 +95,7 @@ const de: Locale = {
     "Command it may run": "Befehl, den er ausführen darf",
     "Commands it may run": "Befehle, die er ausführen darf",
     "Delete note": "Notiz löschen",
+    "Open the look this was noted in": "Das Nachsehen öffnen, bei dem dies notiert wurde",
     "Every 2 hours": "Alle 2 Stunden",
     "Every 30 minutes": "Alle 30 Minuten",
     "Every 4 hours": "Alle 4 Stunden",

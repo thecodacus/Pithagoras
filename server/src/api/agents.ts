@@ -2,7 +2,7 @@ import express, { type Router } from "express";
 import { AgentError, DEFAULT_AGENT, agentOf, channelsOf, createAgent, getAgent, listAgents, orbOf, renameAgent, setOrb, setVoice, type Agent } from "../agents.js";
 import { agentFileStatus, isInitialised, runWizard, writeAgentFile, type WizardInput } from "../agent-setup.js";
 import { listAgentSessions, listSessions } from "../db.js";
-import { deleteNote, listNotes, markNotesRead, unreadNotes } from "../activity.js";
+import { deleteNote, listNotes, markNoteRead, markNotesRead, unreadNotes } from "../activity.js";
 import { heartbeat, setHeartbeat, watchList } from "../heartbeat.js";
 import { EXECUTOR_KIND } from "../session-manager.js";
 
@@ -127,6 +127,13 @@ export function agentsRouter(): Router {
     if (!agent) return;
     markNotesRead(agent.id);
     res.json({ unread: 0 });
+  });
+
+  router.post("/agents/:id/activity/:note/read", (req, res) => {
+    const agent = agentOr404(req.params.id, res);
+    if (!agent) return;
+    if (!markNoteRead(agent.id, req.params.note)) return res.status(404).json({ error: "No such note" });
+    res.json({ unread: unreadNotes(agent.id) });
   });
 
   router.delete("/agents/:id/activity/:note", (req, res) => {

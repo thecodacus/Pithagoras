@@ -101,6 +101,8 @@ test('the routes set the heartbeat and read, mark and delete its notes', async (
 
     const listed = await call('GET', '/activity');
     assert.deepEqual(listed.body.notes.map((n: any) => n.title), ['CI failing on main', 'A PR has been waiting a week']);
+    assert.equal((await call('POST', `/activity/${second.id}/read`)).body.unread, 1, 'one note read on its own');
+    assert.equal((await call('POST', '/activity/missing/read')).status, 404);
     assert.equal((await call('POST', '/activity/read')).body.unread, 0);
     assert.equal((await call('GET', '/activity')).body.unread, 0);
     assert.equal((await call('DELETE', `/activity/${second.id}`)).status, 200);

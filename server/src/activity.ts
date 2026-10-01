@@ -48,6 +48,13 @@ export function markNotesRead(agentId: string): void {
 }
 
 /** False when there was no such note of this agent's. */
+export function markNoteRead(agentId: string, id: string): boolean {
+  const note = getDb().prepare("SELECT 1 FROM activity WHERE agent_id = ? AND id = ?").get(agentId, id);
+  getDb().prepare("UPDATE activity SET read_at = datetime('now') WHERE agent_id = ? AND id = ? AND read_at IS NULL").run(agentId, id);
+  return Boolean(note);
+}
+
+/** False when there was no such note of this agent's. */
 export function deleteNote(agentId: string, id: string): boolean {
   return getDb().prepare("DELETE FROM activity WHERE agent_id = ? AND id = ?").run(agentId, id).changes > 0;
 }

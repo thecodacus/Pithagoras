@@ -399,7 +399,7 @@ function AgentView({
             <div className="mt-4 rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>
           )}
 
-          {tab === "activity" && <ActivityFeed agent={agent} onChanged={onChanged} />}
+          {tab === "activity" && <ActivityFeed agent={agent} onChanged={onChanged} onSelect={onSelect} />}
           {tab === "heartbeat" && <HeartbeatSettings agent={agent} onChanged={onChanged} />}
           {tab === "files" && setup?.initialised && <AgentFiles agent={agent.id} setup={setup} onSaved={setSetup} />}
 

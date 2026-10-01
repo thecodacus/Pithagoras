@@ -146,8 +146,11 @@ export function HeartbeatSettings({ agent, onChanged }: { agent: Agent; onChange
   );
 }
 
-/** What the agent noticed on its own, newest first. */
-export function ActivityFeed({ agent, onChanged }: { agent: Agent; onChanged: () => Promise<void> }) {
+/**
+ * What the agent noticed on its own, newest first. A note opens the look it was
+ * made in, to see what it read and how it decided, and is read once opened.
+ */
+export function ActivityFeed({ agent, onChanged, onSelect }: { agent: Agent; onChanged: () => Promise<void>; onSelect: (session: string) => void }) {
   const [notes, setNotes] = useState<ActivityNote[] | null>(null);
   const [error, setError] = useState("");
   const loadNotes = () => api.activity(agent.id).then((r) => setNotes(r.notes), () => {});
@@ -191,19 +194,30 @@ export function ActivityFeed({ agent, onChanged }: { agent: Agent; onChanged: ()
       ) : (
         <ul className="space-y-1.5">
           {(notes ?? []).map((n) => (
-            <li key={n.id} className="group flex gap-2 rounded-lg border border-line bg-raised/40 px-3 py-2">
-              <span aria-hidden className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${n.read_at ? "bg-transparent" : "bg-accent"}`} />
-              <div className="min-w-0 flex-1">
-                <p className="text-sm text-fg">{n.title}</p>
-                {n.detail && <p className="mt-0.5 whitespace-pre-wrap text-xs text-fg-muted">{n.detail}</p>}
-                <p className="mt-1 text-[11px] text-fg-faint">{when(n.at)}</p>
-              </div>
+            <li key={n.id} className="group relative">
+              {/* The delete beside it rather than inside: one button cannot hold another. */}
+              <button
+                type="button"
+                onClick={() => {
+                  if (!n.read_at) void act(() => api.markNoteRead(agent.id, n.id));
+                  if (n.session_id) onSelect(n.session_id);
+                }}
+                title={n.session_id ? t("Open the look this was noted in") : undefined}
+                className="flex w-full gap-2 rounded-lg border border-line bg-raised/40 py-2 pl-3 pr-9 text-left transition hover:border-accent/40 hover:bg-raised/70"
+              >
+                <span aria-hidden className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${n.read_at ? "bg-transparent" : "bg-accent"}`} />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm text-fg">{n.title}</span>
+                  {n.detail && <span className="mt-0.5 block whitespace-pre-wrap text-xs text-fg-muted">{n.detail}</span>}
+                  <span className="mt-1 block text-[11px] text-fg-faint">{when(n.at)}</span>
+                </span>
+              </button>
               <button
                 type="button"
                 onClick={() => void act(() => api.deleteNote(agent.id, n.id))}
                 title={t("Delete note")}
                 aria-label={t("Delete note")}
-                className="self-start rounded p-1 text-fg-subtle opacity-0 transition hover:text-danger focus:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100"
+                className="absolute right-2 top-2 rounded p-1 text-fg-subtle opacity-0 transition hover:text-danger focus:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100"
               >
                 <LuTrash2 className="h-3.5 w-3.5" />
               </button>

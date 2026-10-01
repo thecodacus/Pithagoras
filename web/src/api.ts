@@ -147,6 +147,8 @@ export interface Agent {
 /** Something an agent noticed on its own. */
 export interface ActivityNote {
   id: string;
+  /** The look it was noted in. */
+  session_id: string | null;
   title: string;
   detail: string;
   at: string;
@@ -795,6 +797,8 @@ export const api = {
   lookNow: (agent: string) => json<Agent>(`/api/agents/${encodeURIComponent(agent)}/heartbeat/run`, { method: "POST" }),
   activity: (agent: string) => json<{ notes: ActivityNote[]; unread: number }>(`/api/agents/${encodeURIComponent(agent)}/activity`),
   markActivityRead: (agent: string) => json<{ unread: number }>(`/api/agents/${encodeURIComponent(agent)}/activity/read`, { method: "POST" }),
+  markNoteRead: (agent: string, note: string) =>
+    json<{ unread: number }>(`/api/agents/${encodeURIComponent(agent)}/activity/${encodeURIComponent(note)}/read`, { method: "POST" }),
   deleteNote: (agent: string, note: string) =>
     json<{ ok: true }>(`/api/agents/${encodeURIComponent(agent)}/activity/${encodeURIComponent(note)}`, { method: "DELETE" }),
 
