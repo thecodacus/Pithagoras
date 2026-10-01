@@ -112,3 +112,18 @@ test('temporary canvases never reach SQLite until stored, including mid-stream; 
  const result=value(await tools.canvas_write.execute('later',{canvas_id:row.id,revision:fresh.revision,operation:'append',content:' and AI'}));
  assert.equal(result.persisted,true);assert.equal(stored().content,'Human edit and AI');
 });
+test('a streamed write is one revision however many pieces it arrives in',async()=>{
+ const {controller,tools}=setup();const row=value(await tools.canvas_create.execute('create',{title:'Streamed'}));
+ const args={canvas_id:row.id,revision:0,operation:'replace',content:''};
+ const raw=JSON.stringify({...args,content:'word '.repeat(200)});
+ const head=raw.slice(0,raw.indexOf('"content":"')+11);
+ delta(controller,'draft',head);
+ for(const piece of raw.slice(head.length).match(/.{1,5}/g)!)delta(controller,'draft',piece);
+ assert.equal(readCanvas('s1',row.id).revision,1);
+ const first=value(await tools.canvas_write.execute('draft',{...args,content:'word '.repeat(200)}));
+ assert.equal(first.revision,1);
+ const next={canvas_id:row.id,revision:1,operation:'append',content:'more words '.repeat(50)};
+ const raw2=JSON.stringify(next);
+ for(const piece of raw2.match(/.{1,7}/g)!)delta(controller,'second',piece);
+ assert.equal(value(await tools.canvas_write.execute('second',next)).revision,2);
+});

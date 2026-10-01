@@ -7,6 +7,14 @@ export const canvasEvents = new EventEmitter();
 canvasEvents.setMaxListeners(0);
 // Temporary canvases survive tab reconnects, but never a server restart.
 const temporary = new Map<string, CanvasRow>();
+/**
+ * The revision each active write started from, by call.
+ *
+ * A write streams in as many saved prefixes, and each one is the same write:
+ * counting them made a first draft r601. Every prefix is saved as the revision
+ * after this one, so a whole write is one revision however it arrives.
+ */
+const writeBase = new Map<string, number>();
 function update(row: CanvasRow, patch: Partial<CanvasRow>): CanvasRow {
   const next = {...row,...patch};
   if (next.persisted) {
@@ -68,6 +76,7 @@ export function beginCanvasWrite(session: string,id: string,revision: number,cal
   revision=Math.min(revision,row.revision);
   if(row.active_call || row.revision!==revision) throw new Error('Canvas changed or is being written. Use its current revision.');
   update(row,{active_call:call,status:'writing'});
+  writeBase.set(call,row.revision);
   return notify(readCanvas(session,id));
 }
 export function saveCanvasPrefix(session: string,id: string,call: string,content: string): CanvasRow {
@@ -75,11 +84,12 @@ export function saveCanvasPrefix(session: string,id: string,call: string,content
   const row=readCanvas(session,id);
   if(row.active_call!==call) throw new Error('Canvas write is no longer active');
   if(row.content===content) return row;
-  update(row,{content,revision:row.revision+1,updated_at:new Date().toISOString()});
+  update(row,{content,revision:(writeBase.get(call)??row.revision)+1,updated_at:new Date().toISOString()});
   return notify(readCanvas(session,id));
 }
 export function finishCanvasWrite(session: string,id: string,call: string,interrupted: boolean) {
   const row=readCanvas(session,id);
   if(row.active_call!==call) return;
+  writeBase.delete(call);
   return notify(update(row,{active_call:null,agent_read_revision:row.revision,status:interrupted?'interrupted':'saved',updated_at:new Date().toISOString()}));
 }
