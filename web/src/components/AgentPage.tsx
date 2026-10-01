@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { OrbStudio } from "./OrbStudio";
 import {
   LuBot,
   LuCheck,
@@ -184,6 +185,8 @@ export function AgentPage({ onSelect }: { onSelect: (id: string) => void }) {
           </PageHeader>
 
           {setup?.initialised && <AgentFiles setup={setup} onSaved={setSetup} />}
+
+          <OrbStudio />
 
           {loadError && (
             <div className="mt-4 rounded-lg bg-warn/10 px-3 py-2 text-sm text-warn">

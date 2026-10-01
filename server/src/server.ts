@@ -67,6 +67,7 @@ import {
   writeCompactionSettings,
 } from "./pi-settings.js";
 import { eventTime, getDb } from "./db.js";
+import { normalizeOrb } from "./orb-style.js";
 import { getBuiltinCommands, picturesRefused } from "./pi/builtins.js";
 import { SessionEditError } from "./pi/session-edit.js";
 import { isValidSlug, slugify } from "./slug.js";
@@ -569,6 +570,29 @@ app.put("/api/agent/files/:name", (req, res) => {
   } catch (e) {
     res.status(400).json({ error: (e as Error).message });
   }
+});
+
+/** The voice-mode orb's look and personality: one for the portal, so every device shows the same orb. */
+app.get("/api/agent/orb", (_req, res) => {
+  const row = getDb().prepare("SELECT value FROM settings WHERE key = 'orb'").get() as { value: string } | undefined;
+  let stored: unknown;
+  try {
+    stored = row ? JSON.parse(row.value) : undefined;
+  } catch {
+    // A value that no longer parses is the default orb, not a broken page.
+  }
+  res.json(normalizeOrb(stored));
+});
+
+app.put("/api/agent/orb", (req, res) => {
+  if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+    return res.status(400).json({ error: "An orb style is required" });
+  }
+  const style = normalizeOrb(req.body);
+  getDb()
+    .prepare("INSERT INTO settings (key, value) VALUES ('orb', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+    .run(JSON.stringify(style));
+  res.json(style);
 });
 
 app.post("/api/sessions", (req, res) => {
