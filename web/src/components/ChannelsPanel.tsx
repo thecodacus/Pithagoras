@@ -294,7 +294,7 @@ export function ChannelsPanel({ onError }: { onError: (e: string) => void }) {
       <div className="flex items-start gap-2 rounded-xl border border-line bg-raised/40 px-3 py-2 text-xs text-fg-subtle">
         <LuTriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-fg-faint" />
         <p>
-          {t("An enabled channel is started as soon as you save it, and again when the portal restarts. Each conversation it sees becomes its own session on the Agent tab.")}
+          {t("An enabled channel is started as soon as you save it, and again when the portal restarts. Each conversation it sees becomes its own session on the Agents page, with the agent it talks as.")}
         </p>
       </div>
     </>

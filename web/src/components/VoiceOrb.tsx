@@ -715,7 +715,7 @@ function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t:
  * The shape follows real RMS audio levels; the slow drift only gives idle depth.
  *
  * The style is read on every frame rather than restarting the animation, so a
- * change in the Agent page's preview shows at once. With the balanced
+ * change in the avatar customizer's preview shows at once. With the balanced
  * personality and the default multipliers this draws the orb as it always was.
  */
 export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: MutableRefObject<VoiceLevels>; look: OrbStyle }) {

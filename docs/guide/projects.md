@@ -14,7 +14,7 @@ The chat is called *New chat* until you send its first message, and is then name
 after it (the first line, shortened). Rename it any time from the sidebar.
 
 Home is the agent's directory, `AGENT_HOME` (`/data/agent-home` unless you set it) —
-the same one the conversations on the Agent tab work in, so they share the agent's
+the same one the conversations on the Agents page work in, so they share the agent's
 SOUL.md, PrimaryUser.md and MEMORY.md, and anything the agent keeps in Home chats is
 there for the others. It lives outside the workspace root, so it is not a project:
 it is not listed on the Projects tab, has no instructions of its own and cannot be

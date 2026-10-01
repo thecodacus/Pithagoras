@@ -59,7 +59,7 @@ const SLIDERS: ["speed" | "reactivity" | "glow", string, number, number, string]
 ];
 
 /**
- * The agent's avatar, as the Agent page's hero shows it, with a button on it
+ * The agent's avatar, as an agent's page shows it in its hero, with a button on it
  * that opens the customizer: the voice-mode orb's personality and look, with
  * a live preview.
  *

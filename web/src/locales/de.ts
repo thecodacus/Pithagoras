@@ -249,7 +249,7 @@ const de: Locale = {
     "Uninstall {name}?": "{name} deinstallieren?",
     "Configured channels are kept.": "Eingerichtete Kanäle bleiben erhalten.",
     "Uninstall": "Deinstallieren",
-    "An enabled channel is started as soon as you save it, and again when the portal restarts. Each conversation it sees becomes its own session on the Agent tab.": "Ein aktivierter Kanal wird gestartet, sobald du ihn speicherst, und wieder, wenn das Portal neu startet. Jedes Gespräch, das er sieht, wird zu einer eigenen Sitzung im Agent-Tab.",
+    "An enabled channel is started as soon as you save it, and again when the portal restarts. Each conversation it sees becomes its own session on the Agents page, with the agent it talks as.": "Ein aktivierter Kanal wird gestartet, sobald du ihn speicherst, und wieder, wenn das Portal neu startet. Jedes Gespräch, das er sieht, wird zu einer eigenen Sitzung auf der Seite „Agenten“, beim Agenten, als der er spricht.",
     "instructions": "Anweisungen",
     "disabled": "deaktiviert",
     "since {time}": "seit {time}",

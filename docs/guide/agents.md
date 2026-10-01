@@ -11,13 +11,13 @@ files.
 
 ## Making one
 
-The **Agent** page shows a card for each agent, with its avatar and name and
+The **Agents** page shows a card for each agent, with its avatar and name and
 how many chats it has. **New agent** asks the same two questions as the first
 setup: who it is, and who it works for. Its home is made in `agents/` beside the
 first agent's home, named after it (`agents/research-bot` for *Research Bot*),
 and its files are written there.
 
-A card opens that agent (`/agent?agent=research-bot`): its conversations, its
+A card opens that agent (`/agents?agent=research-bot`): its conversations, its
 files to edit, and **New conversation** to start one with it. Its avatar is at
 the top beside its name; the palette on it opens the avatar customizer. Each
 agent's avatar is its own, and voice mode shows the avatar of the agent the
@@ -29,8 +29,8 @@ name, with the pencil beside it, renames it; the folder keeps its name.
 
 Each agent's home is a folder in the sidebar and on the Sessions page, named
 after the agent. The first agent's has the house icon, the others a robot. The
-**+** on a folder's line starts a chat with that agent. A conversation started on the Agent page
-is listed there too; conversations that came through a channel are on the Agent
+**+** on a folder's line starts a chat with that agent. A conversation started on the Agents page
+is listed there too; conversations that came through a channel are on the Agents
 page only.
 
 ## Channels and routines

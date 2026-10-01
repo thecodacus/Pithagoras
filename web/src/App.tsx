@@ -76,7 +76,9 @@ export default function App() {
       <Route path="/" element={<Shell />} />
       <Route path="/sessions" element={<Shell view="sessions" />} />
       <Route path="/projects" element={<Shell view="projects" />} />
-      <Route path="/agent" element={<Shell view="agent" />} />
+      <Route path="/agents" element={<Shell view="agents" />} />
+      {/* Where the page was while there was one agent: old links and bookmarks. */}
+      <Route path="/agent" element={<Navigate to={{ pathname: "/agents", search: window.location.search }} replace />} />
       <Route path="/routines" element={<Shell view="routines" />} />
       <Route path="/browser" element={<Shell view="browser" />} />
       <Route path="/memory" element={<Shell view="memory" />} />
@@ -100,7 +102,7 @@ function Shell({
   view = "chat",
 }: {
   settings?: boolean;
-  view?: "chat" | "sessions" | "projects" | "agent" | "routines" | "browser" | "memory" | "audit";
+  view?: "chat" | "sessions" | "projects" | "agents" | "routines" | "browser" | "memory" | "audit";
 }) {
   const { sessionId, tab } = useParams<{ sessionId?: string; tab?: string }>();
   const navigate = useNavigate();
@@ -555,7 +557,7 @@ function Shell({
               reloadPlaces();
             }}
           />
-        ) : view === "agent" ? (
+        ) : view === "agents" ? (
           <AgentPage onSelect={(id) => navigate(`/s/${id}`)} />
         ) : view === "routines" ? (
           <RoutinesPage onOpenSession={(id) => navigate(`/s/${id}`)} />

@@ -189,7 +189,7 @@ the old one back — and double-clicking the name does the same. Delete asks in 
 portal's own dialog, with the button saying what it will do — and **Settings →
 General → Confirmations** turns that question off, for chats, messages, files,
 skills, routines, projects, voices and channels alike. It is kept per browser.
-Discarding unsaved changes is still asked about. The Agent tab's conversations
+Discarding unsaved changes is still asked about. The Agents page's conversations
 can be renamed and deleted the same way, from the row.
 
 ## Using a phone

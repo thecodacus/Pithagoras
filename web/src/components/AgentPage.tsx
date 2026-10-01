@@ -126,8 +126,9 @@ function AgentCards({ agents, onOpen, onNew }: { agents: Agent[]; onOpen: (id: s
                 onClick={() => onOpen(a.id)}
                 className="group flex w-full flex-col items-center rounded-2xl border border-line bg-raised/40 px-3 pb-4 pt-5 text-center transition hover:border-accent/40 hover:bg-raised/70"
               >
-                <div className="flex h-24 w-24 items-center justify-center rounded-2xl bg-[#0b1220]">
-                  <div className="voice-avatar w-[70%]">
+                {/* Room around the orb for its glow, and for a hat or a prop. */}
+                <div className="flex h-28 w-28 items-center justify-center rounded-2xl bg-[#0b1220]">
+                  <div className="voice-avatar w-[56%]">
                     <VoiceOrb mode="idle" levels={still} look={a.orb} />
                   </div>
                 </div>

@@ -209,7 +209,7 @@ Understory **replaces** the agent's global memory, so the two do not both feed
 the agent: while the `understory` server is in `mcp.json` and not disabled,
 `MEMORY.md` in the agent's home is not handed to new chats, and the agent is
 told to use its memory tools instead. The file is not deleted, and it is marked
-as not read on the Agent page. Disabling the server in Settings → MCP counts as
+as not read on the Agents page. Disabling the server in Settings → MCP counts as
 off too.
 
 Only conversations with the primary user ever had `MEMORY.md`; a teammate's
