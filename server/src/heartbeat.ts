@@ -115,14 +115,12 @@ function sessionFor(agent: Agent): SessionRow {
 function prompt(agent: Agent, watch: string, trigger: "schedule" | "manual"): string {
   return [
     `<heartbeat agent="${agent.name}" at="${new Date().toISOString()}" trigger="${trigger === "manual" ? "asked to look now" : "on its interval"}">`,
-    "Nobody asked you anything. This is you looking around on your own, at what the",
-    `person you work for asked you to keep an eye on (${WATCH_FILE}, below).`,
-    "You can read; you cannot change anything, run commands or send anything, beyond",
-    "what a standing rule allows. Do not try to work around a refusal.",
+    // A sentence to a line, not wrapped: the look is read in the chat view too.
+    `Nobody asked you anything. This is you looking around on your own, at what the person you work for asked you to keep an eye on (${WATCH_FILE}, below).`,
+    "You can read; you cannot change anything, run commands or send anything, beyond what a standing rule allows. Do not try to work around a refusal.",
     `When something deserves their attention, call ${NOTE_TOOL} once for each thing.`,
-    "Your earlier looks are above in this conversation: do not note again what you",
-    "already noted, unless it changed. When nothing is new, call nothing and reply",
-    `"Nothing new." Most looks should end that way.`,
+    "Your earlier looks are above in this conversation: do not note again what you already noted, unless it changed.",
+    `When nothing is new, call nothing and reply "Nothing new." Most looks should end that way.`,
     "</heartbeat>",
     "",
     watch,
