@@ -48,12 +48,23 @@ docker compose start portal
 
 The portal checks the recovered database before upgrading it. Rows on damaged pages can't be recovered, which usually means part of the event history of some conversations. Once you're happy with the result, delete `portal-damaged.db`.
 
+## Pin a version
+
+Run a release rather than `latest`, so that going back is changing one value. Each release is published as an image tagged with its version.
+
+- **Portainer stack** (`docker-compose.portainer.yml`): set `PITHAGORAS_VERSION`, for example `0.2.0`, in the stack's environment.
+- **Built from source** (`docker-compose.yml`): check out the release tag, for example `git checkout v0.2.0`. Building replaces the image you had, so keep a copy before you upgrade. `docker compose images portal` shows its name, which is `pithagoras-portal` for a checkout in a folder called `pithagoras`:
+
+  ```sh
+  docker tag pithagoras-portal:latest pithagoras-portal:previous
+  ```
+
 ## Going back
 
-To return to the version you had:
-
 1. Stop the portal.
-2. Put the backup back as `portal.db`, and remove `portal.db-wal` and `portal.db-shm` beside it.
-3. Start the previous version.
+2. Put the backup from `backups/` back as `portal.db`, and remove `portal.db-wal` and `portal.db-shm` beside it.
+3. Start the previous version:
+   - Portainer: set `PITHAGORAS_VERSION` to the release before.
+   - Built from source: `docker tag pithagoras-portal:previous pithagoras-portal:latest`, then `docker compose up -d --no-build portal`.
 
 An older version starts on a newer database too, because upgrades only add tables and columns. Restoring the backup is the way to be sure nothing differs.

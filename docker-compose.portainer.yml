@@ -2,7 +2,8 @@
 # Set the environment variables in Portainer's stack UI.
 services:
   pithagoras:
-    image: ghcr.io/thecodacus/pithagoras:latest
+    # A release, such as 0.2.0, rather than latest: going back is setting it to the one before.
+    image: ghcr.io/thecodacus/pithagoras:${PITHAGORAS_VERSION:-latest}
     container_name: pithagoras
     restart: unless-stopped
     network_mode: host

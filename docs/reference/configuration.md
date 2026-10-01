@@ -38,6 +38,7 @@ an empty field inherits, and clearing one hands the setting back.
 | `PORTAL_SECRET` | random | Signs the cookie. Set it to survive restarts. |
 | `PORT` | `4100` | Listen port. |
 | `DATA_DIR` | `./data` (image: `/data`) | Where `portal.db` lives. |
+| `PITHAGORAS_VERSION` | `latest` | The release the Portainer stack runs, such as `0.2.0`. See [Upgrading](/guide/upgrading#pin-a-version). |
 | `PORTAL_UPGRADE_BACKUP` | — | `skip` upgrades the database without backing it up first, for a disk that cannot hold the copy. See [Upgrading](/guide/upgrading). |
 | `SESSION_DIR` | `./data/sessions` (image: `/data/sessions`) | One folder per session, holding pi's conversation file. Removed when the session is deleted — with the container executor, a file written by another user can keep a folder from going; that is logged. |
 | `WORKSPACE_ROOT` | `/workspaces` | Directories sessions can be created against. |

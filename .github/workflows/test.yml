@@ -1,0 +1,20 @@
+name: Tests
+
+# The image workflow builds; this one runs the server's tests, among them the
+# upgrade of a database made by an earlier release (test/upgrade-from-*).
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+      - run: npm run build -w server
+      - run: npm test -w server

@@ -1,0 +1,38 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { copyFileSync, existsSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+// A database made by v0.1.0's own code (fixtures/portal-v0.1.0.db): two
+// conversations, the event types the newer indexes cover, and settings. An
+// upgrade has to bring it to the current schema without losing any of it, and
+// the portal has to read and write it afterwards.
+const home = mkdtempSync(path.join(tmpdir(), "pithagoras-from-0.1.0-"));
+process.env.DATA_DIR = home;
+const file = path.join(home, "portal.db");
+copyFileSync(new URL("./fixtures/portal-v0.1.0.db", import.meta.url), file);
+
+const { runUpgrade } = await import("../dist/db-upgrade-steps.js");
+const { SCHEMA_VERSION } = await import("../dist/schema-version.js");
+const { upgradeCheck } = await import("../dist/db-upgrade.js");
+
+test("a v0.1.0 database is upgraded, keeps everything, and works afterwards", async () => {
+  assert.deepEqual(upgradeCheck(file), { needed: true, from: 0 });
+  const backup = await runUpgrade({ file, from: 0, backupDir: path.join(home, "backups") }, () => {});
+  assert.ok(backup && existsSync(backup));
+  assert.equal(upgradeCheck(file).needed, false);
+
+  const db = await import("../dist/db.js");
+  assert.equal(db.getDb().pragma("user_version", { simple: true }), SCHEMA_VERSION);
+  assert.equal(db.getSession("task1").title, "A task from v0.1.0");
+  assert.equal(db.getSession("agent1").kind, "agent");
+  const events = db.eventsSince("task1");
+  assert.deepEqual(events.map((e) => e.type), ["portal_prompt", "portal_taken", "message_end", "portal_command", "portal_command_end"]);
+  assert.equal(JSON.parse(db.eventsSince("agent1")[0].payload).message.content[0].text, "Hello from the agent.");
+  assert.equal(JSON.parse(db.getStoredSettings().voice).voice, "aria");
+
+  db.appendEvent("task1", "message_end", { message: { role: "assistant", content: [{ type: "text", text: "after the upgrade" }] } });
+  assert.equal(db.eventsSince("task1").length, 6);
+  db.getDb().close();
+});
