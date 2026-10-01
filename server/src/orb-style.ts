@@ -85,7 +85,7 @@ export const DEFAULT_ORB: OrbStyle = {
   eyes: "none",
   eyeColor: "#111111",
   prop: "none",
-  propColor: "#ffd166",
+  propColor: "#a1a1aa",
 };
 
 const HEX = /^#[0-9a-f]{6}$/i;
