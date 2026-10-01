@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_ORB, ORB_EYES, ORB_HATS, ORB_ITEM_COLORS, ORB_PALETTES, ORB_PERSONALITIES, ORB_PROPS, hexToRgb, itemColor, normalizeOrb } from '../server/src/orb-style.ts';
+import { DEFAULT_ORB, ORB_EYES, ORB_HATS, ORB_ITEM_COLORS, ORB_PALETTES, ORB_PATTERNS, ORB_PERSONALITIES, ORB_PROPS, hexToRgb, itemColor, normalizeOrb } from '../server/src/orb-style.ts';
 
 test('nothing stored is the orb as it always was',()=>{
  assert.deepEqual(normalizeOrb(undefined),DEFAULT_ORB);
@@ -14,14 +14,14 @@ test('nothing stored is the orb as it always was',()=>{
 });
 
 test('a chosen style is kept, and anything out of bounds is brought back in',()=>{
- const style=normalizeOrb({personality:'playful',palette:'custom',colors:{idle:'#FFAA00',input:'#00ff00',output:'#0000ff',muted:'#123456'},speed:9,reactivity:-1,glow:1.234,ribbons:false});
+ const style=normalizeOrb({personality:'playful',palette:'custom',colors:{idle:'#FFAA00',input:'#00ff00',output:'#0000ff',muted:'#123456'},speed:9,reactivity:-1,glow:1.234,pattern:'stars'});
  assert.equal(style.personality,'playful');
  assert.equal(style.palette,'custom');
  assert.equal(style.colors.idle,'#ffaa00');
  assert.equal(style.speed,2.5);
  assert.equal(style.reactivity,0);
  assert.equal(style.glow,1.23);
- assert.equal(style.ribbons,false);
+ assert.equal(style.pattern,'stars');
 });
 
 test('unknown names and malformed colours fall back field by field',()=>{
@@ -71,8 +71,17 @@ test('names an object inherits are not personalities or palettes',()=>{
  }
 });
 
-test('the surface is glossy unless matte is chosen',()=>{
+test('the surface is glossy unless plush is chosen',()=>{
  assert.equal(DEFAULT_ORB.finish,'glossy');
- assert.equal(normalizeOrb({finish:'matte'}).finish,'matte');
+ assert.equal(normalizeOrb({finish:'plush'}).finish,'plush');
  assert.equal(normalizeOrb({finish:'satin'}).finish,'glossy');
+});
+
+test('a pattern is kept when known, and the old ribbons switch becomes one',()=>{
+ assert.equal(DEFAULT_ORB.pattern,'ribbons');
+ for(const pattern of ORB_PATTERNS)assert.equal(normalizeOrb({pattern}).pattern,pattern);
+ assert.equal(normalizeOrb({pattern:'plaid'}).pattern,'ribbons');
+ // Saved before patterns existed.
+ assert.equal(normalizeOrb({ribbons:false}).pattern,'none');
+ assert.equal(normalizeOrb({ribbons:true}).pattern,'ribbons');
 });

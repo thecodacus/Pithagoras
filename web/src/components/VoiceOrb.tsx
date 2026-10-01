@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { api } from "../api";
-import { DEFAULT_ORB, ORB_PERSONALITIES, hexToRgb, itemColor, type OrbHat, type OrbProp, type OrbState, type OrbStyle } from "../../../server/src/orb-style";
+import { DEFAULT_ORB, ORB_PERSONALITIES, hexToRgb, itemColor, type OrbHat, type OrbPattern, type OrbProp, type OrbState, type OrbStyle } from "../../../server/src/orb-style";
 
 type Ctx = CanvasRenderingContext2D;
 
@@ -24,6 +24,8 @@ export function useOrbStyle(): OrbStyle {
 
 type Rgb = [number, number, number];
 const css = (c: Rgb, a = 1) => `rgba(${c.map(Math.round).join(",")},${a})`;
+/** "r,g,b", for building an rgba() with its own alpha. */
+const channels = (c: Rgb) => c.map(Math.round).join(",");
 const mix = (a: Rgb, b: Rgb, t: number): Rgb => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 /** Toward white for k > 0, toward black for k < 0. */
 const shade = (c: Rgb, k: number): Rgb => mix(c, k > 0 ? [255, 255, 255] : [0, 0, 0], Math.abs(k));
@@ -118,6 +120,164 @@ function grain(ctx: Ctx): Grain {
     return ctx.createPattern(tile, "repeat")!;
   };
   return { dark: make("0,0,0", 3200, 220, 0.55), light: make("255,255,255", 1800, 120, 0.4) };
+}
+
+/**
+ * A felt of short tangled fibres for the plush orb: many more and longer
+ * strands than the props' grain, and no specks. Each fibre is drawn again
+ * across the tile's edges so the repeat has no seams.
+ */
+function felt(ctx: Ctx): Grain {
+  const make = (tone: string, fibres: number, alpha: number) => {
+    const tile = document.createElement("canvas");
+    tile.width = tile.height = 192;
+    const g = tile.getContext("2d")!;
+    g.lineCap = "round";
+    for (let i = 0; i < fibres; i++) {
+      const x = Math.random() * 192, y = Math.random() * 192, a = Math.random() * Math.PI * 2, len = 5 + Math.random() * 12, bend = (Math.random() - 0.5) * 6;
+      g.strokeStyle = `rgba(${tone},${0.12 + Math.random() * alpha})`; g.lineWidth = 0.6 + Math.random() * 0.7;
+      for (const ox of [-192, 0, 192]) for (const oy of [-192, 0, 192]) {
+        const sx = x + ox, sy = y + oy;
+        g.beginPath(); g.moveTo(sx, sy);
+        g.quadraticCurveTo(sx + Math.cos(a) * len / 2 + bend, sy + Math.sin(a) * len / 2 - bend, sx + Math.cos(a) * len, sy + Math.sin(a) * len);
+        g.stroke();
+      }
+    }
+    return ctx.createPattern(tile, "repeat")!;
+  };
+  return { dark: make("0,0,0", 1500, 0.35), light: make("255,255,255", 900, 0.3) };
+}
+
+/** One strand of the plush orb's fuzzy edge: where on the edge, how long, how far it leans, how bright. */
+interface Fibre { a: number; len: number; tilt: number; tone: number }
+
+/**
+ * The plush orb's silhouette: short fibres standing out from its edge, along
+ * the outline as it moves, lighter where the light falls and darker on the far
+ * side, puffing out a little with the voice.
+ */
+function drawFuzz(ctx: Ctx, fibres: readonly Fibre[], edge: (a: number) => number, r: number, level: number, color: Rgb) {
+  const light = Math.atan2(-0.45, -0.33);
+  ctx.save();
+  ctx.lineCap = "round"; ctx.lineWidth = 1.3;
+  for (const f of fibres) {
+    const e = edge(f.a);
+    const x = Math.cos(f.a) * e * 0.97, y = Math.sin(f.a) * e * 0.97;
+    const d = f.a + f.tilt, len = f.len * r * (1 + level * 0.35);
+    const lit = 0.5 + 0.5 * Math.cos(f.a - light);
+    const c = lit > 0.5 ? shade(color, (lit - 0.5) * 0.7) : shade(color, -(0.5 - lit) * 0.9);
+    ctx.strokeStyle = css(c, 0.35 + f.tone * 0.4);
+    ctx.beginPath(); ctx.moveTo(x, y);
+    ctx.quadraticCurveTo(x + Math.cos(d) * len * 0.5 + Math.cos(f.a) * len * 0.2, y + Math.sin(d) * len * 0.5 + Math.sin(f.a) * len * 0.2, x + Math.cos(d) * len, y + Math.sin(d) * len);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/** A point of light for the starry pattern: where in the sphere (a unit disc), its size, its twinkle, and which layer it is in. */
+interface Sparkle { x: number; y: number; size: number; phase: number; back: boolean }
+
+/**
+ * What moves inside the sphere, one of its two layers: the back one dimmer and
+ * moving less as the face turns, the front one more, so the inside reads as a
+ * volume rather than a surface. Patterns that wrap the sphere (bands, spots,
+ * globe) put what faces away in the back layer and what faces you in front.
+ */
+function drawPattern(ctx: Ctx, kind: OrbPattern, back: boolean, r: number, t: number, level: number, color: Rgb, turn: Turn, sparkles: readonly Sparkle[]) {
+  if (kind === "none") return;
+  const depth = back ? 0.55 : 1;
+  const rgb = channels(color);
+  const lighter = channels(shade(color, 0.5)), darker = channels(shade(color, -0.45));
+  ctx.save();
+  ctx.translate(Math.sin(turn.yaw) * r * (back ? 0.06 : 0.28), Math.sin(turn.pitch) * r * (back ? 0.04 : 0.18));
+  // Latitude circles seen from a little above: the far half is the upper arc, the near half the lower.
+  const latitude = (y: number, width: number, style: string) => {
+    const half = Math.sqrt(Math.max(0, r * r - y * y)) * 1.04;
+    ctx.beginPath(); ctx.ellipse(0, y, half, half * 0.16, 0, back ? Math.PI : 0, back ? Math.PI * 2 : Math.PI);
+    ctx.lineWidth = width; ctx.strokeStyle = style; ctx.stroke();
+  };
+  switch (kind) {
+    case "ribbons":
+      // Translucent ribbons bend across the sphere rather than flat sine bars.
+      for (let band = back ? 0 : 1; band < 15; band += 2) {
+        const y = -r + band * r * 0.15;
+        const bend = Math.sin(t + band * 0.27) * 35 + level * 22;
+        ctx.beginPath(); ctx.moveTo(-r * 1.3, y);
+        ctx.bezierCurveTo(-r * 0.45, y - 60 + bend, r * 0.35, y + 65 + bend, r * 1.3, y - 20);
+        ctx.bezierCurveTo(r * 0.3, y + 85 + bend, -r * 0.4, y - 40 + bend, -r * 1.3, y + 9);
+        const ribbon = ctx.createLinearGradient(-r, -r, r, r);
+        ribbon.addColorStop(0, `rgba(231,255,255,${(0.04 + band * 0.003) * depth})`);
+        ribbon.addColorStop(0.45, `rgba(${rgb},${(0.24 + level * 0.12) * depth})`);
+        ribbon.addColorStop(1, "rgba(192,190,255,0.03)");
+        ctx.fillStyle = ribbon; ctx.fill();
+      }
+      break;
+    case "bands":
+      // A gas giant's belts, drifting and thickening with the voice.
+      for (let i = -4; i <= 4; i++) {
+        const y = i * r * 0.21 + Math.sin(t * 0.6 + i) * r * 0.03 * (1 + level);
+        latitude(y, r * (0.07 + level * 0.03), `rgba(${i % 2 ? lighter : darker},${0.3 * depth})`);
+      }
+      break;
+    case "spots": {
+      // Spots on a ball that rolls round as it looks about.
+      const spin = t * 0.35 + turn.yaw * 0.6;
+      for (const [row, lat] of [-0.95, -0.48, 0, 0.48, 0.95].entries()) {
+        for (let k = 0; k < 7; k++) {
+          const lon = spin + k * Math.PI * 2 / 7 + (row % 2) * 0.45;
+          const X = Math.cos(lat) * Math.sin(lon), Y = Math.sin(lat), Z = Math.cos(lat) * Math.cos(lon);
+          if ((Z < 0) !== back) continue;
+          const size = r * 0.09 * (1 + level * 0.3);
+          ctx.beginPath();
+          ctx.ellipse(X * r, Y * r, size * Math.sqrt(Math.max(0.05, 1 - X * X)), size * Math.sqrt(Math.max(0.05, 1 - Y * Y)), 0, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(${lighter},${(back ? 0.18 : 0.42) * (0.5 + 0.5 * Math.abs(Z))})`; ctx.fill();
+        }
+      }
+      break;
+    }
+    case "swirl":
+      // Three arms winding out from the middle; the back ones turn the other way.
+      ctx.lineCap = "round";
+      for (let arm = 0; arm < 3; arm++) {
+        ctx.beginPath();
+        for (let i = 0; i <= 40; i++) {
+          const f = i / 40, a = arm * Math.PI * 2 / 3 + f * 3.4 + t * 0.5 * (back ? -0.6 : 1);
+          const x = Math.cos(a) * f * r * 1.05, y = Math.sin(a) * f * r * 0.95;
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.lineWidth = r * (0.06 + level * 0.04) * (back ? 0.7 : 1);
+        ctx.strokeStyle = `rgba(${lighter},${0.28 * depth})`; ctx.stroke();
+      }
+      break;
+    case "stars":
+      // Points of light twinkling inside: small and faint at the back, larger in front.
+      for (const sp of sparkles) {
+        if (sp.back !== back) continue;
+        const tw = 0.5 + 0.5 * Math.sin(t * 4 + sp.phase);
+        const size = r * (back ? 0.014 : 0.026) * (0.6 + sp.size) * (0.7 + 0.6 * tw) * (1 + level * 0.5);
+        const x = sp.x * r * 0.95, y = sp.y * r * 0.95;
+        ctx.fillStyle = `rgba(${lighter},${(0.35 + 0.55 * tw) * depth})`;
+        ctx.shadowColor = `rgba(${lighter},0.8)`; ctx.shadowBlur = size * 2;
+        ctx.beginPath();
+        for (let i = 0; i < 8; i++) { const a = i * Math.PI / 4, d = i % 2 ? size * 0.3 : size; ctx.lineTo(x + Math.cos(a) * d, y + Math.sin(a) * d); }
+        ctx.closePath(); ctx.fill();
+      }
+      ctx.shadowBlur = 0;
+      break;
+    case "globe": {
+      // A wireframe of latitude and longitude, turning as it looks about.
+      const spin = t * 0.25 + turn.yaw * 0.6;
+      for (let i = -2; i <= 2; i++) latitude(i * r * 0.38, r * 0.012, `rgba(${lighter},${0.45 * depth})`);
+      for (let k = 0; k < 6; k++) {
+        const lon = spin + k * Math.PI / 6;
+        if ((Math.cos(lon) < 0) !== back) continue;
+        ctx.beginPath(); ctx.ellipse(0, 0, r * Math.abs(Math.sin(lon)), r, 0, 0, Math.PI * 2);
+        ctx.lineWidth = r * 0.012; ctx.strokeStyle = `rgba(${lighter},${0.45 * depth})`; ctx.stroke();
+      }
+      break;
+    }
+  }
+  ctx.restore();
 }
 
 /** Lifts a prop off the orb with a soft shadow below it. */
@@ -546,6 +706,14 @@ function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t:
     ctx.fillStyle = pattern; ctx.fillRect(-r * 4, -r * 4, r * 8, r * 8);
   }
   ctx.restore();
+  // Then shadow from the orb's light, over the grain as well, in the orb's own space
+  // rather than the item's, so every part of what it wears is lit from the same side.
+  ctx.save();
+  ctx.globalCompositeOperation = "source-atop";
+  const away = ctx.createRadialGradient(-r * 0.35, -r * 0.6, r * 0.3, -r * 0.35, -r * 0.6, r * 2.1);
+  away.addColorStop(0, "rgba(4,6,14,0)"); away.addColorStop(0.5, "rgba(4,6,14,0.06)"); away.addColorStop(1, "rgba(4,6,14,0.45)");
+  ctx.fillStyle = away; ctx.fillRect(-r * 2.5, -r * 2.5, r * 5, r * 5);
+  ctx.restore();
 }
 
 /**
@@ -573,7 +741,12 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
     layer.width = element.width; layer.height = element.height;
     const worn = layer.getContext("2d")!;
     const texture = grain(worn);
-    const skin = grain(ctx);
+    const skin = felt(ctx);
+    const fuzz: Fibre[] = Array.from({ length: 520 }, () => ({ a: Math.random() * Math.PI * 2, len: 0.03 + Math.random() * 0.05, tilt: (Math.random() - 0.5), tone: Math.random() }));
+    const sparkles: Sparkle[] = Array.from({ length: 46 }, () => {
+      const d = Math.sqrt(Math.random()), a = Math.random() * Math.PI * 2;
+      return { x: Math.cos(a) * d, y: Math.sin(a) * d, size: Math.random(), phase: Math.random() * Math.PI * 2, back: Math.random() < 0.55 };
+    });
     let frame = 0, level = 0;
     let color: number[] = hexToRgb(style.current.colors[current.current]);
     // Blinks come at uneven intervals, as they do; the personality sets how often.
@@ -610,12 +783,13 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
         ctx.ellipse(0, 0, r + 20 + ring * 16 + level * 7, r + 18 + ring * 16, Math.sin(t) * motion.wobble, 0, Math.PI * 2);
         ctx.strokeStyle = `rgba(${rgb},${Math.max(0.04, 0.2 + level * 0.15 - ring * 0.05)})`; ctx.lineWidth = 1.2; ctx.stroke();
       }
-      ctx.beginPath();
       const [first, second] = motion.lobes;
+      // How far the edge is from the middle at an angle: the outline, and where the plush fuzz grows from.
+      const edge = (a: number) => r + (Math.sin(a * first + t * 1.3) * (3 + level * 7) + Math.sin(a * second - t * 2) * level * 10) * motion.wave;
+      ctx.beginPath();
       for (let i = 0; i <= 160; i++) {
-        const a = i / 160 * Math.PI * 2;
-        const wave = (Math.sin(a * first + t * 1.3) * (3 + level * 7) + Math.sin(a * second - t * 2) * level * 10) * motion.wave;
-        const x = Math.cos(a) * (r + wave), y = Math.sin(a) * (r + wave);
+        const a = i / 160 * Math.PI * 2, e = edge(a);
+        const x = Math.cos(a) * e, y = Math.sin(a) * e;
         if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
       }
       ctx.closePath();
@@ -624,40 +798,32 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
       sphere.addColorStop(0.7, `rgb(${color.map(v => Math.round(v * 0.62)).join(",")})`); sphere.addColorStop(1, `rgb(${color.map(v => Math.round(v * 0.34)).join(",")})`);
       ctx.shadowColor = `rgba(${rgb},0.65)`; ctx.shadowBlur = 22 * look.glow;
       ctx.fillStyle = sphere; ctx.fill(); ctx.shadowBlur = 0;
-      // Lit from the upper left, as the gradient is: brightest where the light meets the edge.
-      const rim = ctx.createLinearGradient(-r, -r, r, r);
-      const matte = look.finish === "matte";
-      rim.addColorStop(0, `rgba(255,255,255,${matte ? 0.3 : 0.7})`); rim.addColorStop(0.45, `rgba(${rgb},${matte ? 0.6 : 0.75})`); rim.addColorStop(1, `rgba(${rgb},${matte ? 0.25 : 0.3})`);
-      ctx.strokeStyle = rim; ctx.lineWidth = 1.8; ctx.stroke(); ctx.save(); ctx.clip();
-      // Translucent ribbons bend across the sphere rather than flat sine bars, in
-      // two layers: the back ones dimmer and moving less as the face turns, the
-      // front ones more, so the inside reads as a volume rather than a surface.
-      const ribbons = (back: boolean) => {
-        if (!look.ribbons) return;
-        ctx.save();
-        ctx.translate(Math.sin(turn.yaw) * r * (back ? 0.06 : 0.28), Math.sin(turn.pitch) * r * (back ? 0.04 : 0.18));
-        for (let band = back ? 0 : 1; band < 15; band += 2) {
-          const y = -r + band * r * 0.15;
-          const bend = Math.sin(t + band * 0.27) * 35 + level * 22;
-          ctx.beginPath(); ctx.moveTo(-r * 1.3, y);
-          ctx.bezierCurveTo(-r * 0.45, y - 60 + bend, r * 0.35, y + 65 + bend, r * 1.3, y - 20);
-          ctx.bezierCurveTo(r * 0.3, y + 85 + bend, -r * 0.4, y - 40 + bend, -r * 1.3, y + 9);
-          const ribbon = ctx.createLinearGradient(-r, -r, r, r);
-          const depth = back ? 0.55 : 1;
-          ribbon.addColorStop(0, `rgba(231,255,255,${(0.04 + band * 0.003) * depth})`);
-          ribbon.addColorStop(0.45, `rgba(${rgb},${(0.24 + level * 0.12) * depth})`);
-          ribbon.addColorStop(1, "rgba(192,190,255,0.03)");
-          ctx.fillStyle = ribbon; ctx.fill();
-        }
-        ctx.restore();
-      };
-      ribbons(true);
+      const plush = look.finish === "plush";
+      if (!plush) {
+        // Lit from the upper left, as the gradient is: brightest where the light meets the edge.
+        const rim = ctx.createLinearGradient(-r, -r, r, r);
+        rim.addColorStop(0, "rgba(255,255,255,0.7)"); rim.addColorStop(0.45, `rgba(${rgb},0.75)`); rim.addColorStop(1, `rgba(${rgb},0.3)`);
+        ctx.strokeStyle = rim; ctx.lineWidth = 1.8; ctx.stroke();
+      }
+      ctx.save(); ctx.clip();
+      const tint = color as Rgb;
+      drawPattern(ctx, look.pattern, true, r, t, level, tint, turn, sparkles);
       // A glowing core between the layers, drifting against the turn, as something deep inside would.
       const cx = -r * 0.08 - Math.sin(turn.yaw) * r * 0.18, cy = -r * 0.1 - Math.sin(turn.pitch) * r * 0.18;
       const core = ctx.createRadialGradient(cx, cy, 0, cx, cy, r * 0.62);
       core.addColorStop(0, `rgba(${color.map((v) => Math.round(v + (255 - v) * 0.55)).join(",")},${0.3 + level * 0.25})`); core.addColorStop(1, `rgba(${rgb},0)`);
       ctx.fillStyle = core; ctx.fillRect(-r, -r, 2 * r, 2 * r);
-      ribbons(false);
+      drawPattern(ctx, look.pattern, false, r, t, level, tint, turn, sparkles);
+      // Felt goes on before the shading, so the shadow side darkens it as it does the surface under it.
+      if (plush) {
+        // Sized from the radius so it grows with the voice rather than drifting over it.
+        const k = (r / 132) * 0.5;
+        for (const [pattern, alpha] of [[skin.dark, 0.55], [skin.light, 0.4]] as const) {
+          pattern.setTransform(new DOMMatrix([k, 0, 0, k, 0, 0]));
+          ctx.globalAlpha = alpha; ctx.fillStyle = pattern; ctx.fillRect(-r * 1.3, -r * 1.3, r * 2.6, r * 2.6);
+        }
+        ctx.globalAlpha = 1;
+      }
       // The side away from the light falls into shadow, and the underside darkens most.
       const turned = ctx.createRadialGradient(-r * 0.35, -r * 0.45, r * 0.4, -r * 0.35, -r * 0.45, r * 1.9);
       turned.addColorStop(0, "rgba(4,6,14,0)"); turned.addColorStop(0.55, "rgba(4,6,14,0.08)"); turned.addColorStop(1, "rgba(4,6,14,0.55)");
@@ -665,24 +831,14 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
       const under = ctx.createLinearGradient(0, r * 0.25, 0, r);
       under.addColorStop(0, "rgba(0,0,0,0)"); under.addColorStop(1, "rgba(0,0,0,0.22)");
       ctx.fillStyle = under; ctx.fillRect(-r * 1.2, r * 0.25, r * 2.4, r);
-      if (matte) {
-        // A broad, faint sheen where the light falls, not a highlight spot.
-        const sheen = ctx.createRadialGradient(-r * 0.33, -r * 0.5, 0, -r * 0.33, -r * 0.5, r * 1.1);
-        sheen.addColorStop(0, "rgba(238,255,255,0.12)"); sheen.addColorStop(1, "rgba(255,255,255,0)");
-        ctx.fillStyle = sheen; ctx.fillRect(-r, -r, 2 * r, 2 * r);
-        // The same grain as what it wears, sized from its radius so it grows with the voice rather than drifting over it.
-        const k = (r / 132) * 0.5;
-        for (const [pattern, alpha] of [[skin.dark, 0.45], [skin.light, 0.3]] as const) {
-          pattern.setTransform(new DOMMatrix([k, 0, 0, k, 0, 0]));
-          ctx.globalAlpha = alpha; ctx.fillStyle = pattern; ctx.fillRect(-r * 1.2, -r * 1.2, r * 2.4, r * 2.4);
-        }
-        ctx.globalAlpha = 1;
-      } else {
+      if (!plush) {
+        // The highlight is light falling on the surface, so it goes on last.
         const shine = ctx.createRadialGradient(-r * 0.33, -r * 0.55, 0, -r * 0.33, -r * 0.55, r * 0.85);
         shine.addColorStop(0, "rgba(238,255,255,0.45)"); shine.addColorStop(0.35, "rgba(233,253,255,0.08)"); shine.addColorStop(1, "rgba(255,255,255,0)");
         ctx.fillStyle = shine; ctx.fillRect(-r, -r, 2 * r, 2 * r);
       }
       ctx.restore();
+      if (plush) drawFuzz(ctx, fuzz, edge, r, level, color as Rgb);
       if (look.eyes !== "none") {
         if (!reduced && timestamp > nextBlink) { blinkAt = timestamp; nextBlink = timestamp + (2200 + Math.random() * 3200) / motion.blink; }
         const blinking = timestamp - blinkAt < 160;

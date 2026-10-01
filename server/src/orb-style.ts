@@ -66,9 +66,13 @@ export function itemColor(kind: Exclude<OrbHat | OrbProp, "none">, chosen: strin
   return chosen === "auto" ? ORB_ITEM_COLORS[kind] : chosen;
 }
 
-/** The orb's surface: glossy, with a highlight and a bright rim, or matte, with a faint sheen and a grain. */
-export const ORB_FINISHES = ["glossy", "matte"] as const;
+/** The orb's surface: glossy, with a highlight and a bright rim, or plush, soft felt with a fuzzy edge. */
+export const ORB_FINISHES = ["glossy", "plush"] as const;
 export type OrbFinish = (typeof ORB_FINISHES)[number];
+
+/** What moves inside the sphere, in two layers at different depths. */
+export const ORB_PATTERNS = ["ribbons", "bands", "spots", "swirl", "stars", "globe", "none"] as const;
+export type OrbPattern = (typeof ORB_PATTERNS)[number];
 
 export type OrbColors = Record<OrbState, string>;
 
@@ -90,8 +94,7 @@ export interface OrbStyle {
   speed: number;
   reactivity: number;
   glow: number;
-  /** The translucent ribbons inside the sphere. */
-  ribbons: boolean;
+  pattern: OrbPattern;
   finish: OrbFinish;
   eyes: OrbEyes;
   eyeColor: string;
@@ -108,7 +111,7 @@ export const DEFAULT_ORB: OrbStyle = {
   speed: 1,
   reactivity: 1,
   glow: 1,
-  ribbons: true,
+  pattern: "ribbons",
   finish: "glossy",
   eyes: "none",
   eyeColor: "#111111",
@@ -149,7 +152,8 @@ export function normalizeOrb(value: unknown): OrbStyle {
     speed: between(v.speed, 0.25, 2.5, DEFAULT_ORB.speed),
     reactivity: between(v.reactivity, 0, 2.5, DEFAULT_ORB.reactivity),
     glow: between(v.glow, 0, 2, DEFAULT_ORB.glow),
-    ribbons: typeof v.ribbons === "boolean" ? v.ribbons : DEFAULT_ORB.ribbons,
+    // Saved before there was a choice of pattern, the ribbons were only on or off.
+    pattern: (ORB_PATTERNS as readonly unknown[]).includes(v.pattern) ? (v.pattern as OrbPattern) : v.ribbons === false ? "none" : DEFAULT_ORB.pattern,
     finish: (ORB_FINISHES as readonly unknown[]).includes(v.finish) ? (v.finish as OrbFinish) : DEFAULT_ORB.finish,
     eyes: (ORB_EYES as readonly unknown[]).includes(v.eyes) ? (v.eyes as OrbEyes) : DEFAULT_ORB.eyes,
     eyeColor: hex(v.eyeColor, DEFAULT_ORB.eyeColor),

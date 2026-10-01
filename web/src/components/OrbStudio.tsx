@@ -3,7 +3,7 @@ import { LuCheck, LuPalette, LuRefreshCw, LuRotateCcw } from "react-icons/lu";
 import { Modal } from "./Modal";
 import { api } from "../api";
 import { msg, t } from "../i18n";
-import { DEFAULT_ORB, ORB_PALETTES, itemColor, type OrbEyes, type OrbFinish, type OrbHat, type OrbPersonality, type OrbProp, type OrbState, type OrbStyle } from "../../../server/src/orb-style";
+import { DEFAULT_ORB, ORB_PALETTES, itemColor, type OrbEyes, type OrbFinish, type OrbHat, type OrbPattern, type OrbPersonality, type OrbProp, type OrbState, type OrbStyle } from "../../../server/src/orb-style";
 import { ORB_STYLE_EVENT, VoiceOrb, type VoiceLevels } from "./VoiceOrb";
 
 const PERSONALITIES: [OrbPersonality, string, string][] = [
@@ -35,7 +35,17 @@ const PROPS: [OrbProp, string][] = [
 
 const FINISHES: [OrbFinish, string, string][] = [
   ["glossy", msg("Glossy"), msg("A bright highlight and rim")],
-  ["matte", msg("Matte"), msg("A faint sheen and a fine grain")],
+  ["plush", msg("Plush"), msg("Soft and fuzzy, like a stuffed toy")],
+];
+
+const PATTERNS: [OrbPattern, string][] = [
+  ["ribbons", msg("Ribbons")], ["bands", msg("Bands")], ["spots", msg("Spots")], ["swirl", msg("Swirl")],
+  ["stars", msg("Stars")], ["globe", msg("Globe")], ["none", msg("None")],
+];
+
+type Tab = "personality" | "colours" | "surface" | "face" | "wear";
+const TABS: [Tab, string][] = [
+  ["personality", msg("Personality")], ["colours", msg("Colours")], ["surface", msg("Surface")], ["face", msg("Face")], ["wear", msg("Wear")],
 ];
 
 const STATES: [OrbState, string][] = [
@@ -62,6 +72,7 @@ export function OrbStudio() {
   const [done, setDone] = useState(false);
   const [error, setError] = useState("");
   const [open, setOpen] = useState(false);
+  const [tab, setTab] = useState<Tab>("personality");
   const levels = useRef<VoiceLevels>({ input: 0, output: 0 });
   const still = useRef<VoiceLevels>({ input: 0, output: 0 });
 
@@ -112,6 +123,45 @@ export function OrbStudio() {
       setBusy(false);
     }
   };
+
+  /** One choice of what is on or worn by the orb: its options, and its colour once one is picked. */
+  const itemRow = <K extends "eyes" | "hat" | "prop">(key: K, colorKey: "eyeColor" | "hatColor" | "propColor", title: string, options: readonly (readonly [OrbStyle[K], string])[]) => (
+    <div key={key}>
+      <p className="text-xs text-fg-muted">{t(title)}</p>
+      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+        {options.map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            aria-pressed={draft[key] === value}
+            onClick={() => change({ [key]: value } as Partial<OrbStyle>)}
+            className={`rounded-lg border px-2.5 py-1 text-[11px] transition ${
+              draft[key] === value ? "border-accent/50 bg-accent/10 text-fg" : "border-line text-fg-muted hover:bg-fg/5"
+            }`}
+          >
+            {t(label)}
+          </button>
+        ))}
+        {draft[key] !== "none" && (
+          <label className="ml-1 flex items-center gap-1.5 text-[11px] text-fg-muted">
+            <input
+              type="color"
+              aria-label={t("Colour")}
+              // Hats and props show their own colour until one is picked.
+              value={key === "eyes" ? draft.eyeColor : itemColor(draft[key] as Exclude<OrbHat | OrbProp, "none">, draft[colorKey])}
+              onChange={(e) => change({ [colorKey]: e.target.value } as Partial<OrbStyle>)}
+              className="h-6 w-8 cursor-pointer rounded border border-line bg-transparent"
+            />
+            {key !== "eyes" && draft[colorKey] !== "auto" && (
+              <button type="button" onClick={() => change({ [colorKey]: "auto" } as Partial<OrbStyle>)} className="rounded px-1.5 py-0.5 text-[11px] text-fg-muted hover:bg-fg/5">
+                {t("Auto")}
+              </button>
+            )}
+          </label>
+        )}
+      </div>
+    </div>
+  );
 
   const footer = (
     <div className="flex items-center justify-end gap-2">
@@ -180,7 +230,41 @@ export function OrbStudio() {
           </div>
         </div>
 
-        <div className="space-y-4">
+        <div className="min-w-0">
+          <div
+            role="tablist"
+            aria-label={t("Avatar sections")}
+            className="flex gap-1 overflow-x-auto border-b border-line"
+            onKeyDown={(e) => {
+              const at = TABS.findIndex(([id]) => id === tab);
+              const next = e.key === "ArrowRight" ? at + 1 : e.key === "ArrowLeft" ? at - 1 : e.key === "Home" ? 0 : e.key === "End" ? TABS.length - 1 : null;
+              if (next === null) return;
+              e.preventDefault();
+              const id = TABS[(next + TABS.length) % TABS.length][0];
+              setTab(id);
+              (e.currentTarget.querySelector(`[data-tab="${id}"]`) as HTMLElement | null)?.focus();
+            }}
+          >
+            {TABS.map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                role="tab"
+                data-tab={id}
+                aria-selected={tab === id}
+                tabIndex={tab === id ? 0 : -1}
+                onClick={() => setTab(id)}
+                className={`-mb-px shrink-0 border-b-2 px-3 py-1.5 text-xs transition ${
+                  tab === id ? "border-accent text-fg" : "border-transparent text-fg-muted hover:text-fg"
+                }`}
+              >
+                {t(label)}
+              </button>
+            ))}
+          </div>
+
+          <div role="tabpanel" aria-label={t(TABS.find(([id]) => id === tab)![1])} className="space-y-4 pt-4">
+          {tab === "personality" && <>
           <div>
             <p className="text-xs text-fg-muted">{t("Personality")}</p>
             <div className="mt-1.5 grid gap-1.5 sm:grid-cols-2">
@@ -201,6 +285,27 @@ export function OrbStudio() {
             </div>
           </div>
 
+          {SLIDERS.filter(([key]) => key === "speed" || key === "reactivity").map(([key, label, min, max, help]) => (
+            <label key={key} className="block text-xs text-fg-muted">
+              <span className="flex justify-between gap-3">
+                <span>{t(label)}</span>
+                <span className="tabular-nums text-accent">{draft[key].toFixed(2)}×</span>
+              </span>
+              <input
+                type="range"
+                className="mt-1.5 w-full accent-current"
+                min={min}
+                max={max}
+                step={0.05}
+                value={draft[key]}
+                onChange={(e) => change({ [key]: Number(e.target.value) } as Partial<OrbStyle>)}
+              />
+              <span className="mt-0.5 block text-[11px] text-fg-faint">{t(help)}</span>
+            </label>
+          ))}
+
+          </>}
+          {tab === "colours" && <>
           <div>
             <p className="text-xs text-fg-muted">{t("Colours")}</p>
             <div className="mt-1.5 flex flex-wrap gap-1.5">
@@ -241,8 +346,10 @@ export function OrbStudio() {
             </div>
           </div>
 
+          </>}
+          {tab === "surface" && <>
           <div>
-            <p className="text-xs text-fg-muted">{t("Surface")}</p>
+            <p className="text-xs text-fg-muted">{t("Finish")}</p>
             <div className="mt-1.5 flex flex-wrap gap-1.5">
               {FINISHES.map(([value, label, hint]) => (
                 <button
@@ -260,46 +367,26 @@ export function OrbStudio() {
               ))}
             </div>
           </div>
-
-          {([["eyes", "eyeColor", msg("Eyes"), EYES], ["hat", "hatColor", msg("Hat"), HATS], ["prop", "propColor", msg("Props"), PROPS]] as const).map(([key, colorKey, title, options]) => (
-            <div key={key}>
-              <p className="text-xs text-fg-muted">{t(title)}</p>
-              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                {options.map(([value, label]) => (
-                  <button
-                    key={value}
-                    type="button"
-                    aria-pressed={draft[key] === value}
-                    onClick={() => change({ [key]: value } as Partial<OrbStyle>)}
-                    className={`rounded-lg border px-2.5 py-1 text-[11px] transition ${
-                      draft[key] === value ? "border-accent/50 bg-accent/10 text-fg" : "border-line text-fg-muted hover:bg-fg/5"
-                    }`}
-                  >
-                    {t(label)}
-                  </button>
-                ))}
-                {draft[key] !== "none" && (
-                  <label className="ml-1 flex items-center gap-1.5 text-[11px] text-fg-muted">
-                    <input
-                      type="color"
-                      aria-label={t("Colour")}
-                      // Hats and props show their own colour until one is picked.
-                      value={key === "eyes" ? draft.eyeColor : itemColor(draft[key] as Exclude<OrbHat | OrbProp, "none">, draft[colorKey])}
-                      onChange={(e) => change({ [colorKey]: e.target.value } as Partial<OrbStyle>)}
-                      className="h-6 w-8 cursor-pointer rounded border border-line bg-transparent"
-                    />
-                    {key !== "eyes" && draft[colorKey] !== "auto" && (
-                      <button type="button" onClick={() => change({ [colorKey]: "auto" } as Partial<OrbStyle>)} className="rounded px-1.5 py-0.5 text-[11px] text-fg-muted hover:bg-fg/5">
-                        {t("Auto")}
-                      </button>
-                    )}
-                  </label>
-                )}
-              </div>
+          <div>
+            <p className="text-xs text-fg-muted">{t("Pattern")}</p>
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {PATTERNS.map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={draft.pattern === value}
+                  onClick={() => change({ pattern: value })}
+                  
+                  className={`rounded-lg border px-2.5 py-1 text-[11px] transition ${
+                    draft.pattern === value ? "border-accent/50 bg-accent/10 text-fg" : "border-line text-fg-muted hover:bg-fg/5"
+                  }`}
+                >
+                  {t(label)}
+                </button>
+              ))}
             </div>
-          ))}
-
-          {SLIDERS.map(([key, label, min, max, help]) => (
+          </div>
+          {SLIDERS.filter(([key]) => key === "glow").map(([key, label, min, max, help]) => (
             <label key={key} className="block text-xs text-fg-muted">
               <span className="flex justify-between gap-3">
                 <span>{t(label)}</span>
@@ -318,10 +405,17 @@ export function OrbStudio() {
             </label>
           ))}
 
-          <label className="flex items-center gap-2 text-xs text-fg-muted">
-            <input type="checkbox" checked={draft.ribbons} onChange={(e) => change({ ribbons: e.target.checked })} />
-            {t("Ribbons of light inside the orb")}
-          </label>
+          </>}
+          {tab === "face" && <>
+          {itemRow("eyes", "eyeColor", msg("Eyes"), EYES)}
+
+          </>}
+          {tab === "wear" && <>
+          {itemRow("hat", "hatColor", msg("Hat"), HATS)}
+          {itemRow("prop", "propColor", msg("Props"), PROPS)}
+
+          </>}
+          </div>
         </div>
       </div>
 
