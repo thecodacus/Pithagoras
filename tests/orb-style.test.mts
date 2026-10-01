@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_ORB, ORB_EYES, ORB_HATS, ORB_PALETTES, ORB_PERSONALITIES, ORB_PROPS, hexToRgb, normalizeOrb } from '../server/src/orb-style.ts';
+import { DEFAULT_ORB, ORB_EYES, ORB_HATS, ORB_ITEM_COLORS, ORB_PALETTES, ORB_PERSONALITIES, ORB_PROPS, hexToRgb, itemColor, normalizeOrb } from '../server/src/orb-style.ts';
 
 test('nothing stored is the orb as it always was',()=>{
  assert.deepEqual(normalizeOrb(undefined),DEFAULT_ORB);
@@ -43,7 +43,7 @@ test('eyes and props are kept when known, and their colours checked',()=>{
  for(const prop of ORB_PROPS)assert.equal(normalizeOrb({prop}).prop,prop);
  const odd=normalizeOrb({eyes:'laser',prop:'cape',eyeColor:'white',propColor:42});
  assert.equal(odd.eyes,'none');assert.equal(odd.prop,'none');
- assert.equal(odd.eyeColor,DEFAULT_ORB.eyeColor);assert.equal(odd.propColor,DEFAULT_ORB.propColor);
+ assert.equal(odd.eyeColor,DEFAULT_ORB.eyeColor);assert.equal(odd.propColor,'auto');
 });
 
 test('a hat is its own slot, worn with any prop',()=>{
@@ -51,5 +51,15 @@ test('a hat is its own slot, worn with any prop',()=>{
  assert.equal(style.hat,'tophat');assert.equal(style.hatColor,'#334455');assert.equal(style.prop,'monocle');
  for(const hat of ORB_HATS)assert.equal(normalizeOrb({hat}).hat,hat);
  assert.equal(normalizeOrb({hat:'fez'}).hat,'none');
- assert.equal(normalizeOrb({hatColor:'blue'}).hatColor,DEFAULT_ORB.hatColor);
+ assert.equal(normalizeOrb({hatColor:'blue'}).hatColor,'auto');
+});
+
+test('hats and props wear their own colour until one is picked',()=>{
+ assert.equal(DEFAULT_ORB.hatColor,'auto');assert.equal(DEFAULT_ORB.propColor,'auto');
+ assert.equal(normalizeOrb({propColor:'auto'}).propColor,'auto');
+ for(const kind of [...ORB_HATS,...ORB_PROPS].filter(k=>k!=='none')){
+  assert.match(ORB_ITEM_COLORS[kind],/^#[0-9a-f]{6}$/);
+  assert.equal(itemColor(kind,'auto'),ORB_ITEM_COLORS[kind]);
+  assert.equal(itemColor(kind,'#123456'),'#123456');
+ }
 });

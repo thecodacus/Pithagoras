@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { LuCheck, LuRefreshCw, LuRotateCcw } from "react-icons/lu";
 import { api } from "../api";
 import { msg, t } from "../i18n";
-import { DEFAULT_ORB, ORB_PALETTES, type OrbEyes, type OrbHat, type OrbPersonality, type OrbProp, type OrbState, type OrbStyle } from "../../../server/src/orb-style";
+import { DEFAULT_ORB, ORB_PALETTES, itemColor, type OrbEyes, type OrbHat, type OrbPersonality, type OrbProp, type OrbState, type OrbStyle } from "../../../server/src/orb-style";
 import { ORB_STYLE_EVENT, VoiceOrb, type VoiceLevels } from "./VoiceOrb";
 
 const PERSONALITIES: [OrbPersonality, string, string][] = [
@@ -204,10 +204,16 @@ export function OrbStudio() {
                     <input
                       type="color"
                       aria-label={t("Colour")}
-                      value={draft[colorKey]}
+                      // Hats and props show their own colour until one is picked.
+                      value={key === "eyes" ? draft.eyeColor : itemColor(draft[key] as Exclude<OrbHat | OrbProp, "none">, draft[colorKey])}
                       onChange={(e) => change({ [colorKey]: e.target.value } as Partial<OrbStyle>)}
                       className="h-6 w-8 cursor-pointer rounded border border-line bg-transparent"
                     />
+                    {key !== "eyes" && draft[colorKey] !== "auto" && (
+                      <button type="button" onClick={() => change({ [colorKey]: "auto" } as Partial<OrbStyle>)} className="rounded px-1.5 py-0.5 text-[11px] text-fg-muted hover:bg-fg/5">
+                        {t("Auto")}
+                      </button>
+                    )}
                   </label>
                 )}
               </div>

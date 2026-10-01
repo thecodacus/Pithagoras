@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { api } from "../api";
-import { DEFAULT_ORB, ORB_PERSONALITIES, hexToRgb, type OrbHat, type OrbProp, type OrbState, type OrbStyle } from "../../../server/src/orb-style";
+import { DEFAULT_ORB, ORB_PERSONALITIES, hexToRgb, itemColor, type OrbHat, type OrbProp, type OrbState, type OrbStyle } from "../../../server/src/orb-style";
 
 type Ctx = CanvasRenderingContext2D;
 
@@ -27,40 +27,51 @@ const css = (c: Rgb, a = 1) => `rgba(${c.map(Math.round).join(",")},${a})`;
 const mix = (a: Rgb, b: Rgb, t: number): Rgb => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 /** Toward white for k > 0, toward black for k < 0. */
 const shade = (c: Rgb, k: number): Rgb => mix(c, k > 0 ? [255, 255, 255] : [0, 0, 0], Math.abs(k));
-/** The portal's neutral surfaces (zinc) and its accent, as the UI uses them. */
-const ZINC: Rgb = [113, 113, 122];
+/** The portal's accent, for the small lights on what the orb wears. */
 const ACCENT: Rgb = [34, 211, 238];
 
 /**
- * A prop's material: the chosen colour taken most of the way to the UI's
- * neutral grey, so it reads as a tinted surface rather than a saturated one,
- * lit from above.
+ * A colour softened the way the UI softens its own: the hue kept, the
+ * saturation held well below full and the lightness kept in a middle range,
+ * so props stay colourful without shouting.
+ */
+function tame(c: Rgb): Rgb {
+  const [r, g, b] = c.map((v) => v / 255);
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+  let h = 0, s = 0;
+  let l = (max + min) / 2;
+  if (d) {
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    h = (max === r ? (g - b) / d + (g < b ? 6 : 0) : max === g ? (b - r) / d + 2 : (r - g) / d + 4) / 6;
+  }
+  s = Math.min(s, 0.62) * 0.78;
+  l = Math.min(0.72, Math.max(0.22, l));
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+  const ch = (t: number) => { t = (t + 1) % 1; return t < 1 / 6 ? p + (q - p) * 6 * t : t < 1 / 2 ? q : t < 2 / 3 ? p + (q - p) * (2 / 3 - t) * 6 : p; };
+  return [ch(h + 1 / 3) * 255, ch(h) * 255, ch(h - 1 / 3) * 255];
+}
+
+/**
+ * A prop's material: its colour softened (see tame), lit from above.
  */
 function material(ctx: Ctx, color: string, top: number, bottom: number): CanvasGradient {
-  const base = mix(hexToRgb(color), ZINC, 0.55);
+  const base = tame(hexToRgb(color));
   const g = ctx.createLinearGradient(0, top, 0, bottom);
-  g.addColorStop(0, css(shade(base, 0.5))); g.addColorStop(0.45, css(base)); g.addColorStop(1, css(shade(base, -0.55)));
+  g.addColorStop(0, css(shade(base, 0.28))); g.addColorStop(0.5, css(base)); g.addColorStop(1, css(shade(base, -0.45)));
   return g;
 }
 
 /** A small ball lit from the upper left. */
 function ball(ctx: Ctx, x: number, y: number, radius: number, color: Rgb) {
   const g = ctx.createRadialGradient(x - radius * 0.35, y - radius * 0.4, radius * 0.1, x, y, radius);
-  g.addColorStop(0, css(shade(color, 0.7))); g.addColorStop(0.5, css(color)); g.addColorStop(1, css(shade(color, -0.6)));
+  g.addColorStop(0, css(shade(color, 0.3))); g.addColorStop(0.55, css(color)); g.addColorStop(1, css(shade(color, -0.5)));
   ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.fill();
-}
-
-/** A soft highlight where the light catches a surface. */
-function gloss(ctx: Ctx, x: number, y: number, rx: number, ry: number, alpha = 0.4) {
-  const g = ctx.createRadialGradient(x, y, 0, x, y, Math.max(rx, ry));
-  g.addColorStop(0, `rgba(255,255,255,${alpha})`); g.addColorStop(1, "rgba(255,255,255,0)");
-  ctx.save(); ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
 }
 
 /** A rounded surface lit from the left, darker toward its right edge: cylinders and cones. */
 function sideLit(ctx: Ctx, base: Rgb, left: number, right: number): CanvasGradient {
   const g = ctx.createLinearGradient(left, 0, right, 0);
-  g.addColorStop(0, css(shade(base, 0.45))); g.addColorStop(0.4, css(base)); g.addColorStop(1, css(shade(base, -0.6)));
+  g.addColorStop(0, css(shade(base, 0.25))); g.addColorStop(0.45, css(base)); g.addColorStop(1, css(shade(base, -0.5)));
   return g;
 }
 
@@ -79,6 +90,32 @@ function star(ctx: Ctx, x: number, y: number, size: number, color: Rgb) {
   }
   ctx.closePath(); ctx.fillStyle = css(color); ctx.shadowColor = css(color, 0.6); ctx.shadowBlur = 6; ctx.fill();
   ctx.restore();
+}
+
+/**
+ * A matte grain for what the orb wears: specks and short fibres, one pattern
+ * that darkens and one that lightens, so a surface reads as felt or matte
+ * plastic rather than polished. Made once per orb, so it does not shimmer.
+ */
+function grain(ctx: Ctx): { dark: CanvasPattern; light: CanvasPattern } {
+  const make = (tone: string, specks: number, fibres: number, alpha: number) => {
+    const tile = document.createElement("canvas");
+    tile.width = tile.height = 192;
+    const g = tile.getContext("2d")!;
+    for (let i = 0; i < specks; i++) {
+      g.fillStyle = `rgba(${tone},${Math.random() * alpha})`;
+      const size = 1.2 + Math.random() * 1.8;
+      g.fillRect(Math.random() * 192, Math.random() * 192, size, size);
+    }
+    g.lineCap = "round";
+    for (let i = 0; i < fibres; i++) {
+      const x = Math.random() * 192, y = Math.random() * 192, a = Math.random() * Math.PI, len = 4 + Math.random() * 9;
+      g.strokeStyle = `rgba(${tone},${Math.random() * alpha * 0.6})`; g.lineWidth = 0.8;
+      g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len); g.stroke();
+    }
+    return ctx.createPattern(tile, "repeat")!;
+  };
+  return { dark: make("0,0,0", 3200, 220, 0.55), light: make("255,255,255", 1800, 120, 0.4) };
 }
 
 /** Lifts a prop off the orb with a soft shadow below it. */
@@ -217,7 +254,7 @@ function drawEyes(ctx: Ctx, look: OrbStyle, r: number, mode: OrbState, level: nu
  * small lights.
  */
 function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t: number, level: number, mode: OrbState, turn: Turn) {
-  const base = mix(hexToRgb(color), ZINC, 0.55);
+  const base = tame(hexToRgb(color));
   ctx.save();
   ctx.lineCap = "round"; ctx.lineJoin = "round";
   // What sits on top rides round with the turn a little, less than the face
@@ -230,8 +267,6 @@ function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t:
       ctx.strokeStyle = material(ctx, color, -r * 1.2, -r * 0.4); ctx.lineWidth = r * 0.11;
       ctx.beginPath(); ctx.arc(shift, 0, r * 1.1, Math.PI * 1.12, Math.PI * 1.88); ctx.stroke();
       unlift(ctx);
-      ctx.strokeStyle = "rgba(255,255,255,0.28)"; ctx.lineWidth = r * 0.02;
-      ctx.beginPath(); ctx.arc(shift, -r * 0.02, r * 1.1, Math.PI * 1.2, Math.PI * 1.8); ctx.stroke();
       for (const side of [-1, 1]) {
         // The cup the face turns away from comes forward and grows; the other goes round behind.
         const near = Math.min(1.3, Math.max(0.45, 1 - side * Math.sin(turn.yaw) * 1.1));
@@ -243,7 +278,6 @@ function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t:
         unlift(ctx);
         ctx.fillStyle = css(shade(base, -0.65));
         ctx.beginPath(); ctx.roundRect(x + (side < 0 ? w * 0.55 : 0), y + h * 0.12, w * 0.45, h * 0.76, r * 0.05); ctx.fill();
-        gloss(ctx, x + w * 0.4, y + h * 0.2, w * 0.3, h * 0.12, 0.45);
         ctx.fillStyle = css(ACCENT, 0.5 + level * 0.5); ctx.shadowColor = css(ACCENT, 0.8); ctx.shadowBlur = 6;
         ctx.beginPath(); ctx.arc(x + w * (side < 0 ? 0.28 : 0.72), y + h * 0.82, r * 0.02, 0, Math.PI * 2); ctx.fill();
         unlift(ctx);
@@ -271,11 +305,10 @@ function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t:
       ctx.beginPath(); ctx.moveTo(-r * 0.44, y); ctx.lineTo(...tips[0]); ctx.lineTo(-r * 0.22, y - r * 0.15); ctx.lineTo(...tips[1]);
       ctx.lineTo(r * 0.22, y - r * 0.15); ctx.lineTo(...tips[2]); ctx.lineTo(r * 0.44, y); ctx.closePath(); ctx.fill();
       unlift(ctx);
-      ctx.strokeStyle = "rgba(255,255,255,0.3)"; ctx.lineWidth = r * 0.015; ctx.stroke();
+      ctx.strokeStyle = "rgba(0,0,0,0.25)"; ctx.lineWidth = r * 0.015; ctx.stroke();
       ctx.fillStyle = css(shade(base, -0.35));
       ctx.beginPath(); ctx.roundRect(-r * 0.46, y - r * 0.05, r * 0.92, r * 0.09, r * 0.03); ctx.fill();
-      gloss(ctx, -r * 0.15, y - r * 0.12, r * 0.2, r * 0.05, 0.35);
-      for (const [x, ty] of tips) ball(ctx, x, ty, r * 0.045, mix(ACCENT, ZINC, 0.45));
+      for (const [x, ty] of tips) ball(ctx, x, ty, r * 0.045, tame(ACCENT));
       break;
     }
     case "halo": {
@@ -287,20 +320,18 @@ function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t:
       unlift(ctx);
       ctx.strokeStyle = css(shade(base, 0.35)); ctx.lineWidth = r * 0.04;
       ctx.beginPath(); ctx.ellipse(0, y - r * 0.008, r * 0.55, r * 0.13, 0, Math.PI * 1.05, Math.PI * 1.95); ctx.stroke();
-      ctx.strokeStyle = "rgba(255,255,255,0.45)"; ctx.lineWidth = r * 0.012;
-      ctx.beginPath(); ctx.ellipse(0, y - r * 0.02, r * 0.5, r * 0.1, 0, Math.PI * 1.3, Math.PI * 1.7); ctx.stroke();
       break;
     }
     case "party": {
       ctx.translate(r * 0.3, -r * 0.86); ctx.rotate(0.35 + Math.sin(t * 1.5) * 0.04);
       lift(ctx, r);
       const cone = ctx.createLinearGradient(-r * 0.3, 0, r * 0.3, 0);
-      cone.addColorStop(0, css(shade(base, 0.45))); cone.addColorStop(0.45, css(base)); cone.addColorStop(1, css(shade(base, -0.6)));
+      cone.addColorStop(0, css(shade(base, 0.25))); cone.addColorStop(0.45, css(base)); cone.addColorStop(1, css(shade(base, -0.6)));
       ctx.fillStyle = cone;
       ctx.beginPath(); ctx.moveTo(-r * 0.3, 0); ctx.lineTo(0, -r * 0.74); ctx.lineTo(r * 0.3, 0); ctx.closePath(); ctx.fill();
       unlift(ctx);
       ctx.save(); ctx.clip();
-      ctx.strokeStyle = css(mix(ACCENT, ZINC, 0.5), 0.55); ctx.lineWidth = r * 0.05;
+      ctx.strokeStyle = css(tame(ACCENT), 0.55); ctx.lineWidth = r * 0.05;
       for (let i = 1; i <= 3; i++) { ctx.beginPath(); ctx.moveTo(-r * 0.35, -r * 0.18 * i); ctx.lineTo(r * 0.35, -r * 0.18 * i - r * 0.09); ctx.stroke(); }
       ctx.restore();
       ctx.fillStyle = css(shade(base, -0.4));
@@ -324,10 +355,8 @@ function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t:
       unlift(ctx);
       for (const l of lenses) {
         const lens = ctx.createLinearGradient(l.x - l.w / 2, l.y - h / 2, l.x + l.w / 2, l.y + h / 2);
-        lens.addColorStop(0, "rgba(255,255,255,0.22)"); lens.addColorStop(0.5, "rgba(255,255,255,0.04)"); lens.addColorStop(1, "rgba(255,255,255,0.12)");
+        lens.addColorStop(0, "rgba(255,255,255,0.1)"); lens.addColorStop(1, "rgba(255,255,255,0.06)");
         ctx.fillStyle = lens; ctx.beginPath(); ctx.roundRect(l.x - l.w / 2, l.y - h / 2, l.w, h, r * 0.09 * l.fx); ctx.fill();
-        ctx.strokeStyle = "rgba(255,255,255,0.5)"; ctx.lineWidth = r * 0.012;
-        ctx.beginPath(); ctx.moveTo(l.x - l.w * 0.3, l.y - h * 0.28); ctx.lineTo(l.x - l.w * 0.05, l.y - h * 0.36); ctx.stroke();
       }
       break;
     }
@@ -336,7 +365,7 @@ function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t:
       lift(ctx, r);
       for (const side of [-1, 1]) {
         const lobe = ctx.createRadialGradient(side * r * 0.14, -r * 0.08, r * 0.02, side * r * 0.18, 0, r * 0.3);
-        lobe.addColorStop(0, css(shade(base, 0.5))); lobe.addColorStop(0.5, css(base)); lobe.addColorStop(1, css(shade(base, -0.55)));
+        lobe.addColorStop(0, css(shade(base, 0.28))); lobe.addColorStop(0.5, css(base)); lobe.addColorStop(1, css(shade(base, -0.55)));
         ctx.fillStyle = lobe;
         ctx.beginPath(); ctx.moveTo(0, 0); ctx.quadraticCurveTo(side * r * 0.28, -r * 0.3, side * r * 0.37, 0); ctx.quadraticCurveTo(side * r * 0.28, r * 0.3, 0, 0); ctx.fill();
       }
@@ -354,10 +383,9 @@ function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t:
       ctx.fillStyle = sideLit(ctx, base, -w / 2, w / 2); cylinder(); ctx.fill();
       unlift(ctx);
       ctx.save(); cylinder(); ctx.clip();
-      ctx.fillStyle = css(mix(ACCENT, ZINC, 0.55), 0.85); ctx.fillRect(-w, brim - r * 0.22, w * 2, r * 0.12);
+      ctx.fillStyle = css(tame(ACCENT), 0.85); ctx.fillRect(-w, brim - r * 0.22, w * 2, r * 0.12);
       ctx.restore();
       ctx.fillStyle = css(shade(base, 0.2)); ctx.beginPath(); ctx.ellipse(0, top, w * 0.47, r * 0.07, 0, 0, Math.PI * 2); ctx.fill();
-      gloss(ctx, -w * 0.24, top + r * 0.28, w * 0.09, r * 0.22, 0.3);
       break;
     }
     case "beanie": {
@@ -374,7 +402,6 @@ function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t:
       unlift(ctx);
       ctx.strokeStyle = "rgba(0,0,0,0.16)"; ctx.lineWidth = r * 0.018;
       for (let x = -r * 0.88; x <= r * 0.88; x += r * 0.09) { ctx.beginPath(); ctx.moveTo(x, cuff - r * 0.02); ctx.lineTo(x, cuff + r * 0.15); ctx.stroke(); }
-      gloss(ctx, -r * 0.3, -r * 1.05, r * 0.25, r * 0.1, 0.3);
       ball(ctx, 0, -r * 1.3, r * 0.15, shade(base, 0.15));
       break;
     }
@@ -390,7 +417,6 @@ function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t:
       ctx.fillStyle = material(ctx, mixHex(color, -0.2), rim - r * 0.1, rim + r * 0.1);
       ctx.beginPath(); ctx.ellipse(r * 0.62, rim + r * 0.02, r * 0.55, r * 0.11, -0.06, 0, Math.PI * 2); ctx.fill();
       unlift(ctx);
-      gloss(ctx, -r * 0.25, -r * 1.0, r * 0.22, r * 0.09, 0.32);
       ball(ctx, 0, -r * 1.18, r * 0.06, shade(base, -0.1));
       break;
     }
@@ -405,7 +431,7 @@ function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t:
       ctx.quadraticCurveTo(r * 0.18, -r * 0.55, r * 0.42, -r * 0.02);
       ctx.ellipse(0, -r * 0.02, r * 0.42, r * 0.08, 0, 0, Math.PI); ctx.closePath(); ctx.fill();
       unlift(ctx);
-      for (const [x, y, size] of [[-r * 0.12, -r * 0.25, r * 0.07], [r * 0.12, -r * 0.5, r * 0.05], [r * 0.2, -r * 0.18, r * 0.04]]) star(ctx, x, y, size, mix(ACCENT, ZINC, 0.45));
+      for (const [x, y, size] of [[-r * 0.12, -r * 0.25, r * 0.07], [r * 0.12, -r * 0.5, r * 0.05], [r * 0.2, -r * 0.18, r * 0.04]]) star(ctx, x, y, size, tame(ACCENT));
       break;
     }
     case "cowboy": {
@@ -416,7 +442,7 @@ function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t:
       ctx.quadraticCurveTo(-r * 0.15, y - r * 0.56, 0, y - r * 0.42); ctx.quadraticCurveTo(r * 0.15, y - r * 0.56, r * 0.38, y - r * 0.46);
       ctx.lineTo(r * 0.44, y); ctx.closePath(); ctx.fill();
       unlift(ctx);
-      ctx.fillStyle = css(mix(ACCENT, ZINC, 0.6), 0.8); ctx.fillRect(-r * 0.43, y - r * 0.12, r * 0.86, r * 0.08);
+      ctx.fillStyle = css(tame(ACCENT), 0.8); ctx.fillRect(-r * 0.43, y - r * 0.12, r * 0.86, r * 0.08);
       lift(ctx, r);
       ctx.fillStyle = material(ctx, color, y - r * 0.18, y + r * 0.12);
       ctx.beginPath(); ctx.moveTo(-r * 1.02, y - r * 0.14);
@@ -424,7 +450,6 @@ function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t:
       ctx.quadraticCurveTo(r * 0.75, y - r * 0.02, 0, y - r * 0.04); ctx.quadraticCurveTo(-r * 0.75, y - r * 0.02, -r * 1.02, y - r * 0.14);
       ctx.closePath(); ctx.fill();
       unlift(ctx);
-      gloss(ctx, -r * 0.2, y - r * 0.32, r * 0.12, r * 0.08, 0.3);
       break;
     }
     case "catears": {
@@ -435,9 +460,8 @@ function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t:
         ctx.fillStyle = material(ctx, color, -r * 0.4, 0);
         ctx.beginPath(); ctx.moveTo(-r * 0.22, r * 0.04); ctx.quadraticCurveTo(-r * 0.1, -r * 0.3, 0, -r * 0.42); ctx.quadraticCurveTo(r * 0.1, -r * 0.3, r * 0.22, r * 0.04); ctx.closePath(); ctx.fill();
         unlift(ctx);
-        ctx.fillStyle = css(mix([236, 160, 180], ZINC, 0.55));
+        ctx.fillStyle = css(tame([236, 160, 180]));
         ctx.beginPath(); ctx.moveTo(-r * 0.11, 0); ctx.quadraticCurveTo(-r * 0.05, -r * 0.18, 0, -r * 0.27); ctx.quadraticCurveTo(r * 0.05, -r * 0.18, r * 0.11, 0); ctx.closePath(); ctx.fill();
-        gloss(ctx, -r * 0.06, -r * 0.2, r * 0.04, r * 0.08, 0.3);
         ctx.restore();
       }
       break;
@@ -451,7 +475,7 @@ function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t:
         ctx.save(); ctx.translate(sway, -r * 1.36); ctx.rotate(side * 0.8);
         ctx.fillStyle = material(ctx, color, -r * 0.4, 0);
         ctx.beginPath(); ctx.moveTo(0, 0); ctx.quadraticCurveTo(-r * 0.18, -r * 0.22, 0, -r * 0.42); ctx.quadraticCurveTo(r * 0.18, -r * 0.22, 0, 0); ctx.fill();
-        ctx.strokeStyle = "rgba(255,255,255,0.3)"; ctx.lineWidth = r * 0.012;
+        ctx.strokeStyle = "rgba(0,0,0,0.22)"; ctx.lineWidth = r * 0.012;
         ctx.beginPath(); ctx.moveTo(0, -r * 0.03); ctx.lineTo(0, -r * 0.36); ctx.stroke();
         ctx.restore();
       }
@@ -465,11 +489,11 @@ function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t:
         const a = i / 5 * Math.PI * 2;
         const x = Math.cos(a) * r * 0.15, y = Math.sin(a) * r * 0.15;
         const petal = ctx.createRadialGradient(x - r * 0.04, y - r * 0.04, r * 0.01, x, y, r * 0.15);
-        petal.addColorStop(0, css(shade(base, 0.55))); petal.addColorStop(1, css(shade(base, -0.3)));
+        petal.addColorStop(0, css(shade(base, 0.3))); petal.addColorStop(1, css(shade(base, -0.3)));
         ctx.fillStyle = petal; ctx.beginPath(); ctx.ellipse(x, y, r * 0.14, r * 0.1, a, 0, Math.PI * 2); ctx.fill();
       }
       unlift(ctx);
-      ball(ctx, 0, 0, r * 0.09, mix([251, 191, 36], ZINC, 0.5));
+      ball(ctx, 0, 0, r * 0.09, tame([251, 191, 36]));
       break;
     }
     case "mustache": {
@@ -490,7 +514,6 @@ function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t:
         ctx.restore();
       }
       unlift(ctx);
-      gloss(ctx, -r * 0.14, -r * 0.03, r * 0.08, r * 0.02, 0.3);
       break;
     }
     case "monocle": {
@@ -501,10 +524,8 @@ function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t:
       ctx.strokeStyle = material(ctx, mixHex(color, -0.3), p.y - radius, p.y + radius); ctx.lineWidth = r * 0.06;
       ctx.beginPath(); ctx.ellipse(p.x, p.y, radius * p.fx, radius, 0, 0, Math.PI * 2); ctx.stroke();
       unlift(ctx);
-      ctx.strokeStyle = "rgba(255,255,255,0.35)"; ctx.lineWidth = r * 0.012;
-      ctx.beginPath(); ctx.ellipse(p.x, p.y, (radius - r * 0.02) * p.fx, radius - r * 0.02, 0, Math.PI * 1.1, Math.PI * 1.6); ctx.stroke();
       const lens = ctx.createLinearGradient(p.x - radius, p.y - radius, p.x + radius, p.y + radius);
-      lens.addColorStop(0, "rgba(255,255,255,0.24)"); lens.addColorStop(0.5, "rgba(255,255,255,0.04)"); lens.addColorStop(1, "rgba(255,255,255,0.12)");
+      lens.addColorStop(0, "rgba(255,255,255,0.1)"); lens.addColorStop(1, "rgba(255,255,255,0.06)");
       ctx.fillStyle = lens; ctx.beginPath(); ctx.ellipse(p.x, p.y, radius * p.fx, radius, 0, 0, Math.PI * 2); ctx.fill();
       ctx.strokeStyle = css(shade(base, 0.2), 0.8); ctx.lineWidth = r * 0.012; ctx.setLineDash([r * 0.03, r * 0.02]);
       ctx.beginPath(); ctx.moveTo(p.x + radius * 0.6 * p.fx, p.y + radius * 0.8); ctx.quadraticCurveTo(p.x + r * 0.2, p.y + r * 0.7, r * 0.82, r * 0.5); ctx.stroke();
@@ -535,6 +556,11 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
     const ratio = Math.min(devicePixelRatio || 1, 2);
     element.width = size * ratio; element.height = size * ratio;
     ctx.scale(ratio, ratio);
+    // What the orb wears is drawn on a layer of its own, so its grain lands on it alone.
+    const layer = document.createElement("canvas");
+    layer.width = element.width; layer.height = element.height;
+    const worn = layer.getContext("2d")!;
+    const texture = grain(worn);
     let frame = 0, level = 0;
     let color: number[] = hexToRgb(style.current.colors[current.current]);
     // Blinks come at uneven intervals, as they do; the personality sets how often.
@@ -603,8 +629,19 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
         const open = mode === "muted" ? 0 : blinking ? Math.abs(Math.cos((timestamp - blinkAt) / 160 * Math.PI)) : 1;
         drawEyes(ctx, look, r, mode, level, open, gx, gy, turn);
       }
-      if (look.prop !== "none") drawWorn(ctx, look.prop, look.propColor, r, t, level, mode, turn);
-      if (look.hat !== "none") drawWorn(ctx, look.hat, look.hatColor, r, t, level, mode, turn);
+      const wear = (kind: OrbHat | OrbProp, tint: string) => {
+        worn.setTransform(1, 0, 0, 1, 0, 0); worn.clearRect(0, 0, layer.width, layer.height);
+        worn.setTransform(ratio, 0, 0, ratio, 0, 0); worn.translate(size / 2, size / 2);
+        drawWorn(worn, kind, tint, r, t, level, mode, turn);
+        worn.setTransform(1, 0, 0, 1, 0, 0);
+        worn.globalCompositeOperation = "source-atop";
+        worn.globalAlpha = 0.6; worn.fillStyle = texture.dark; worn.fillRect(0, 0, layer.width, layer.height);
+        worn.globalAlpha = 0.45; worn.fillStyle = texture.light; worn.fillRect(0, 0, layer.width, layer.height);
+        worn.globalAlpha = 1; worn.globalCompositeOperation = "source-over";
+        ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(layer, 0, 0); ctx.restore();
+      };
+      if (look.prop !== "none") wear(look.prop, itemColor(look.prop, look.propColor));
+      if (look.hat !== "none") wear(look.hat, itemColor(look.hat, look.hatColor));
       ctx.restore();
       frame = requestAnimationFrame(render);
     };

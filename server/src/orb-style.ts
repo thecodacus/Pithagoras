@@ -50,6 +50,22 @@ export type OrbHat = (typeof ORB_HATS)[number];
 export const ORB_PROPS = ["none", "headphones", "antenna", "halo", "glasses", "bow", "catears", "sprout", "flower", "mustache", "monocle"] as const;
 export type OrbProp = (typeof ORB_PROPS)[number];
 
+/**
+ * Each hat and prop's own colour, used until one is picked ("auto"). The page
+ * softens whatever colour it draws with, so these stay colourful without
+ * shouting.
+ */
+export const ORB_ITEM_COLORS: Record<Exclude<OrbHat | OrbProp, "none">, string> = {
+  crown: "#e9b949", party: "#e57399", tophat: "#3a3a4a", beanie: "#d9534f", cap: "#4a90d9", wizard: "#7b5cc4", cowboy: "#a0704a",
+  headphones: "#4fb3a9", antenna: "#e0a040", halo: "#f0c75e", glasses: "#2f2f3a", bow: "#e06a7a", catears: "#e39a5a",
+  sprout: "#6cbf6a", flower: "#ef8fb5", mustache: "#6b4a35", monocle: "#d4a843",
+};
+
+/** The colour an item is drawn with: its own until one is chosen. */
+export function itemColor(kind: Exclude<OrbHat | OrbProp, "none">, chosen: string): string {
+  return chosen === "auto" ? ORB_ITEM_COLORS[kind] : chosen;
+}
+
 export type OrbColors = Record<OrbState, string>;
 
 /** Aurora is the orb as it always was. */
@@ -91,9 +107,9 @@ export const DEFAULT_ORB: OrbStyle = {
   eyes: "none",
   eyeColor: "#111111",
   hat: "none",
-  hatColor: "#71717a",
+  hatColor: "auto",
   prop: "none",
-  propColor: "#a1a1aa",
+  propColor: "auto",
 };
 
 const HEX = /^#[0-9a-f]{6}$/i;
@@ -131,9 +147,9 @@ export function normalizeOrb(value: unknown): OrbStyle {
     eyes: (ORB_EYES as readonly unknown[]).includes(v.eyes) ? (v.eyes as OrbEyes) : DEFAULT_ORB.eyes,
     eyeColor: hex(v.eyeColor, DEFAULT_ORB.eyeColor),
     hat: (ORB_HATS as readonly unknown[]).includes(v.hat) ? (v.hat as OrbHat) : DEFAULT_ORB.hat,
-    hatColor: hex(v.hatColor, DEFAULT_ORB.hatColor),
+    hatColor: v.hatColor === "auto" ? "auto" : hex(v.hatColor, DEFAULT_ORB.hatColor),
     prop: (ORB_PROPS as readonly unknown[]).includes(v.prop) ? (v.prop as OrbProp) : DEFAULT_ORB.prop,
-    propColor: hex(v.propColor, DEFAULT_ORB.propColor),
+    propColor: v.propColor === "auto" ? "auto" : hex(v.propColor, DEFAULT_ORB.propColor),
   };
 }
 
