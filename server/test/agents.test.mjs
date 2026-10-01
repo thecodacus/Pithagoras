@@ -43,6 +43,8 @@ test("an agent has a home, files and chats of its own", async () => {
 
   const named = await call("POST", "/api/agent/sessions", { agent: "research-bot", title: "hi" });
   assert.equal(named.body.workspace, made.body.home);
+  const chats = (await call("GET", "/api/sessions")).body.sessions;
+  assert.ok(chats.some((s) => s.id === named.body.id), "a conversation started on the Agent page is listed with the chats");
   const listed = await call("GET", "/api/agent/sessions?agent=research-bot");
   assert.deepEqual(listed.body.sessions.map((s) => s.id), [named.body.id]);
   assert.equal((await call("GET", "/api/agent/sessions")).body.sessions.length, 0, "the first agent's list has none of its chats");

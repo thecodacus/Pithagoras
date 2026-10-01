@@ -29,7 +29,9 @@ name, with the pencil beside it, renames it; the folder keeps its name.
 
 Each agent's home is a folder in the sidebar and on the Sessions page, named
 after the agent. The first agent's has the house icon, the others a robot. The
-**+** on a folder's line starts a chat with that agent.
+**+** on a folder's line starts a chat with that agent. A conversation started on the Agent page
+is listed there too; conversations that came through a channel are on the Agent
+page only.
 
 ## Channels and routines
 

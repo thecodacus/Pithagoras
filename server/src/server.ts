@@ -18,6 +18,7 @@ import {
   replayStart,
   getSession,
   listAgentSessions,
+  listChatSessions,
   listRoutineSessions,
   listSessions,
   updateSession,
@@ -641,7 +642,7 @@ const toApi = (s: ReturnType<typeof getSession> & {}) => ({
 });
 
 app.get("/api/sessions", (_req, res) => {
-  res.json({ sessions: listSessions().map(toApi), executor: EXECUTOR_KIND });
+  res.json({ sessions: listChatSessions().map(toApi), executor: EXECUTOR_KIND });
 });
 
 /**

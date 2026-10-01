@@ -598,6 +598,17 @@ export function listSessions(): SessionRow[] {
     .all() as SessionRow[];
 }
 
+/**
+ * The chats the sidebar lists: the tasks, and the conversations started on the
+ * Agent page, which are chats with that agent like any other. Those that came
+ * through a channel stay on the Agent page.
+ */
+export function listChatSessions(): SessionRow[] {
+  return getDb()
+    .prepare("SELECT * FROM sessions WHERE kind = 'task' OR (kind = 'agent' AND channel_slug = 'browser') ORDER BY pinned DESC, updated_at DESC")
+    .all() as SessionRow[];
+}
+
 /** Conversations reached through a channel, newest first. */
 export function listAgentSessions(): SessionRow[] {
   return getDb()
