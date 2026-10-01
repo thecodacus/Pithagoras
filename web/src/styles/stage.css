@@ -1,9 +1,15 @@
 /* Voice mode's stage, the canvases beside a chat, and the windows (browser, terminal, files, pictures) that open on it. Tokens and base rules are in index.css. */
 
-.voice-stage { --voice-hue: 111 158 238; position: relative; flex: 1; min-height: 360px; overflow: hidden; isolation: isolate; background: radial-gradient(ellipse at 50% 45%, rgb(var(--voice-hue) / .055), transparent 62%), rgb(var(--canvas)); }
-.voice-stage[data-mode="input"] { --voice-hue: 63 225 198; }
-.voice-stage[data-mode="output"] { --voice-hue: 164 139 255; }
-.voice-stage[data-mode="muted"] { --voice-hue: 115 130 151; }
+/* The stage's colour fades from one state to the next rather than jumping: its
+   channels are registered so they can be transitioned, and --voice-hue, which
+   everything else reads, is built from them. */
+@property --voice-r { syntax: "<number>"; inherits: true; initial-value: 111; }
+@property --voice-g { syntax: "<number>"; inherits: true; initial-value: 158; }
+@property --voice-b { syntax: "<number>"; inherits: true; initial-value: 238; }
+.voice-stage { --voice-r: 111; --voice-g: 158; --voice-b: 238; --voice-hue: var(--voice-r) var(--voice-g) var(--voice-b); transition: --voice-r .8s ease, --voice-g .8s ease, --voice-b .8s ease; position: relative; flex: 1; min-height: 360px; overflow: hidden; isolation: isolate; background: radial-gradient(ellipse at 50% 45%, rgb(var(--voice-hue) / .055), transparent 62%), rgb(var(--canvas)); }
+.voice-stage[data-mode="input"] { --voice-r: 63; --voice-g: 225; --voice-b: 198; }
+.voice-stage[data-mode="output"] { --voice-r: 164; --voice-g: 139; --voice-b: 255; }
+.voice-stage[data-mode="muted"] { --voice-r: 115; --voice-g: 130; --voice-b: 151; }
 .voice-stage-header { position: absolute; inset: 0 0 auto; display: flex; align-items: center; justify-content: space-between; padding: 20px 26px; z-index: 5; }
 .voice-stage-session { color: rgb(var(--fg-faint)); font-size: 11px; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .voice-utilities { display: flex; gap: 6px; }

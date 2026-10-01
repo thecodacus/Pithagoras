@@ -273,12 +273,15 @@ function lift(ctx: Ctx, r: number) { ctx.shadowColor = "rgba(0,0,0,0.45)"; ctx.s
 function unlift(ctx: Ctx) { ctx.shadowColor = "transparent"; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0; }
 
 /** Where the eyes sit and how big they are: widened and raised when listening, stretched by the voice when speaking. */
-function faceOf(r: number, mode: OrbState, level: number) {
+/** How far the face is into listening (`wide`) and into speaking (`talk`), each 0 to 1, eased from one state to the next. */
+interface Mood { wide: number; talk: number }
+
+function faceOf(r: number, mood: Mood, level: number) {
   return {
     ex: r * 0.36,
-    ey: -r * 0.06 - (mode === "input" ? r * 0.04 : 0) - (mode === "output" ? level * r * 0.06 : 0),
-    es: r * 0.22 * (mode === "input" ? 1.18 : 1),
-    stretch: mode === "output" ? 1 + level * 0.32 : mode === "input" ? 1.08 : 1,
+    ey: -r * 0.06 - mood.wide * r * 0.04 - mood.talk * level * r * 0.06,
+    es: r * 0.22 * (1 + 0.18 * mood.wide),
+    stretch: 1 + mood.talk * level * 0.32 + mood.wide * 0.08,
   };
 }
 
@@ -319,8 +322,8 @@ function dome(ctx: Ctx, path: () => void, size: number) {
  * look, -1 to 1, and `turn` is how far the face has turned to look there.
  * Cartoon proportions on purpose: big, and moving with the voice.
  */
-function drawEyes(ctx: Ctx, look: OrbStyle, r: number, mode: OrbState, level: number, open: number, gx: number, gy: number, turn: Turn) {
-  const { ex, ey, es, stretch } = faceOf(r, mode, level);
+function drawEyes(ctx: Ctx, look: OrbStyle, r: number, mood: Mood, level: number, open: number, gx: number, gy: number, turn: Turn) {
+  const { ex, ey, es, stretch } = faceOf(r, mood, level);
   const color = look.eyeColor;
   // The pupils and glints are white; dark eyes get a faint light rim to stand
   // off the orb instead of a glow of their own colour.
@@ -403,7 +406,7 @@ function drawEyes(ctx: Ctx, look: OrbStyle, r: number, mode: OrbState, level: nu
  * object in the UI's own colours: neutral surfaces, with the accent only in
  * small lights.
  */
-function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t: number, level: number, mode: OrbState, turn: Turn, texture: Grain) {
+function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t: number, level: number, mood: Mood, turn: Turn, texture: Grain) {
   const base = tame(hexToRgb(color));
   ctx.save();
   ctx.lineCap = "round"; ctx.lineJoin = "round";
@@ -490,7 +493,7 @@ function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t:
       break;
     }
     case "glasses": {
-      const { ex, ey, es } = faceOf(r, mode, level);
+      const { ex, ey, es } = faceOf(r, mood, level);
       const h = es * 2;
       const lenses = [-1, 1].map((side) => { const p = eyePlace(r, ex, ey, side, turn); return { ...p, w: es * 2.4 * p.fx }; });
       const [left, right] = lenses;
@@ -647,10 +650,10 @@ function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t:
       break;
     }
     case "mustache": {
-      const { ey, es } = faceOf(r, mode, level);
+      const { ey, es } = faceOf(r, mood, level);
       ctx.translate(Math.sin(turn.yaw) * r, ey + es * 1.55 + Math.sin(turn.pitch) * r * 0.6);
       ctx.scale(Math.cos(turn.yaw), 1);
-      const wiggle = mode === "output" ? level * 0.15 : 0;
+      const wiggle = mood.talk * level * 0.15;
       lift(ctx, r);
       ctx.fillStyle = material(ctx, color, -r * 0.08, r * 0.1);
       for (const s of [-1, 1]) {
@@ -667,7 +670,7 @@ function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t:
       break;
     }
     case "monocle": {
-      const { ex, ey, es } = faceOf(r, mode, level);
+      const { ex, ey, es } = faceOf(r, mood, level);
       const p = eyePlace(r, ex, ey, 1, turn);
       const radius = es * 1.15;
       lift(ctx, r);
@@ -738,6 +741,8 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
     let color: number[] = hexToRgb(style.current.colors[current.current]);
     // Blinks come at uneven intervals, as they do; the personality sets how often.
     let nextBlink = performance.now() + 2500, blinkAt = -1e9;
+    // Each state is eased into rather than switched to: eyes close slowly on mute and open again, the face widens into listening.
+    let lid = 1, wide = 0, talk = 0, roam = 0.9, up = 0;
     const render = (timestamp: number) => {
       const mode = current.current;
       const look = style.current;
@@ -751,8 +756,15 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
       const swell = 1 + motion.bounce * Math.sin(t * 3);
       const r = (132 + level * (reduced ? 5 : 28)) * swell;
       // Where the face looks: about while idle, up toward you while listening.
-      const gx = reduced ? 0 : Math.sin(t * 0.9) * (mode === "idle" ? 0.9 : 0.35);
-      const gy = reduced ? 0 : mode === "input" ? -0.45 : Math.cos(t * 0.6) * 0.4;
+      const ease = reduced ? 1 : 0.1;
+      lid += ((mode === "muted" ? 0 : 1) - lid) * ease;
+      wide += ((mode === "input" ? 1 : 0) - wide) * ease;
+      talk += ((mode === "output" ? 1 : 0) - talk) * ease;
+      roam += ((mode === "idle" ? 0.9 : 0.35) - roam) * ease * 0.5;
+      up += ((mode === "input" ? 1 : 0) - up) * ease;
+      const mood: Mood = { wide, talk };
+      const gx = reduced ? 0 : Math.sin(t * 0.9) * roam;
+      const gy = reduced ? 0 : Math.cos(t * 0.6) * 0.4 * (1 - up) - 0.45 * up;
       const turn = { yaw: gx * 0.32, pitch: gy * 0.18 };
       ctx.clearRect(0, 0, size, size);
       ctx.save(); ctx.translate(size / 2, size / 2);
@@ -836,13 +848,13 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
       if (look.eyes !== "none") {
         if (!reduced && timestamp > nextBlink) { blinkAt = timestamp; nextBlink = timestamp + (2200 + Math.random() * 3200) / motion.blink; }
         const blinking = timestamp - blinkAt < 160;
-        const open = mode === "muted" ? 0 : blinking ? Math.abs(Math.cos((timestamp - blinkAt) / 160 * Math.PI)) : 1;
-        drawEyes(ctx, look, r, mode, level, open, gx, gy, turn);
+        const open = lid * (blinking ? Math.abs(Math.cos((timestamp - blinkAt) / 160 * Math.PI)) : 1);
+        drawEyes(ctx, look, r, mood, level, open, gx, gy, turn);
       }
       const wear = (kind: OrbHat | OrbProp, tint: string) => {
         worn.setTransform(1, 0, 0, 1, 0, 0); worn.clearRect(0, 0, layer.width, layer.height);
         worn.setTransform(ratio, 0, 0, ratio, 0, 0); worn.translate(size / 2, size / 2);
-        drawWorn(worn, kind, tint, r, t, level, mode, turn, texture);
+        drawWorn(worn, kind, tint, r, t, level, mood, turn, texture);
         ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(layer, 0, 0); ctx.restore();
       };
       if (look.prop !== "none") wear(look.prop, itemColor(look.prop, look.propColor));
