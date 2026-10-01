@@ -589,11 +589,21 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
       const t = reduced ? 0 : timestamp * 0.00055 * look.speed * motion.drift;
       const swell = 1 + motion.bounce * Math.sin(t * 3);
       const r = (132 + level * (reduced ? 5 : 28)) * swell;
+      // Where the face looks: about while idle, up toward you while listening.
+      const gx = reduced ? 0 : Math.sin(t * 0.9) * (mode === "idle" ? 0.9 : 0.35);
+      const gy = reduced ? 0 : mode === "input" ? -0.45 : Math.cos(t * 0.6) * 0.4;
+      const turn = { yaw: gx * 0.32, pitch: gy * 0.18 };
       ctx.clearRect(0, 0, size, size);
       ctx.save(); ctx.translate(size / 2, size / 2);
       const halo = ctx.createRadialGradient(0, 0, r * 0.65, 0, 0, r * 1.7);
       halo.addColorStop(0, `rgba(${rgb},${Math.min(1, (0.3 + level * 0.18) * look.glow)})`); halo.addColorStop(1, `rgba(${rgb},0)`);
       ctx.fillStyle = halo; ctx.fillRect(-size / 2, -size / 2, size, size);
+      // A soft shadow below, so the orb floats above its stage rather than being painted on it.
+      ctx.save(); ctx.translate(0, r * 1.3); ctx.scale(1, 0.16);
+      const floor = ctx.createRadialGradient(0, 0, 0, 0, 0, r * 0.8);
+      floor.addColorStop(0, "rgba(0,0,0,0.5)"); floor.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = floor; ctx.beginPath(); ctx.arc(0, 0, r * 0.8, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
       for (let ring = 0; ring < motion.rings; ring++) {
         ctx.beginPath();
         ctx.ellipse(0, 0, r + 20 + ring * 16 + level * 7, r + 18 + ring * 16, Math.sin(t) * motion.wobble, 0, Math.PI * 2);
@@ -613,28 +623,50 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
       sphere.addColorStop(0.7, `rgb(${color.map(v => Math.round(v * 0.62)).join(",")})`); sphere.addColorStop(1, `rgb(${color.map(v => Math.round(v * 0.34)).join(",")})`);
       ctx.shadowColor = `rgba(${rgb},0.65)`; ctx.shadowBlur = 22 * look.glow;
       ctx.fillStyle = sphere; ctx.fill(); ctx.shadowBlur = 0;
-      ctx.strokeStyle = `rgba(${rgb},0.8)`; ctx.lineWidth = 1.8; ctx.stroke(); ctx.save(); ctx.clip();
-      // Translucent ribbons bend across the sphere rather than flat sine bars.
-      if (look.ribbons) for (let band = 0; band < 15; band++) {
-        const y = -r + band * r * 0.15;
-        const bend = Math.sin(t + band * 0.27) * 35 + level * 22;
-        ctx.beginPath(); ctx.moveTo(-r * 1.3, y);
-        ctx.bezierCurveTo(-r * 0.45, y - 60 + bend, r * 0.35, y + 65 + bend, r * 1.3, y - 20);
-        ctx.bezierCurveTo(r * 0.3, y + 85 + bend, -r * 0.4, y - 40 + bend, -r * 1.3, y + 9);
-        const ribbon = ctx.createLinearGradient(-r, -r, r, r);
-        ribbon.addColorStop(0, `rgba(231,255,255,${0.04 + band * 0.003})`);
-        ribbon.addColorStop(0.45, `rgba(${rgb},${0.24 + level * 0.12})`);
-        ribbon.addColorStop(1, "rgba(192,190,255,0.03)");
-        ctx.fillStyle = ribbon; ctx.fill();
-      }
+      // Lit from the upper left, as the gradient is: brightest where the light meets the edge.
+      const rim = ctx.createLinearGradient(-r, -r, r, r);
+      rim.addColorStop(0, "rgba(255,255,255,0.7)"); rim.addColorStop(0.45, `rgba(${rgb},0.75)`); rim.addColorStop(1, `rgba(${rgb},0.3)`);
+      ctx.strokeStyle = rim; ctx.lineWidth = 1.8; ctx.stroke(); ctx.save(); ctx.clip();
+      // Translucent ribbons bend across the sphere rather than flat sine bars, in
+      // two layers: the back ones dimmer and moving less as the face turns, the
+      // front ones more, so the inside reads as a volume rather than a surface.
+      const ribbons = (back: boolean) => {
+        if (!look.ribbons) return;
+        ctx.save();
+        ctx.translate(Math.sin(turn.yaw) * r * (back ? 0.06 : 0.28), Math.sin(turn.pitch) * r * (back ? 0.04 : 0.18));
+        for (let band = back ? 0 : 1; band < 15; band += 2) {
+          const y = -r + band * r * 0.15;
+          const bend = Math.sin(t + band * 0.27) * 35 + level * 22;
+          ctx.beginPath(); ctx.moveTo(-r * 1.3, y);
+          ctx.bezierCurveTo(-r * 0.45, y - 60 + bend, r * 0.35, y + 65 + bend, r * 1.3, y - 20);
+          ctx.bezierCurveTo(r * 0.3, y + 85 + bend, -r * 0.4, y - 40 + bend, -r * 1.3, y + 9);
+          const ribbon = ctx.createLinearGradient(-r, -r, r, r);
+          const depth = back ? 0.55 : 1;
+          ribbon.addColorStop(0, `rgba(231,255,255,${(0.04 + band * 0.003) * depth})`);
+          ribbon.addColorStop(0.45, `rgba(${rgb},${(0.24 + level * 0.12) * depth})`);
+          ribbon.addColorStop(1, "rgba(192,190,255,0.03)");
+          ctx.fillStyle = ribbon; ctx.fill();
+        }
+        ctx.restore();
+      };
+      ribbons(true);
+      // A glowing core between the layers, drifting against the turn, as something deep inside would.
+      const cx = -r * 0.08 - Math.sin(turn.yaw) * r * 0.18, cy = -r * 0.1 - Math.sin(turn.pitch) * r * 0.18;
+      const core = ctx.createRadialGradient(cx, cy, 0, cx, cy, r * 0.62);
+      core.addColorStop(0, `rgba(${color.map((v) => Math.round(v + (255 - v) * 0.55)).join(",")},${0.3 + level * 0.25})`); core.addColorStop(1, `rgba(${rgb},0)`);
+      ctx.fillStyle = core; ctx.fillRect(-r, -r, 2 * r, 2 * r);
+      ribbons(false);
+      // The side away from the light falls into shadow, and the underside darkens most.
+      const turned = ctx.createRadialGradient(-r * 0.35, -r * 0.45, r * 0.4, -r * 0.35, -r * 0.45, r * 1.9);
+      turned.addColorStop(0, "rgba(4,6,14,0)"); turned.addColorStop(0.55, "rgba(4,6,14,0.08)"); turned.addColorStop(1, "rgba(4,6,14,0.55)");
+      ctx.fillStyle = turned; ctx.fillRect(-r * 1.2, -r * 1.2, r * 2.4, r * 2.4);
+      const under = ctx.createLinearGradient(0, r * 0.25, 0, r);
+      under.addColorStop(0, "rgba(0,0,0,0)"); under.addColorStop(1, "rgba(0,0,0,0.22)");
+      ctx.fillStyle = under; ctx.fillRect(-r * 1.2, r * 0.25, r * 2.4, r);
       const shine = ctx.createRadialGradient(-r * 0.33, -r * 0.55, 0, -r * 0.33, -r * 0.55, r * 0.85);
       shine.addColorStop(0, "rgba(238,255,255,0.45)"); shine.addColorStop(0.35, "rgba(233,253,255,0.08)"); shine.addColorStop(1, "rgba(255,255,255,0)");
       ctx.fillStyle = shine; ctx.fillRect(-r, -r, 2 * r, 2 * r);
       ctx.restore();
-      // Where the face looks: about while idle, up toward you while listening.
-      const gx = reduced ? 0 : Math.sin(t * 0.9) * (mode === "idle" ? 0.9 : 0.35);
-      const gy = reduced ? 0 : mode === "input" ? -0.45 : Math.cos(t * 0.6) * 0.4;
-      const turn = { yaw: gx * 0.32, pitch: gy * 0.18 };
       if (look.eyes !== "none") {
         if (!reduced && timestamp > nextBlink) { blinkAt = timestamp; nextBlink = timestamp + (2200 + Math.random() * 3200) / motion.blink; }
         const blinking = timestamp - blinkAt < 160;
