@@ -63,3 +63,10 @@ test('hats and props wear their own colour until one is picked',()=>{
   assert.equal(itemColor(kind,'#123456'),'#123456');
  }
 });
+
+test('names an object inherits are not personalities or palettes',()=>{
+ for(const name of ['toString','constructor','__proto__','hasOwnProperty']){
+  assert.equal(normalizeOrb({personality:name}).personality,'balanced');
+  assert.equal(normalizeOrb({palette:name}).palette,'aurora');
+ }
+});

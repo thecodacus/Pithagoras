@@ -132,10 +132,10 @@ function between(value: unknown, min: number, max: number, fallback: number): nu
  */
 export function normalizeOrb(value: unknown): OrbStyle {
   const v = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
-  const personality = typeof v.personality === "string" && v.personality in ORB_PERSONALITIES ? (v.personality as OrbPersonality) : DEFAULT_ORB.personality;
+  const personality = typeof v.personality === "string" && Object.hasOwn(ORB_PERSONALITIES, v.personality) ? (v.personality as OrbPersonality) : DEFAULT_ORB.personality;
   const given = (v.colors && typeof v.colors === "object" ? v.colors : {}) as Record<string, unknown>;
   const colors = Object.fromEntries(STATES.map((s) => [s, hex(given[s], DEFAULT_ORB.colors[s])])) as OrbColors;
-  const palette = typeof v.palette === "string" && (v.palette in ORB_PALETTES || v.palette === "custom") ? v.palette : DEFAULT_ORB.palette;
+  const palette = typeof v.palette === "string" && (Object.hasOwn(ORB_PALETTES, v.palette) || v.palette === "custom") ? v.palette : DEFAULT_ORB.palette;
   return {
     personality,
     palette,
