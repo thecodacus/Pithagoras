@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { OrbStudio } from "./OrbStudio";
-import { AgentHeartbeat } from "./AgentHeartbeat";
+import { ActivityFeed, HeartbeatSettings } from "./AgentHeartbeat";
 import { VoiceOrb, type VoiceLevels } from "./VoiceOrb";
 import {
   LuBot,
@@ -26,7 +26,7 @@ import { Modal } from "./Modal";
 import { StatusDot } from "./StatusDot";
 import { TitleInput } from "./TitleInput";
 import { pollWhileVisible } from "../poll";
-import { t, tp } from "../i18n";
+import { msg, t, tp } from "../i18n";
 import { when } from "../time";
 
 /**
@@ -197,6 +197,18 @@ function AgentView({
   // The conversation whose name is open for editing, if any; the agent's own as "agent".
   const [renaming, setRenaming] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  // The tab shown, kept in the link beside the agent: Conversations without one.
+  const [params, setParams] = useSearchParams();
+  const tab: AgentTab = AGENT_TABS.find(([id]) => id === params.get("tab"))?.[0] ?? "conversations";
+  const setTab = (id: AgentTab) =>
+    setParams((p) => {
+      const next = new URLSearchParams(p);
+      if (id === "conversations") next.delete("tab");
+      else next.set("tab", id);
+      return next;
+    });
+  // What the agent's heartbeat is doing, and how many notes are unread, change on their own.
+  useEffect(() => pollWhileVisible(() => void onChanged(), 15_000), [onChanged]);
 
   const load = () =>
     api
@@ -381,19 +393,23 @@ function AgentView({
             </div>
           </PageHeader>
 
-          {setup?.initialised && <AgentFiles agent={agent.id} setup={setup} onSaved={setSetup} />}
-          {setup?.initialised && <AgentHeartbeat agent={agent} onChanged={onChanged} />}
+          <AgentTabs tab={tab} onTab={setTab} unread={agent.unread} />
 
+          {error && (
+            <div className="mt-4 rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>
+          )}
 
+          {tab === "activity" && <ActivityFeed agent={agent} onChanged={onChanged} />}
+          {tab === "heartbeat" && <HeartbeatSettings agent={agent} onChanged={onChanged} />}
+          {tab === "files" && setup?.initialised && <AgentFiles agent={agent.id} setup={setup} onSaved={setSetup} />}
+
+          {tab === "conversations" && (
+          <>
           {loadError && (
             <div className="mt-4 rounded-lg bg-warn/10 px-3 py-2 text-sm text-warn">
               {t("Could not refresh the conversations — what is shown may be out of date.")} {loadError}
             </div>
           )}
-          {error && (
-            <div className="mt-4 rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>
-          )}
-
           {loading ? (
             <RowsSkeleton />
           ) : sessions.length === 0 ? (
@@ -490,9 +506,42 @@ function AgentView({
               ))}
             </div>
           )}
+          </>
+          )}
         </div>
       </div>
       {deleting && <DeleteAgent agent={agent} onClose={() => setDeleting(false)} onDeleted={onDeleted} />}
+    </div>
+  );
+}
+
+const AGENT_TABS = [
+  ["conversations", msg("Conversations")],
+  ["activity", msg("Activity")],
+  ["heartbeat", msg("Heartbeat")],
+  ["files", msg("Files")],
+] as const;
+type AgentTab = (typeof AGENT_TABS)[number][0];
+
+/** The tabs under an agent's header; Activity counts what is unread. */
+function AgentTabs({ tab, onTab, unread }: { tab: AgentTab; onTab: (id: AgentTab) => void; unread: number }) {
+  return (
+    <div role="tablist" aria-label={t("Agent sections")} className="mt-5 flex gap-1 overflow-x-auto border-b border-line">
+      {AGENT_TABS.map(([id, label]) => (
+        <button
+          key={id}
+          role="tab"
+          type="button"
+          aria-selected={tab === id}
+          onClick={() => onTab(id)}
+          className={`-mb-px inline-flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition ${
+            tab === id ? "border-accent text-fg" : "border-transparent text-fg-muted hover:text-fg"
+          }`}
+        >
+          {t(label)}
+          {id === "activity" && unread > 0 && <span className="rounded-full bg-accent/15 px-1.5 text-[11px] text-accent">{unread}</span>}
+        </button>
+      ))}
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { LuActivity, LuCheckCheck, LuEye, LuPlus, LuRefreshCw, LuTrash2 } from "react-icons/lu";
+import { LuCheckCheck, LuPlus, LuRefreshCw, LuTrash2 } from "react-icons/lu";
 import { api, type ActivityNote, type Agent, type ToolRule } from "../api";
 import { Select } from "./Select";
 import { inputCls } from "./SettingsUi";
@@ -22,32 +22,27 @@ const INTERVALS: [number, string][] = [
 ];
 
 /**
- * The agent looking around on its own: how often, when it keeps quiet, how the
- * last look went, and what it noticed. It reads what WATCH.md asks it to keep
- * an eye on and can only read; what it found lands below as notes.
+ * The agent looking around on its own: how often, when it keeps quiet, what it
+ * may run besides reading, and how the last look went. Off until an interval is
+ * chosen. It reads what WATCH.md asks it to keep an eye on; what it found is in
+ * its Activity.
  */
-export function AgentHeartbeat({ agent, onChanged }: { agent: Agent; onChanged: () => Promise<void> }) {
+export function HeartbeatSettings({ agent, onChanged }: { agent: Agent; onChanged: () => Promise<void> }) {
   const hb = agent.heartbeat;
   const [quietStart, setQuietStart] = useState(hb.quietStart);
   const [quietEnd, setQuietEnd] = useState(hb.quietEnd);
-  const [notes, setNotes] = useState<ActivityNote[] | null>(null);
   const [rules, setRules] = useState<ToolRule[]>([]);
   const [command, setCommand] = useState("");
   const [error, setError] = useState("");
 
-  const loadNotes = () => api.activity(agent.id).then((r) => setNotes(r.notes), () => {});
   const showRules = (all: ToolRule[]) => setRules(all.filter((r) => r.role === HEARTBEAT_ROLE && !r.person_key));
   useEffect(() => {
-    void loadNotes();
     api.toolRules().then((r) => showRules(r.rules), () => {});
-    // The status of a look under way, and the notes it leaves, come in on their own.
-    return pollWhileVisible(() => {
-      void loadNotes();
-      void onChanged();
-    }, 10_000);
     // One agent per mount: see AgentView's key.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  // A look under way is followed until it is done.
+  useEffect(() => (hb.running ? pollWhileVisible(() => void onChanged(), 3000) : undefined), [hb.running, onChanged]);
 
   const act = async (fn: () => Promise<unknown>) => {
     setError("");
@@ -65,16 +60,11 @@ export function AgentHeartbeat({ agent, onChanged }: { agent: Agent; onChanged: 
     if (Boolean(start) === Boolean(end) && (start !== hb.quietStart || end !== hb.quietEnd)) void save({ quietStart: start, quietEnd: end });
   };
 
-  const unread = notes?.filter((n) => !n.read_at).length ?? 0;
   const status = hb.running ? t("Looking…") : hb.status;
 
   return (
-    <section className="mt-6 rounded-xl border border-line bg-surface/50 p-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <LuEye className="h-4 w-4 text-fg-subtle" />
-        <h3 className="text-sm font-medium">{t("Heartbeat")}</h3>
-        <span className="text-xs text-fg-muted">{t("Looks around on its own at what WATCH.md lists, and notes what deserves your attention. It can only read.")}</span>
-      </div>
+    <section className="mt-5">
+      <p className="text-xs text-fg-muted">{t("Looks around on its own at what WATCH.md lists, and notes what deserves your attention. It can only read. Off until you choose how often.")}</p>
 
       {!hb.available ? (
         <p className="mt-3 text-xs text-warn">{t("Needs the host executor: in a container nothing would hold a look to reading.")}</p>
@@ -91,14 +81,14 @@ export function AgentHeartbeat({ agent, onChanged }: { agent: Agent; onChanged: 
                 options={INTERVALS.map(([m, label]) => ({ value: String(m), label: t(label) }))}
               />
             </div>
-            <label className="text-xs text-fg-muted">
-              {t("Quiet from")}
-              <input type="time" value={quietStart} onChange={(e) => setQuietStart(e.target.value)} onBlur={() => saveQuiet(quietStart, quietEnd)} className={`${inputCls} mt-1 w-32 py-1.5`} />
-            </label>
-            <label className="text-xs text-fg-muted">
-              {t("until")}
-              <input type="time" value={quietEnd} onChange={(e) => setQuietEnd(e.target.value)} onBlur={() => saveQuiet(quietStart, quietEnd)} className={`${inputCls} mt-1 w-32 py-1.5`} />
-            </label>
+            <div className="text-xs text-fg-muted">
+              {t("Quiet hours")}
+              <div className="mt-1 flex items-center gap-1.5">
+                <input type="time" aria-label={t("Quiet from")} value={quietStart} onChange={(e) => setQuietStart(e.target.value)} onBlur={() => saveQuiet(quietStart, quietEnd)} className={`${inputCls} w-32 py-1.5`} />
+                <span>{t("to")}</span>
+                <input type="time" aria-label={t("Quiet until")} value={quietEnd} onChange={(e) => setQuietEnd(e.target.value)} onBlur={() => saveQuiet(quietStart, quietEnd)} className={`${inputCls} w-32 py-1.5`} />
+              </div>
+            </div>
             <button
               type="button"
               disabled={hb.running || !hb.watching}
@@ -152,22 +142,54 @@ export function AgentHeartbeat({ agent, onChanged }: { agent: Agent; onChanged: 
         </>
       )}
       {error && <p role="alert" className="mt-2 text-xs text-danger">{error}</p>}
+    </section>
+  );
+}
 
-      <div className="mt-5 flex items-center gap-2">
-        <LuActivity className="h-4 w-4 text-fg-subtle" />
-        <h3 className="text-sm font-medium">{t("Activity")}</h3>
-        {unread > 0 && <span className="rounded-full bg-accent/15 px-1.5 text-[11px] text-accent">{unread}</span>}
-        {unread > 0 && (
-          <button type="button" onClick={() => void act(async () => { await api.markActivityRead(agent.id); await loadNotes(); })} className="ml-auto inline-flex items-center gap-1 text-xs text-fg-muted hover:text-fg">
-            <LuCheckCheck className="h-3.5 w-3.5" />
-            {t("Mark all read")}
-          </button>
-        )}
-      </div>
+/** What the agent noticed on its own, newest first. */
+export function ActivityFeed({ agent, onChanged }: { agent: Agent; onChanged: () => Promise<void> }) {
+  const [notes, setNotes] = useState<ActivityNote[] | null>(null);
+  const [error, setError] = useState("");
+  const loadNotes = () => api.activity(agent.id).then((r) => setNotes(r.notes), () => {});
+  useEffect(() => {
+    void loadNotes();
+    // A look can leave a note while this is open.
+    return pollWhileVisible(() => void loadNotes(), 10_000);
+    // One agent per mount: see AgentView's key.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const act = async (fn: () => Promise<unknown>) => {
+    setError("");
+    try {
+      await fn();
+      await loadNotes();
+      await onChanged();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+  const unread = notes?.filter((n) => !n.read_at).length ?? 0;
+
+  return (
+    <section className="mt-5">
+      {(unread > 0 || error) && (
+        <div className="mb-2 flex items-center gap-2">
+          {error && <p role="alert" className="text-xs text-danger">{error}</p>}
+          {unread > 0 && (
+            <button type="button" onClick={() => void act(() => api.markActivityRead(agent.id))} className="ml-auto inline-flex items-center gap-1 text-xs text-fg-muted hover:text-fg">
+              <LuCheckCheck className="h-3.5 w-3.5" />
+              {t("Mark all read")}
+            </button>
+          )}
+        </div>
+      )}
       {notes && notes.length === 0 ? (
-        <p className="mt-2 text-xs text-fg-faint">{t("Nothing noticed yet.")}</p>
+        <div className="rounded-xl border border-dashed border-line px-4 py-10 text-center">
+          <p className="text-sm text-fg-muted">{t("Nothing noticed yet.")}</p>
+          <p className="mx-auto mt-2 max-w-md text-xs text-fg-faint">{t("What its heartbeat notices on its own lands here. Set it up under Heartbeat.")}</p>
+        </div>
       ) : (
-        <ul className="mt-2 space-y-1.5">
+        <ul className="space-y-1.5">
           {(notes ?? []).map((n) => (
             <li key={n.id} className="group flex gap-2 rounded-lg border border-line bg-raised/40 px-3 py-2">
               <span aria-hidden className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${n.read_at ? "bg-transparent" : "bg-accent"}`} />
@@ -178,7 +200,7 @@ export function AgentHeartbeat({ agent, onChanged }: { agent: Agent; onChanged: 
               </div>
               <button
                 type="button"
-                onClick={() => void act(async () => { await api.deleteNote(agent.id, n.id); await loadNotes(); })}
+                onClick={() => void act(() => api.deleteNote(agent.id, n.id))}
                 title={t("Delete note")}
                 aria-label={t("Delete note")}
                 className="self-start rounded p-1 text-fg-subtle opacity-0 transition hover:text-danger focus:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100"
