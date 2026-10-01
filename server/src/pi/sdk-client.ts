@@ -13,6 +13,7 @@ import type { ImageContent } from "../prompt-images.js";
 import { routineTools } from "./routine-tools.js";
 import { reportTool, reportToFor } from "./report-tool.js";
 import { guardExtension } from "./guard.js";
+import { heartbeatTool } from "./heartbeat-tool.js";
 import { askPrimaryTool } from "./ask-primary.js";
 import { proxyBaseUrl } from "../llama-progress.js";
 import { bridgeSubagents, SUBAGENT_INPUT, SUBAGENT_STOP, type Bridge } from "../subagent-protocol.js";
@@ -376,6 +377,8 @@ export class SdkPiClient extends EventEmitter implements PiClient {
     browserNow?: () => { allowed: boolean; allowlist: string[] };
     /** What this chat's subagents run on, asked when one starts: see subagent-protocol.ts. */
     subagentModel?: () => string | undefined;
+    /** The agent whose heartbeat this is: gives it the note tool. See heartbeat.ts. */
+    heartbeatAgent?: string;
   }): Promise<SdkPiClient> {
     // Imported lazily so the server still boots (and the container executor
     // still works) if the SDK cannot initialise in this environment.
@@ -424,6 +427,10 @@ export class SdkPiClient extends EventEmitter implements PiClient {
       // worse than no tool, and the model will keep trying it.
       if (opts.routineSlug !== undefined && reportToFor(opts.routineSlug)) {
         factories.push({ name: "report", factory: reportTool(opts.routineSlug ?? null) });
+      }
+      // A heartbeat's way of saying what it found: it can do nothing else.
+      if (opts.heartbeatAgent && opts.sessionId) {
+        factories.push({ name: "heartbeat", factory: heartbeatTool(opts.heartbeatAgent, opts.sessionId) });
       }
       resourceLoader = new (portalLoader(pi))({
         cwd: opts.cwd,

@@ -37,6 +37,35 @@ the agent. A chat in a project shows the first agent's avatar and speaks with it
 A library voice that is deleted is no longer any agent's, and those
 that had it speak as the voice settings say again.
 
+## Its heartbeat
+
+An agent can look around on its own. Its page has a **Heartbeat** section:
+how often it looks (every 30 minutes up to once a day, or never), the hours it
+keeps quiet, and **Look now**.
+
+What it looks at is its `WATCH.md`, the fourth file on its page: what to keep
+an eye on, and what counts as worth telling you. It is not context for its
+chats; only a look reads it. An agent with an empty one has nothing to watch.
+
+A look is held to reading. It runs as the role `heartbeat`, which may read
+files and leave notes, and nothing else: no commands, no edits, no messages,
+and no browser. To let it run a command, add it under **Commands it may run**,
+for example `gh pr list*`. A command runs only as written there, with `*` where
+it varies, and a pipe, a redirect or a second command makes it something else.
+Those commands are for every agent's heartbeat, and show in **People** as
+rules for every agent's heartbeat. A rule for all roles applies to it too.
+
+What it notices lands in **Activity**, under the heartbeat, as notes; the
+agent's card shows how many are unread. A note marked urgent also goes to the
+channel routines report to, when there is one. Most looks find nothing, and say
+nothing.
+
+A look never gets in the way: it waits while any chat or routine is working,
+since a home lab has one model to share, and one agent looks at a time. Each
+agent looks in one conversation of its own, so it remembers what it already
+told you. Looks need the host executor; under the container executor nothing
+would hold them to reading, so they do not run.
+
 ## In the sidebar
 
 Each agent's home is a folder in the sidebar and on the Sessions page, named

@@ -19,7 +19,7 @@ export interface Session {
   model: string | null;
   thinking_level: string | null;
   /** How the session came to exist. */
-  kind?: "task" | "agent" | "routine";
+  kind?: "task" | "agent" | "routine" | "heartbeat";
 }
 
 /** A set of instructions the agent pulls in when the description matches. */
@@ -125,6 +125,32 @@ export interface Agent {
   orb: OrbStyle;
   /** The voice it speaks with: "design", a voice library id, or "" for the one in the voice settings. */
   voice: string;
+  /** How it looks around on its own. */
+  heartbeat: {
+    /** 0 is never. */
+    minutes: number;
+    /** "HH:MM", both or neither. */
+    quietStart: string;
+    quietEnd: string;
+    last: string | null;
+    status: string | null;
+    running: boolean;
+    /** Whether its WATCH.md says anything. */
+    watching: boolean;
+    /** False under the container executor, where nothing would hold a look to reading. */
+    available: boolean;
+  };
+  /** Its notes nobody has read yet. */
+  unread: number;
+}
+
+/** Something an agent noticed on its own. */
+export interface ActivityNote {
+  id: string;
+  title: string;
+  detail: string;
+  at: string;
+  read_at: string | null;
 }
 
 export type AgentWizard = {
@@ -762,6 +788,15 @@ export const api = {
   session: (id: string) => json<Session>(`/api/sessions/${id}`),
   startAgentChat: (agent: string, title?: string) =>
     json<Session>("/api/agent/sessions", { method: "POST", body: JSON.stringify({ agent, title }) }),
+
+  setHeartbeat: (agent: string, heartbeat: { minutes: number; quietStart: string; quietEnd: string }) =>
+    json<Agent>(`/api/agents/${encodeURIComponent(agent)}/heartbeat`, { method: "PUT", body: JSON.stringify(heartbeat) }),
+  /** A look now; answers at once, and the agent's status follows it. */
+  lookNow: (agent: string) => json<Agent>(`/api/agents/${encodeURIComponent(agent)}/heartbeat/run`, { method: "POST" }),
+  activity: (agent: string) => json<{ notes: ActivityNote[]; unread: number }>(`/api/agents/${encodeURIComponent(agent)}/activity`),
+  markActivityRead: (agent: string) => json<{ unread: number }>(`/api/agents/${encodeURIComponent(agent)}/activity/read`, { method: "POST" }),
+  deleteNote: (agent: string, note: string) =>
+    json<{ ok: true }>(`/api/agents/${encodeURIComponent(agent)}/activity/${encodeURIComponent(note)}`, { method: "DELETE" }),
 
   agentSessions: (agent: string) =>
     json<{ sessions: AgentSession[]; agentHome: string }>(`/api/agent/sessions?agent=${encodeURIComponent(agent)}`),

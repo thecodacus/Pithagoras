@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { OrbStudio } from "./OrbStudio";
+import { AgentHeartbeat } from "./AgentHeartbeat";
 import { VoiceOrb, type VoiceLevels } from "./VoiceOrb";
 import {
   LuBot,
@@ -124,7 +125,7 @@ function AgentCards({ agents, onOpen, onNew }: { agents: Agent[]; onOpen: (id: s
             <li key={a.id}>
               <button
                 onClick={() => onOpen(a.id)}
-                className="group flex w-full flex-col items-center rounded-2xl border border-line bg-raised/40 px-3 pb-4 pt-5 text-center transition hover:border-accent/40 hover:bg-raised/70"
+                className="group relative flex w-full flex-col items-center rounded-2xl border border-line bg-raised/40 px-3 pb-4 pt-5 text-center transition hover:border-accent/40 hover:bg-raised/70"
               >
                 {/* Room around the orb for its glow, and for a hat or a prop. */}
                 <div className="flex h-28 w-28 items-center justify-center rounded-2xl bg-[#0b1220]">
@@ -132,6 +133,11 @@ function AgentCards({ agents, onOpen, onNew }: { agents: Agent[]; onOpen: (id: s
                     <VoiceOrb mode="idle" levels={still} look={a.orb} />
                   </div>
                 </div>
+                {a.unread > 0 && (
+                  <span className="absolute right-2.5 top-2.5 rounded-full bg-accent/15 px-1.5 text-[11px] text-accent" title={tp(a.unread, "{n} new note", "{n} new notes")}>
+                    {a.unread}
+                  </span>
+                )}
                 <p className="mt-3 w-full truncate text-sm font-medium text-fg">{a.name}</p>
                 <p className="mt-0.5 text-[11px] text-fg-faint">
                   {a.initialised ? tp(a.chats, "{n} chat", "{n} chats") : t("Not set up yet")}
@@ -376,6 +382,7 @@ function AgentView({
           </PageHeader>
 
           {setup?.initialised && <AgentFiles agent={agent.id} setup={setup} onSaved={setSetup} />}
+          {setup?.initialised && <AgentHeartbeat agent={agent} onChanged={onChanged} />}
 
 
           {loadError && (
@@ -587,6 +594,16 @@ function RowBody({ s, title }: { s: AgentSession; title: ReactNode }) {
   );
 }
 
+/** What a WATCH.md might say, shown in an empty one. */
+const WATCH_EXAMPLE = [
+  "# What to keep an eye on",
+  "",
+  "- The open pull requests on the project: tell me about one waiting more than three days.",
+  "- The notes in ~/inbox: anything that needs an answer this week.",
+  "",
+  "Only tell me what needs me. Stay quiet otherwise.",
+].join("\n");
+
 /** The files that define the agent, editable in place. */
 function AgentFiles({ agent, setup, onSaved }: { agent: string; setup: Setup; onSaved: (s: Setup) => void }) {
   const [open, setOpen] = useState<string | null>(null);
@@ -637,6 +654,11 @@ function AgentFiles({ agent, setup, onSaved }: { agent: string; setup: Setup; on
 
       {file && (
         <div className="mt-2">
+          {file.name === "WATCH.md" && (
+            <p role="note" className="mb-2 text-xs text-fg-muted">
+              {t("Not context: what its heartbeat keeps an eye on. Say what to look at and what counts as worth telling you.")}
+            </p>
+          )}
           {unread(file.name) && (
             <p role="note" className="mb-2 text-xs text-fg-muted">
               {t("Not read while Understory is the agent's memory (Settings → Add-ons → Memory). It is kept, and read again once Understory is switched off.")}
@@ -647,6 +669,7 @@ function AgentFiles({ agent, setup, onSaved }: { agent: string; setup: Setup; on
             onChange={(e) => setDraft(e.target.value)}
             rows={14}
             spellCheck={false}
+            placeholder={file.name === "WATCH.md" ? WATCH_EXAMPLE : undefined}
             className="w-full resize-y rounded-lg border border-line bg-raised/60 px-3 py-2 font-mono text-xs leading-relaxed outline-none focus:border-accent/60"
           />
           <button

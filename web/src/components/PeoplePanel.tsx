@@ -39,6 +39,7 @@ const EVERYONE: Record<string, string> = {
   colleague: msg("all colleagues"),
   guest: msg("all guests"),
   unknown: msg("everyone blocked"),
+  heartbeat: msg("every agent's heartbeat"),
 };
 
 const ROLE_STYLE: Record<string, string> = {

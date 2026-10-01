@@ -24,6 +24,14 @@ export interface Agent {
   orb: string | null;
   /** The voice it speaks with: a voice library id or "design"; null is the one in the voice settings. */
   voice: string | null;
+  /** How often it looks around on its own, in minutes; null is never. See heartbeat.ts. */
+  heartbeat_minutes: number | null;
+  /** The hours it keeps quiet, "HH:MM", both or neither. */
+  quiet_start: string | null;
+  quiet_end: string | null;
+  last_heartbeat: string | null;
+  /** How the last look went, in a few words. */
+  heartbeat_status: string | null;
   created_at: string;
 }
 

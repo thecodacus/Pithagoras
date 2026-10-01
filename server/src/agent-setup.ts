@@ -17,6 +17,13 @@ import { understoryOn } from "./features.js";
 export const AGENT_FILES = ["SOUL.md", "PrimaryUser.md", "MEMORY.md"] as const;
 export type AgentFile = (typeof AGENT_FILES)[number];
 
+/**
+ * The files shown and edited on the agent's page: those three, and WATCH.md,
+ * what its heartbeat keeps an eye on. WATCH.md is not context and is not made
+ * by the wizard: an agent without one simply has nothing to watch.
+ */
+const EDITABLE_FILES = [...AGENT_FILES, "WATCH.md"] as const;
+
 /** A file of an agent's: the first agent's, unless another's home is given. */
 const filePath = (name: string, home = agentHome()) => path.join(home, name);
 
@@ -36,7 +43,7 @@ export function agentFileStatus(home = agentHome()) {
     initialised: isInitialised(home),
     // Where the agent's memory is kept: while Understory holds it, MEMORY.md is not read.
     memory: understoryOn() ? ("understory" as const) : ("file" as const),
-    files: AGENT_FILES.map((name) => ({
+    files: EDITABLE_FILES.map((name) => ({
       name,
       exists: existsSync(filePath(name, home)),
       content: readAgentFile(name, home),
@@ -45,7 +52,7 @@ export function agentFileStatus(home = agentHome()) {
 }
 
 export function writeAgentFile(name: string, content: string, home = agentHome()): void {
-  if (!(AGENT_FILES as readonly string[]).includes(name)) {
+  if (!(EDITABLE_FILES as readonly string[]).includes(name)) {
     throw new Error(`"${name}" is not one of the agent's files`);
   }
   writeFileSync(filePath(name, home), content.endsWith("\n") ? content : `${content}\n`, "utf8");

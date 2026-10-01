@@ -366,7 +366,7 @@ Each agent has a home folder of its own, with its own `SOUL.md`,
 
 | Route | Purpose |
 | --- | --- |
-| `GET /api/agents` | `{ agents }`, each `{ id, name, home, first, initialised, chats, channels, orb, voice }` |
+| `GET /api/agents` | `{ agents }`, each `{ id, name, home, first, initialised, chats, channels, orb, voice, heartbeat, unread }` |
 | `POST /api/agents` | `{ name, setup? }` — a new agent and its folder; `setup` takes the wizard's answers. A folder kept from a deleted agent of the same name is taken up again. |
 | `PATCH /api/agents/:id` | `{ name }` — its folder stays where it is |
 | `DELETE /api/agents/:id` | Deletes it and its chats, and its folder with `?folder=delete`. Refused for the first agent, for one a channel talks as, and while one of its chats or routines is working. Its routines are switched off. |
@@ -374,6 +374,11 @@ Each agent has a home folder of its own, with its own `SOUL.md`,
 | `POST /api/agents/:id/setup` | Writes its identity files from the wizard's answers |
 | `PUT /api/agents/:id/files/:name` | Saves one of its files |
 | `PUT /api/agents/:id/orb` | Saves its avatar; answers the style as stored |
+| `PUT /api/agents/:id/heartbeat` | `{ minutes, quietStart, quietEnd }` — how often it looks around on its own (0 never, else 15 minutes to a week) and the hours it keeps quiet (`"HH:MM"`, both or neither) |
+| `POST /api/agents/:id/heartbeat/run` | A look now. Answers at once; `heartbeat.running` and `heartbeat.status` follow it |
+| `GET /api/agents/:id/activity` | `{ notes, unread }` — what it noticed on its own, newest first |
+| `POST /api/agents/:id/activity/read` | Marks its notes read |
+| `DELETE /api/agents/:id/activity/:note` | Deletes a note |
 | `PUT /api/agents/:id/voice` | `{ voice }` — the voice it speaks with in voice mode: `"design"`, a voice library id, or `""` for the one in the voice settings |
 | `GET /api/agent/orb?session=` | The avatar voice mode shows for that chat: its agent's, or the first agent's |
 | `POST /api/agent/sessions` | `{ agent?, title? }` — a conversation with that agent, the first without one |
@@ -388,7 +393,7 @@ Each agent has a home folder of its own, with its own `SOUL.md`,
 | `DELETE /api/people/:key` | Forget a person. |
 | `GET /api/audit?limit=2000` | Read up to all 2,000 retained decisions (default 200), newest first. |
 | `GET /api/tool-rules` | List standing tool permissions. |
-| `POST /api/tool-rules` | Add a role/tool/pattern rule. |
+| `POST /api/tool-rules` | Add a role/tool/pattern rule. The role is `colleague`, `guest`, `heartbeat` (an agent looking around on its own) or `all`. |
 | `DELETE /api/tool-rules/:id` | Remove a rule. |
 
 ## MCP servers

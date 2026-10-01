@@ -36,6 +36,8 @@ export interface LaunchOptions {
   toolsOff?: string[];
   /** What its subagents run on, when it says: asked each time one starts. */
   subagentModel?: () => string | undefined;
+  /** The agent whose heartbeat this session is, when it is one: gives it the note tool. */
+  heartbeatAgent?: string;
 }
 
 export interface Executor {
@@ -87,6 +89,7 @@ export class HostExecutor implements Executor {
       browserNow: opts.browserNow,
       toolsOff: opts.toolsOff,
       subagentModel: opts.subagentModel,
+      heartbeatAgent: opts.heartbeatAgent,
       provider: opts.provider,
       modelId: opts.model,
       thinkingLevel: opts.thinkingLevel,

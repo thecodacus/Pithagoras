@@ -41,7 +41,7 @@ export interface SessionRow {
    * "task" for the ones you create here, "agent" for one reached through a
    * channel, "routine" for one a schedule owns.
    */
-  kind: "task" | "agent" | "routine";
+  kind: "task" | "agent" | "routine" | "heartbeat";
   /**
    * Agent sessions only: the slug of the channel it arrived through.
    *
@@ -373,8 +373,28 @@ function schema(db: Database.Database): void {
       -- The voice it speaks with in voice mode: a voice library id or 'design';
       -- NULL is the one chosen in the voice settings.
       voice TEXT,
+      -- Its heartbeat: how often it looks around on its own, in minutes (NULL
+      -- is never), the hours it keeps quiet ('HH:MM', both or neither), and how
+      -- the last look went.
+      heartbeat_minutes INTEGER,
+      quiet_start TEXT,
+      quiet_end TEXT,
+      last_heartbeat TEXT,
+      heartbeat_status TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    -- What an agent noticed on its own, for the person it works for to read.
+    CREATE TABLE IF NOT EXISTS activity (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      session_id TEXT,
+      title TEXT NOT NULL,
+      detail TEXT NOT NULL DEFAULT '',
+      at TEXT NOT NULL DEFAULT (datetime('now')),
+      read_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_activity_agent ON activity(agent_id, at DESC);
   `);
   migrate(db);
   if ((db.pragma("user_version", { simple: true }) as number) < SCHEMA_VERSION) db.pragma(`user_version = ${SCHEMA_VERSION}`);
@@ -489,7 +509,10 @@ function migrate(d: Database.Database): void {
   }
   d.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_slug ON channels(slug)");
   const agentCols = (d.prepare("PRAGMA table_info(agents)").all() as { name: string }[]).map((c) => c.name);
-  if (!agentCols.includes("voice")) d.exec("ALTER TABLE agents ADD COLUMN voice TEXT");
+  for (const col of ["voice", "quiet_start", "quiet_end", "last_heartbeat", "heartbeat_status"]) {
+    if (!agentCols.includes(col)) d.exec(`ALTER TABLE agents ADD COLUMN ${col} TEXT`);
+  }
+  if (!agentCols.includes("heartbeat_minutes")) d.exec("ALTER TABLE agents ADD COLUMN heartbeat_minutes INTEGER");
   // The Home there always was is the first agent, named as its SOUL.md names
   // it, and wearing the avatar the portal had.
   if (!d.prepare("SELECT 1 FROM agents LIMIT 1").get()) {
@@ -574,7 +597,7 @@ export function createSession(row: {
   title: string;
   workspace: string;
   executor: string;
-  kind?: "task" | "agent" | "routine";
+  kind?: "task" | "agent" | "routine" | "heartbeat";
   channel_slug?: string | null;
   channel_key?: string | null;
   routine_slug?: string | null;
@@ -612,6 +635,16 @@ export function listChatSessions(): SessionRow[] {
   return getDb()
     .prepare("SELECT * FROM sessions WHERE kind = 'task' OR (kind = 'agent' AND channel_slug = 'browser') ORDER BY pinned DESC, updated_at DESC")
     .all() as SessionRow[];
+}
+
+/** Whether any session has a turn running. */
+export function anySessionRunning(): boolean {
+  return Boolean(getDb().prepare("SELECT 1 FROM sessions WHERE status = 'running' LIMIT 1").get());
+}
+
+/** The sessions agents look around in on their own: one per agent, see heartbeat.ts. */
+export function listHeartbeatSessions(): SessionRow[] {
+  return getDb().prepare("SELECT * FROM sessions WHERE kind = 'heartbeat'").all() as SessionRow[];
 }
 
 /** Conversations reached through a channel, newest first. */
