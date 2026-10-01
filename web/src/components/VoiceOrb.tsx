@@ -148,6 +148,65 @@ function felt(ctx: Ctx): Grain {
   return { dark: make("0,0,0", 1500, 0.35), light: make("255,255,255", 900, 0.3) };
 }
 
+/**
+ * The plush orb's pile, drawn once and shared by every orb on the page: a disc
+ * of short strands in tufts, combed down and outward as plush lies, with dark
+ * roots and light tips, over broad soft patches where the nap lies differently.
+ * Strands near the rim lean out and look longer, as fur seen side-on does.
+ * Light and dark only, so it sits over whatever colour the orb is.
+ *
+ * Strands are gathered by tone and width and drawn as a few paths, then the
+ * whole is softened with one blur: tens of thousands of separate strokes, each
+ * blurred, took seconds and froze the page.
+ */
+let pileCache: HTMLCanvasElement | undefined;
+function furSprite(): HTMLCanvasElement {
+  if (pileCache) return pileCache;
+  const size = 640, c = size / 2, R = size / 2;
+  const raw = document.createElement("canvas");
+  raw.width = raw.height = size;
+  const g = raw.getContext("2d")!;
+  for (let i = 0; i < 160; i++) {
+    const d = Math.sqrt(Math.random()), a = Math.random() * Math.PI * 2, x = c + Math.cos(a) * d * R, y = c + Math.sin(a) * d * R, rad = 20 + Math.random() * 30;
+    const patch = g.createRadialGradient(x, y, 0, x, y, rad);
+    patch.addColorStop(0, Math.random() < 0.5 ? "rgba(0,0,0,0.07)" : "rgba(255,255,255,0.06)"); patch.addColorStop(1, "rgba(0,0,0,0)");
+    g.fillStyle = patch; g.fillRect(x - rad, y - rad, rad * 2, rad * 2);
+  }
+  // [tone 0-7][width 0-1] → the strands' roots (whole strand) and tips.
+  const roots = Array.from({ length: 16 }, () => new Path2D()), tips = Array.from({ length: 16 }, () => new Path2D());
+  for (let tuft = 0; tuft < 2600; tuft++) {
+    const d = Math.sqrt(Math.random()), a = Math.random() * Math.PI * 2;
+    const u = Math.cos(a) * d, v = Math.sin(a) * d;
+    // Combed: down, and out from the middle, more so toward the rim.
+    let dx = u * (0.4 + d * 0.8), dy = v * (0.4 + d * 0.8) + 0.65;
+    const n = Math.hypot(dx, dy) || 1; dx /= n; dy /= n;
+    const lean = (Math.random() - 0.5) * 0.5, tone = Math.random();
+    for (let i = 0; i < 10; i++) {
+      const turn = lean + (Math.random() - 0.5) * 0.35;
+      const sx = dx * Math.cos(turn) - dy * Math.sin(turn), sy = dx * Math.sin(turn) + dy * Math.cos(turn);
+      const len = (7 + Math.random() * 7) * (1 + d * d * d * 1.6);
+      const x = c + u * R * 0.98 + (Math.random() - 0.5) * 9, y = c + v * R * 0.98 + (Math.random() - 0.5) * 9;
+      const ex = x + sx * len, ey = y + sy * len, mx = x + sx * len * 0.5 - sy * len * 0.12, my = y + sy * len * 0.5 + sx * len * 0.12;
+      const k = Math.min(7, Math.floor(Math.min(1, tone * 0.7 + Math.random() * 0.4) * 8)) * 2 + (Math.random() < 0.5 ? 0 : 1);
+      roots[k].moveTo(x, y); roots[k].quadraticCurveTo(mx, my, ex, ey);
+      tips[k].moveTo(mx, my); tips[k].quadraticCurveTo(mx + sx * len * 0.3, my + sy * len * 0.3, ex, ey);
+    }
+  }
+  g.lineCap = "round";
+  for (let k = 0; k < 16; k++) {
+    const tone = (k >> 1) / 7, width = k & 1 ? 2 : 1.4;
+    // The root is in the shade of the pile around it; the tip catches the light.
+    g.lineWidth = width; g.strokeStyle = `rgba(0,0,0,${0.06 + tone * 0.08})`; g.stroke(roots[k]);
+    g.lineWidth = width * 0.8; g.strokeStyle = `rgba(255,255,255,${0.06 + tone * 0.11})`; g.stroke(tips[k]);
+  }
+  // Soft strands rather than sharp hairs: one blur over the whole.
+  const soft = document.createElement("canvas");
+  soft.width = soft.height = size;
+  const sg = soft.getContext("2d")!;
+  sg.filter = "blur(0.6px)"; sg.drawImage(raw, 0, 0);
+  return (pileCache = soft);
+}
+
 /** One strand of the plush orb's fuzzy edge: where on the edge, how long, how far it leans, how bright. */
 interface Fibre { a: number; len: number; tilt: number; tone: number }
 
@@ -158,19 +217,26 @@ interface Fibre { a: number; len: number; tilt: number; tone: number }
  */
 function drawFuzz(ctx: Ctx, fibres: readonly Fibre[], edge: (a: number) => number, r: number, level: number, color: Rgb) {
   const light = Math.atan2(-0.45, -0.33);
-  ctx.save();
-  ctx.lineCap = "round"; ctx.lineWidth = 1.3;
+  // Gathered into a few shades and drawn as one path each: hundreds of strokes
+  // with a colour apiece, every frame, is what would make the orb costly.
+  const shades = Array.from({ length: 6 }, () => new Path2D());
   for (const f of fibres) {
     const e = edge(f.a);
     const x = Math.cos(f.a) * e * 0.97, y = Math.sin(f.a) * e * 0.97;
-    const d = f.a + f.tilt, len = f.len * r * (1 + level * 0.35);
+    // Combed down as the pile is: strands on the sides lean toward the bottom.
+    const d = f.a + f.tilt + Math.cos(f.a) * 0.35, len = f.len * r * (1 + level * 0.35);
     const lit = 0.5 + 0.5 * Math.cos(f.a - light);
-    const c = lit > 0.5 ? shade(color, (lit - 0.5) * 0.7) : shade(color, -(0.5 - lit) * 0.9);
-    ctx.strokeStyle = css(c, 0.35 + f.tone * 0.4);
-    ctx.beginPath(); ctx.moveTo(x, y);
-    ctx.quadraticCurveTo(x + Math.cos(d) * len * 0.5 + Math.cos(f.a) * len * 0.2, y + Math.sin(d) * len * 0.5 + Math.sin(f.a) * len * 0.2, x + Math.cos(d) * len, y + Math.sin(d) * len);
-    ctx.stroke();
+    const path = shades[Math.min(5, Math.floor(lit * 6))];
+    path.moveTo(x, y);
+    path.quadraticCurveTo(x + Math.cos(d) * len * 0.5 + Math.cos(f.a) * len * 0.2, y + Math.sin(d) * len * 0.5 + Math.sin(f.a) * len * 0.2, x + Math.cos(d) * len, y + Math.sin(d) * len);
   }
+  ctx.save();
+  ctx.lineCap = "round"; ctx.lineWidth = 1.3;
+  shades.forEach((path, i) => {
+    const lit = (i + 0.5) / 6;
+    ctx.strokeStyle = css(lit > 0.5 ? shade(color, (lit - 0.5) * 0.45) : shade(color, -(0.5 - lit) * 0.8), 0.45);
+    ctx.stroke(path);
+  });
   ctx.restore();
 }
 
@@ -743,7 +809,8 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
     const worn = layer.getContext("2d")!;
     const texture = grain(worn);
     const skin = felt(ctx);
-    const fuzz: Fibre[] = Array.from({ length: 520 }, () => ({ a: Math.random() * Math.PI * 2, len: 0.03 + Math.random() * 0.05, tilt: (Math.random() - 0.5), tone: Math.random() }));
+    const fuzz: Fibre[] = Array.from({ length: 600 }, () => ({ a: Math.random() * Math.PI * 2, len: 0.03 + Math.random() * 0.05, tilt: (Math.random() - 0.5) * 0.8, tone: Math.random() }));
+    const pile = furSprite();
     const sparkles: Sparkle[] = Array.from({ length: 46 }, () => {
       const d = Math.sqrt(Math.random()), a = Math.random() * Math.PI * 2;
       return { x: Math.cos(a) * d, y: Math.sin(a) * d, size: Math.random(), phase: Math.random() * Math.PI * 2, back: Math.random() < 0.55 };
@@ -817,9 +884,12 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
       drawPattern(ctx, look.pattern, false, r, t, level, tint, turn, sparkles);
       // Felt goes on before the shading, so the shadow side darkens it as it does the surface under it.
       if (plush) {
-        // Sized from the radius so it grows with the voice rather than drifting over it.
+        // The pile over the whole body, scaled with the orb and riding a little with the turn.
+        const R = r * 1.08;
+        ctx.drawImage(pile, -R + Math.sin(turn.yaw) * r * 0.06, -R + Math.sin(turn.pitch) * r * 0.06, R * 2, R * 2);
+        // And a fine felt under it, so no bare colour shows between the tufts.
         const k = (r / 132) * 0.5;
-        for (const [pattern, alpha] of [[skin.dark, 0.55], [skin.light, 0.4]] as const) {
+        for (const [pattern, alpha] of [[skin.dark, 0.3], [skin.light, 0.2]] as const) {
           pattern.setTransform(new DOMMatrix([k, 0, 0, k, 0, 0]));
           ctx.globalAlpha = alpha; ctx.fillStyle = pattern; ctx.fillRect(-r * 1.3, -r * 1.3, r * 2.6, r * 2.6);
         }
@@ -832,7 +902,12 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
       const under = ctx.createLinearGradient(0, r * 0.25, 0, r);
       under.addColorStop(0, "rgba(0,0,0,0)"); under.addColorStop(1, "rgba(0,0,0,0.22)");
       ctx.fillStyle = under; ctx.fillRect(-r * 1.2, r * 0.25, r * 2.4, r);
-      if (!plush) {
+      if (plush) {
+        // Velvet catches light at its edges rather than in a spot: a soft brightening inside the rim, most where the light falls.
+        const sheen = ctx.createRadialGradient(r * 0.12, r * 0.15, r * 0.55, -r * 0.05, -r * 0.05, r * 1.05);
+        sheen.addColorStop(0, "rgba(255,255,255,0)"); sheen.addColorStop(0.75, "rgba(255,255,255,0.05)"); sheen.addColorStop(1, "rgba(255,255,255,0.2)");
+        ctx.fillStyle = sheen; ctx.fillRect(-r * 1.2, -r * 1.2, r * 2.4, r * 2.4);
+      } else {
         // The highlight is light falling on the surface, so it goes on last.
         const shine = ctx.createRadialGradient(-r * 0.33, -r * 0.55, 0, -r * 0.33, -r * 0.55, r * 0.85);
         shine.addColorStop(0, "rgba(238,255,255,0.45)"); shine.addColorStop(0.35, "rgba(233,253,255,0.08)"); shine.addColorStop(1, "rgba(255,255,255,0)");
