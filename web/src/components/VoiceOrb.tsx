@@ -181,10 +181,11 @@ interface Sparkle { x: number; y: number; size: number; phase: number; back: boo
  * What moves inside the sphere, one of its two layers: the back one dimmer and
  * moving less as the face turns, the front one more, so the inside reads as a
  * volume rather than a surface. Patterns that wrap the sphere (bands, spots,
- * globe) put what faces away in the back layer and what faces you in front.
+ * globe) are on its surface, and a solid ball hides its far side: they have
+ * only the half that faces you.
  */
 function drawPattern(ctx: Ctx, kind: OrbPattern, back: boolean, r: number, t: number, level: number, color: Rgb, turn: Turn, sparkles: readonly Sparkle[]) {
-  if (kind === "none") return;
+  if (kind === "none" || (back && (kind === "bands" || kind === "spots" || kind === "globe"))) return;
   const depth = back ? 0.55 : 1;
   const rgb = channels(color);
   const lighter = channels(shade(color, 0.5)), darker = channels(shade(color, -0.45));
