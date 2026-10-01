@@ -6,7 +6,7 @@ import { freePort, serverEnv, startServer, testHome } from "./server-harness.mjs
 
 const home = testHome("agents-");
 // The first agent is named from its SOUL.md, as the setup wizard writes it.
-writeFileSync(path.join(home, "agent-home", "SOUL.md"), "Who you are.\n\n---\n\n# Aria\n\nWarm and direct.\n");
+writeFileSync(path.join(home, "agent-home", "SOUL.md"), "Who you are.\n\n---\n\n# Nova\n\nWarm and direct.\n");
 const { base } = await startServer(serverEnv(home, await freePort()));
 
 const call = async (method, url, body) => {
@@ -22,7 +22,7 @@ test("the first agent is the Home there was, named by its SOUL.md", async () => 
   const { body } = await call("GET", "/api/agents");
   assert.equal(body.agents.length, 1);
   assert.equal(body.agents[0].id, "home");
-  assert.equal(body.agents[0].name, "Aria");
+  assert.equal(body.agents[0].name, "Nova");
   assert.equal(body.agents[0].home, path.join(home, "agent-home"));
   assert.equal(body.agents[0].first, true);
 });
@@ -50,7 +50,7 @@ test("an agent has a home, files and chats of its own", async () => {
   assert.equal((await call("GET", "/api/agent/sessions")).body.sessions.length, 0, "the first agent's list has none of its chats");
 
   const projects = await call("GET", "/api/projects?bare=1");
-  assert.deepEqual(projects.body.agents.map((a) => a.name), ["Aria", "Research Bot"]);
+  assert.deepEqual(projects.body.agents.map((a) => a.name), ["Nova", "Research Bot"]);
 
   assert.equal((await call("POST", "/api/agents", { name: "Research Bot" })).body.id, "research-bot-2", "a taken name gets a folder of its own");
   assert.equal((await call("POST", "/api/agents", { name: "  " })).status, 400);

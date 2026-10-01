@@ -119,14 +119,14 @@ test("each agent's home is a folder named after it, the first one keeping Home's
   const withAgents = {
     ...places,
     agents: [
-      { id: "home", name: "Aria", home: "/data/agent" },
+      { id: "home", name: "Nova", home: "/data/agent" },
       { id: "scout", name: "Scout", home: "/data/agents/scout" },
     ],
   };
   const folders = groupByFolder([...chats, chat("s", "/data/agents/scout", "2026-09-28T13:00")], withAgents);
   assert.deepEqual(keys(folders).slice(0, 2), [HOME, "agent:scout"]);
   assert.deepEqual(folders.slice(0, 2).map((f) => [f.name, f.agent, f.sessions.map((s) => s.id)]), [
-    ["Aria", "home", ["a"]],
+    ["Nova", "home", ["a"]],
     ["Scout", "scout", ["s"]],
   ]);
   assert.ok(folderKeys(withAgents).includes("agent:scout"));
