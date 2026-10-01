@@ -153,7 +153,8 @@ export function OrbStudio() {
       {open && (
       <Modal title={t("Voice orb")} subtitle={t("How the agent looks and moves in voice mode.")} wide onClose={close} footer={footer}>
       <div className="grid gap-5 sm:grid-cols-[220px_1fr]">
-        <div>
+        {/* Stays in view while the options scroll past, so a change is seen as it is made. */}
+        <div className="sm:sticky sm:top-0 sm:self-start">
           <div className="flex aspect-square items-center justify-center overflow-hidden rounded-xl bg-[#0b1220]">
             <div className="voice-avatar w-[58%]">
               <VoiceOrb mode={state} levels={levels} look={draft} />
