@@ -17,7 +17,8 @@ export function PageHeader({
   className = "",
 }: {
   icon: ReactNode;
-  title: string;
+  /** A name, or the controls that edit it: the Agent page's rename. */
+  title: ReactNode;
   description: ReactNode;
   /** Beside the title on a wide screen, under it on a narrow one. */
   action?: ReactNode;

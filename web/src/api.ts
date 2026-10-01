@@ -110,6 +110,27 @@ export interface AgentSetup {
   memory?: "file" | "understory";
 }
 
+/** An agent: a home of its own, with its own SOUL.md, PrimaryUser.md and memory. */
+export interface Agent {
+  id: string;
+  name: string;
+  home: string;
+  /** The Home there always was: the one chats go to when none is named, which cannot be deleted. */
+  first: boolean;
+  initialised: boolean;
+  chats: number;
+  /** The channels that talk as it. */
+  channels: { slug: string; name: string }[];
+}
+
+export type AgentWizard = {
+  agentName: string;
+  vibe?: string;
+  userName: string;
+  userAbout?: string;
+  userPrefers?: string;
+};
+
 /** A conversation that reached the agent through a channel. */
 export interface AgentSession extends Session {
   /** The package-supplied conversation key, prefixed with the channel id. */
@@ -368,7 +389,7 @@ export const api = {
     }),
   projects: () => json<{ root: string; home: string; projects: Project[] }>("/api/projects"),
   /** Only where Home is and which projects there are, without their counts: see /api/projects. */
-  places: () => json<{ root: string; home: string; projects: { name: string; path: string }[] }>("/api/projects?bare=1"),
+  places: () => json<{ root: string; home: string; agents?: { id: string; name: string; home: string }[]; projects: { name: string; path: string }[] }>("/api/projects?bare=1"),
   /** `toolsOff`: the tools its chats start with off, as for setProjectTools. `toolsError` says the project was made without them. */
   createProject: (name: string, instructions?: string, toolsOff?: string[]) =>
     json<Project & { toolsError?: string }>("/api/projects", {
@@ -701,19 +722,26 @@ export const api = {
   routineSessions: (id: string) =>
     json<{ sessions: Session[] }>(`/api/routines/${id}/sessions`),
 
-  agentSetup: () => json<AgentSetup>("/api/agent/setup"),
+  agents: () => json<{ agents: Agent[] }>("/api/agents"),
+  /** A new agent, set up with the wizard's answers. */
+  createAgent: (setup: AgentWizard) =>
+    json<Agent>("/api/agents", { method: "POST", body: JSON.stringify({ name: setup.agentName, setup }) }),
+  renameAgent: (id: string, name: string) =>
+    json<Agent>(`/api/agents/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+  /** The agent and its chats; its folder too when `folder` is "delete". */
+  deleteAgent: (id: string, folder: "keep" | "delete") =>
+    json<{ ok: true; sessionsDeleted: number; routinesSwitchedOff: string[] }>(
+      `/api/agents/${encodeURIComponent(id)}?folder=${folder}`,
+      { method: "DELETE" }
+    ),
+  agentSetup: (agent: string) => json<AgentSetup>(`/api/agents/${encodeURIComponent(agent)}/setup`),
   /** The voice-mode orb's look and personality, one for the portal. */
   agentOrb: () => json<OrbStyle>("/api/agent/orb"),
   setAgentOrb: (style: OrbStyle) => json<OrbStyle>("/api/agent/orb", { method: "PUT", body: JSON.stringify(style) }),
-  runAgentWizard: (input: {
-    agentName: string;
-    vibe?: string;
-    userName: string;
-    userAbout?: string;
-    userPrefers?: string;
-  }) => json<AgentSetup>("/api/agent/setup", { method: "POST", body: JSON.stringify(input) }),
-  saveAgentFile: (name: string, content: string) =>
-    json<AgentSetup>(`/api/agent/files/${encodeURIComponent(name)}`, {
+  runAgentWizard: (agent: string, input: AgentWizard) =>
+    json<AgentSetup>(`/api/agents/${encodeURIComponent(agent)}/setup`, { method: "POST", body: JSON.stringify(input) }),
+  saveAgentFile: (agent: string, name: string, content: string) =>
+    json<AgentSetup>(`/api/agents/${encodeURIComponent(agent)}/files/${encodeURIComponent(name)}`, {
       method: "PUT",
       body: JSON.stringify({ content }),
     }),
@@ -724,11 +752,11 @@ export const api = {
       `/api/sessions/${id}/events/before?before=${before}&limit=${limit}`
     ),
   session: (id: string) => json<Session>(`/api/sessions/${id}`),
-  startAgentChat: (title?: string) =>
-    json<Session>("/api/agent/sessions", { method: "POST", body: JSON.stringify({ title }) }),
+  startAgentChat: (agent: string, title?: string) =>
+    json<Session>("/api/agent/sessions", { method: "POST", body: JSON.stringify({ agent, title }) }),
 
-  agentSessions: () =>
-    json<{ sessions: AgentSession[]; agentHome: string }>("/api/agent/sessions"),
+  agentSessions: (agent: string) =>
+    json<{ sessions: AgentSession[]; agentHome: string }>(`/api/agent/sessions?agent=${encodeURIComponent(agent)}`),
 
   pinSession: (id: string, pinned: boolean) =>
     json<Session>(`/api/sessions/${id}`, {
@@ -856,6 +884,7 @@ export const api = {
       slug?: string;
       relayProgress?: boolean;
       relayTools?: boolean;
+      agentId?: string;
     }
   ) =>
     json<Channel>(`/api/channels/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
@@ -994,6 +1023,8 @@ export interface Channel {
   relayProgress: boolean;
   /** Relay the name of each tool as it runs. */
   relayTools: boolean;
+  /** The agent it talks as. */
+  agentId: string;
   /** Conversations keyed to this channel's slug. */
   sessionCount: number;
   /** What the supervisor is doing with it right now. */

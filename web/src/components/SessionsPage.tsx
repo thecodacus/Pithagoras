@@ -10,7 +10,7 @@ import { StatusDot, workingText } from "./StatusDot";
 import { TitleInput } from "./TitleInput";
 import { ChatsHeading, FolderTree } from "./FolderTree";
 import { RowsSkeleton } from "./Skeleton";
-import { folderFrom, folderKeys, folderName, groupByFolder, sortFolders, type Places } from "../session-folders";
+import { HOME, folderFrom, folderKeys, folderName, groupByFolder, sortFolders, type Places } from "../session-folders";
 import { useFolderPrefs, useOpenFolders } from "../use-session-folders";
 import { t } from "../i18n";
 
@@ -299,7 +299,7 @@ export function SessionsPage({
                 isOpen={openFolders.isOpen}
                 onToggle={openFolders.toggle}
                 onMove={searching || !allKeys ? undefined : (keys, key, to) => move(keys, key, to, allKeys)}
-                onNewChat={onNewChat ? (f) => start(f.kind === "home" ? undefined : f.path!) : undefined}
+                onNewChat={onNewChat ? (f) => start(f.key === HOME ? undefined : f.path!) : undefined}
                 extra={(f) => (
                   <button
                     type="button"

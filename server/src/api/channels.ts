@@ -3,6 +3,7 @@ import { nanoid } from "nanoid";
 import { countChannelSessions, deleteSession, getDb } from "../db.js";
 import { sessions } from "../session-manager.js";
 import { agentHome } from "../agent.js";
+import { DEFAULT_AGENT, getAgent } from "../agents.js";
 import { isValidSlug, slugify } from "../slug.js";
 import { channelSupervisor } from "../channels/supervisor.js";
 import {
@@ -50,6 +51,7 @@ interface ChannelRow {
   instructions: string;
   relay_progress: number;
   relay_tools: number;
+  agent_id: string;
   created_at: string;
   updated_at: string;
 }
@@ -92,6 +94,8 @@ function toApi(row: ChannelRow, kind?: LoadedChannel) {
     instructions: row.instructions ?? "",
     relayProgress: Boolean(row.relay_progress),
     relayTools: Boolean(row.relay_tools),
+    /** The agent it talks as. */
+    agentId: row.agent_id || DEFAULT_AGENT,
     /** Conversations keyed to this slug — what a delete would strand. */
     sessionCount: countChannelSessions(row.slug),
     // What the supervisor is actually doing, not a hardcoded guess.
@@ -118,6 +122,10 @@ function freeSlug(desired: string, exceptId?: string): string {
   }
   throw new Error(`Could not find a free slug for "${desired}"`);
 }
+
+/** How an agent is kept on a channel: empty for the first, as every channel was before there were others. Undefined for one there is not. */
+const storedAgent = (id: unknown): string | undefined =>
+  typeof id === "string" && getAgent(id) ? (id === DEFAULT_AGENT ? "" : id) : undefined;
 
 const missingRequired = (kind: LoadedChannel, config: Record<string, unknown>) =>
   kind.fields.filter((f) => f.required && !config[f.key]).map((f) => f.label);
@@ -163,10 +171,13 @@ export function channelsRouter(): Router {
     const wanted = typeof req.body?.slug === "string" && req.body.slug.trim() ? req.body.slug : label;
     const slug = freeSlug(wanted);
 
+    const agentId = req.body?.agentId === undefined ? "" : storedAgent(req.body.agentId);
+    if (agentId === undefined) return res.status(400).json({ error: "No such agent" });
+
     const id = nanoid(10);
     getDb()
-      .prepare("INSERT INTO channels (id, slug, kind, name, config) VALUES (?, ?, ?, ?, ?)")
-      .run(id, slug, kind.id, label, JSON.stringify(clean));
+      .prepare("INSERT INTO channels (id, slug, kind, name, config, agent_id) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(id, slug, kind.id, label, JSON.stringify(clean), agentId);
     void channelSupervisor.sync();
     res.json(toApi(rowById(id)!, kind));
   });
@@ -181,7 +192,7 @@ export function channelsRouter(): Router {
       });
     }
 
-    const { name, enabled, config, instructions, slug, relayProgress, relayTools } =
+    const { name, enabled, config, instructions, slug, relayProgress, relayTools, agentId } =
       req.body ?? {};
     const sets: string[] = [];
     const values: unknown[] = [];
@@ -215,6 +226,14 @@ export function channelsRouter(): Router {
     if (typeof relayTools === "boolean") {
       sets.push("relay_tools = ?");
       values.push(relayTools ? 1 : 0);
+    }
+    // Its conversations from here on are with that agent; moved back, it finds
+    // the ones it had.
+    if (agentId !== undefined) {
+      const stored = storedAgent(agentId);
+      if (stored === undefined) return res.status(400).json({ error: "No such agent" });
+      sets.push("agent_id = ?");
+      values.push(stored);
     }
     if (typeof enabled === "boolean") {
       sets.push("enabled = ?");

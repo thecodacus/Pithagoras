@@ -13,7 +13,8 @@ import {
   LuTrash2,
   LuTriangleAlert,
 } from "react-icons/lu";
-import { api, type BrokenChannelPackage, type Channel, type ChannelKind } from "../api";
+import { api, type Agent, type BrokenChannelPackage, type Channel, type ChannelKind } from "../api";
+import { Select } from "./Select";
 import { confirmDialog } from "./ConfirmDialog";
 import { pollWhileVisible } from "../poll";
 import { isEnter } from "../shortcuts";
@@ -41,9 +42,10 @@ const primaryCls =
   "inline-flex items-center gap-1.5 rounded-lg bg-accent/12 px-3 py-2 text-sm text-accent ring-1 ring-inset ring-accent/25 transition hover:bg-accent/20 disabled:opacity-40";
 
 /**
- * Channels are two-way links into the agent — one long-lived session rooted at
- * agentHome. Every channel talks to that same conversation, so this reads as
- * "ways to reach the agent" rather than a list of separate bots.
+ * Channels are two-way links into an agent: each talks as one, the first
+ * unless it is given another, and its conversations happen in that agent's
+ * home. So this reads as "ways to reach the agents" rather than a list of
+ * separate bots.
  */
 export function ChannelsPanel({ onError }: { onError: (e: string) => void }) {
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -404,6 +406,8 @@ function ChannelDetail({
   const [slug, setSlug] = useState(ch.slug);
   const [relayProgress, setRelayProgress] = useState(ch.relayProgress);
   const [relayTools, setRelayTools] = useState(ch.relayTools);
+  const [agentId, setAgentId] = useState(ch.agentId);
+  const [agents, setAgents] = useState<Agent[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -414,13 +418,19 @@ function ChannelDetail({
     setSlug(ch.slug);
     setRelayProgress(ch.relayProgress);
     setRelayTools(ch.relayTools);
+    setAgentId(ch.agentId);
   }, [ch.id, ch.updated_at]);
+
+  useEffect(() => {
+    api.agents().then((r) => setAgents(r.agents), () => setAgents([]));
+  }, []);
 
   const dirty =
     name !== ch.name ||
     slug !== ch.slug ||
     relayProgress !== ch.relayProgress ||
     relayTools !== ch.relayTools ||
+    agentId !== ch.agentId ||
     instructions !== (ch.instructions ?? "") ||
     kind?.fields.some((f) => (values[f.key] ?? "") !== (ch.config[f.key] ?? ""));
 
@@ -445,6 +455,7 @@ function ChannelDetail({
         instructions,
         relayProgress,
         relayTools,
+        ...(agentId !== ch.agentId ? { agentId } : {}),
       });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -521,6 +532,23 @@ function ChannelDetail({
             ? tp(ch.sessionCount, "{n} conversation keyed to \"{slug}\".", "{n} conversations keyed to \"{slug}\".", { slug: ch.slug })
             : t("No conversations yet.")}
         </p>
+      </section>
+
+      <section className="mb-6">
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle">
+          {t("Talks as")}
+        </h3>
+        <p className="mt-0.5 text-xs text-fg-subtle">
+          {t("The agent that answers here, with its own character and memory. Moved to another, it starts new conversations; moved back, it picks up the ones it had.")}
+        </p>
+        <Select
+          className="mt-2 w-full"
+          aria-label={t("Talks as")}
+          value={agentId}
+          onChange={setAgentId}
+          placeholder={t("Loading…")}
+          options={(agents ?? []).map((a) => ({ value: a.id, label: a.name, text: a.name, hint: a.home }))}
+        />
       </section>
 
       <section className="mb-6">

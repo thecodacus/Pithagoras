@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Select } from "./Select";
 import {
+  LuBot,
   LuCheck,
   LuChevronLeft,
   LuChevronRight,
@@ -15,7 +16,7 @@ import {
 } from "react-icons/lu";
 import { PageHeader, Stat } from "./PageHeader";
 import { RowsSkeleton } from "./Skeleton";
-import { api, type ReportTarget, type ReportTo, type Routine, type Workspace } from "../api";
+import { api, type Agent, type ReportTarget, type ReportTo, type Routine, type Workspace } from "../api";
 import { confirmDialog } from "./ConfirmDialog";
 import { below } from "../paths";
 import { pollWhileVisible } from "../poll";
@@ -289,7 +290,7 @@ export function RoutinesPage({ onOpenSession }: { onOpenSession: (id: string) =>
                         className={r.workspaceProblem ? "text-danger" : ""}
                         title={r.workspaceProblem ? `${r.workspace}: ${r.workspaceProblem}` : (r.workspace ?? t("Home — the agent's own directory"))}
                       >
-                        {placeName(r.workspace, places.root)}
+                        {placeName(r.workspace, places.root, places.agents)}
                         {r.workspaceProblem ? ` (${t("gone")})` : ""}
                       </span>
                       {" · "}
@@ -319,36 +320,49 @@ export function RoutinesPage({ onOpenSession }: { onOpenSession: (id: string) =>
   );
 }
 
-/** The projects a routine can run in, and the root they are under. `list` is null until they are read. */
+/**
+ * The projects a routine can run in, and the root they are under, and the
+ * agents other than the first, whose homes it can run in too. `list` is null
+ * until they are read.
+ */
 interface Places {
   root: string | null;
   list: Workspace[] | null;
+  agents: Agent[];
   error: string | null;
 }
 
 /** Read once for the page, not again for each routine opened. */
 function usePlaces(): Places {
-  const [places, setPlaces] = useState<Places>({ root: null, list: null, error: null });
+  const [places, setPlaces] = useState<Places>({ root: null, list: null, agents: [], error: null });
   useEffect(() => {
     api
       .workspaces()
-      .then((r) => setPlaces({ root: r.root, list: r.workspaces, error: null }))
-      .catch((e) => setPlaces({ root: null, list: [], error: (e as Error).message }));
+      .then((r) => setPlaces((p) => ({ ...p, root: r.root, list: r.workspaces, error: null })))
+      .catch((e) => setPlaces((p) => ({ ...p, root: null, list: [], error: (e as Error).message })));
+    // Without them only Home is offered, as before there were agents.
+    api
+      .agents()
+      .then((r) => setPlaces((p) => ({ ...p, agents: r.agents })))
+      .catch(() => {});
   }, []);
   return places;
 }
 
-/** Home, or where under the projects' root it runs: "site", or "site/docs" for a folder in one. */
-const placeName = (workspace: string | null, root: string | null) => {
-  if (!workspace) return t("Home");
+/** Home, an agent, or where under the projects' root it runs: "site", or "site/docs" for a folder in one. */
+const placeName = (workspace: string | null, root: string | null, agents: readonly Agent[] = []) => {
+  if (!workspace) return agents.find((a) => a.first)?.name ?? t("Home");
+  const agent = agents.find((a) => a.home === workspace);
+  if (agent) return agent.name;
   const under = root ? below(root, workspace) : undefined;
   if (under) return under;
   return workspace.split("/").filter(Boolean).pop() ?? workspace;
 };
 
 /**
- * Where a routine's runs happen: Home — the agent's own directory, with its
- * notes and memory — or one of the projects. "" is Home.
+ * Where a routine's runs happen: Home — the first agent's own directory, with
+ * its notes and memory — another agent's home, or one of the projects. "" is
+ * Home.
  *
  * A place that is not a project in the list, such as a folder in one that the
  * agent chose, is still shown. It is called gone only when the server says it
@@ -365,8 +379,10 @@ function WorkspacePicker({
   places: Places;
   problem?: string | null;
 }) {
-  const { list, root, error } = places;
-  const known = list?.some((w) => w.path === value);
+  const { list, root, agents, error } = places;
+  const first = agents.find((a) => a.first);
+  const others = agents.filter((a) => !a.first);
+  const known = list?.some((w) => w.path === value) || others.some((a) => a.home === value);
   return (
     // Not a label: it would pass a click on the hint to the Select's button.
     <div className="block">
@@ -380,10 +396,16 @@ function WorkspacePicker({
         options={[
           {
             value: "",
-            label: <span className="inline-flex items-center gap-2"><LuHouse className="h-3.5 w-3.5 text-accent" />{t("Home")}</span>,
-            text: t("Home"),
+            label: <span className="inline-flex items-center gap-2"><LuHouse className="h-3.5 w-3.5 text-accent" />{first?.name ?? t("Home")}</span>,
+            text: first?.name ?? t("Home"),
             hint: t("The agent's own directory, with its notes and memory"),
           },
+          ...others.map((a) => ({
+            value: a.home,
+            label: <span className="inline-flex items-center gap-2"><LuBot className="h-3.5 w-3.5 text-accent" />{a.name}</span>,
+            text: a.name,
+            hint: t("{name}'s own directory, with its notes and memory", { name: a.name }),
+          })),
           ...(list ?? []).map((w) => ({
             value: w.path,
             label: <span className="inline-flex items-center gap-2"><LuFolder className="h-3.5 w-3.5 text-fg-subtle" />{w.name}</span>,
@@ -392,7 +414,7 @@ function WorkspacePicker({
           })),
           // Shown for what it is, rather than as nothing.
           ...(value && list && !known
-            ? [{ value, label: placeName(value, root), text: placeName(value, root), hint: problem ? t("Not there any more — runs fail until another is chosen") : value }]
+            ? [{ value, label: placeName(value, root, agents), text: placeName(value, root, agents), hint: problem ? t("Not there any more — runs fail until another is chosen") : value }]
             : []),
         ]}
       />

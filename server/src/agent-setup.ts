@@ -17,37 +17,38 @@ import { understoryOn } from "./features.js";
 export const AGENT_FILES = ["SOUL.md", "PrimaryUser.md", "MEMORY.md"] as const;
 export type AgentFile = (typeof AGENT_FILES)[number];
 
-const filePath = (name: string) => path.join(agentHome(), name);
+/** A file of an agent's: the first agent's, unless another's home is given. */
+const filePath = (name: string, home = agentHome()) => path.join(home, name);
 
-export const isInitialised = (): boolean => AGENT_FILES.every((f) => existsSync(filePath(f)));
+export const isInitialised = (home = agentHome()): boolean => AGENT_FILES.every((f) => existsSync(filePath(f, home)));
 
-export function readAgentFile(name: string): string {
+export function readAgentFile(name: string, home = agentHome()): string {
   try {
-    return readFileSync(filePath(name), "utf8");
+    return readFileSync(filePath(name, home), "utf8");
   } catch {
     return "";
   }
 }
 
-export function agentFileStatus() {
+export function agentFileStatus(home = agentHome()) {
   return {
-    home: agentHome(),
-    initialised: isInitialised(),
+    home,
+    initialised: isInitialised(home),
     // Where the agent's memory is kept: while Understory holds it, MEMORY.md is not read.
     memory: understoryOn() ? ("understory" as const) : ("file" as const),
     files: AGENT_FILES.map((name) => ({
       name,
-      exists: existsSync(filePath(name)),
-      content: readAgentFile(name),
+      exists: existsSync(filePath(name, home)),
+      content: readAgentFile(name, home),
     })),
   };
 }
 
-export function writeAgentFile(name: string, content: string): void {
+export function writeAgentFile(name: string, content: string, home = agentHome()): void {
   if (!(AGENT_FILES as readonly string[]).includes(name)) {
     throw new Error(`"${name}" is not one of the agent's files`);
   }
-  writeFileSync(filePath(name), content.endsWith("\n") ? content : `${content}\n`, "utf8");
+  writeFileSync(filePath(name, home), content.endsWith("\n") ? content : `${content}\n`, "utf8");
 }
 
 export interface WizardInput {
@@ -66,7 +67,7 @@ export interface WizardInput {
  * characterless agent, and someone setting this up for the first time has no
  * reason to know what belongs in one.
  */
-export function runWizard(input: WizardInput): void {
+export function runWizard(input: WizardInput, home = agentHome()): void {
   const name = input.agentName.trim() || "the agent";
   const vibe = input.vibe?.trim();
   const principles = input.principles?.trim();
@@ -155,11 +156,11 @@ _How things should be done, learned from being corrected._
 _Names, systems, how things are set up. True and not obvious._
 `;
 
-  writeFileSync(filePath("SOUL.md"), soul, "utf8");
-  writeFileSync(filePath("PrimaryUser.md"), user, "utf8");
+  writeFileSync(filePath("SOUL.md", home), soul, "utf8");
+  writeFileSync(filePath("PrimaryUser.md", home), user, "utf8");
   // Never clobber a memory that already exists — it is the one file here that
   // cannot be reconstructed.
-  if (!existsSync(filePath("MEMORY.md"))) {
-    writeFileSync(filePath("MEMORY.md"), memory, "utf8");
+  if (!existsSync(filePath("MEMORY.md", home))) {
+    writeFileSync(filePath("MEMORY.md", home), memory, "utf8");
   }
 }

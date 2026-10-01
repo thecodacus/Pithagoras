@@ -6,7 +6,7 @@ import { projectOf } from "./workspaces.js";
 import { browserServers, mcpServerNames } from "./api/mcp.js";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
-import { agentHome } from "./agent-home.js";
+import { agentHome, agentHomePath, homeAgentName } from "./agent-home.js";
 import { DATA_DIR } from "./data-dir.js";
 import { SCHEMA_VERSION, dbFile } from "./schema-version.js";
 
@@ -187,6 +187,7 @@ function schema(db: Database.Database): void {
       -- end. Both are per channel: a phone wants less noise than a war room.
       relay_progress INTEGER NOT NULL DEFAULT 1,
       relay_tools INTEGER NOT NULL DEFAULT 1,
+      agent_id TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -358,6 +359,17 @@ function schema(db: Database.Database): void {
       -- When the cookie would have stopped working anyway; past it, the row goes.
       expires INTEGER NOT NULL
     );
+
+    -- The agents: each a home folder of its own, with its own SOUL.md,
+    -- PrimaryUser.md and MEMORY.md, so its own personality and memory. A chat
+    -- is an agent's when it works in that agent's home. The first is the Home
+    -- there always was, where it always was.
+    CREATE TABLE IF NOT EXISTS agents (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      home TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
   migrate(db);
   if ((db.pragma("user_version", { simple: true }) as number) < SCHEMA_VERSION) db.pragma(`user_version = ${SCHEMA_VERSION}`);
@@ -466,7 +478,15 @@ function migrate(d: Database.Database): void {
   if (channelCols.length && !channelCols.includes("relay_tools")) {
     d.exec("ALTER TABLE channels ADD COLUMN relay_tools INTEGER NOT NULL DEFAULT 1");
   }
+  // The agent a channel talks as. Empty is the first agent, as every channel was before there were others.
+  if (channelCols.length && !channelCols.includes("agent_id")) {
+    d.exec("ALTER TABLE channels ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''");
+  }
   d.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_slug ON channels(slug)");
+  // The Home there always was is the first agent, named as its SOUL.md names it.
+  if (!d.prepare("SELECT 1 FROM agents LIMIT 1").get()) {
+    d.prepare("INSERT INTO agents (id, name, home) VALUES ('home', ?, ?)").run(homeAgentName(agentHomePath()), agentHomePath());
+  }
   const routineCols = (d.prepare("PRAGMA table_info(routines)").all() as { name: string }[]).map(
     (c) => c.name
   );

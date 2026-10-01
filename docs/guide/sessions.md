@@ -5,8 +5,9 @@ folder it works in. It is the normal unit of work in the portal.
 
 ## Where a session works
 
-**New** starts a chat in **Home**, the agent's own directory; a chat in a project works
-in that project's folder. See [Projects](/guide/projects) for both. The session is named after its
+**New** starts a chat in **Home**, the first agent's own directory; a chat in a
+project works in that project's folder, and a chat with another agent in that
+agent's home. See [Projects](/guide/projects) and [Agents](/guide/agents). The session is named after its
 first message, and you can rename it.
 
 Paths are validated server-side: a workspace must resolve inside the workspace
@@ -157,8 +158,8 @@ it. The Sessions page has the same search with more room.
 ### By folder
 
 Once there is a project, the chats below **Pinned** are gathered by the folder
-they work in: **Home** and each project, a chat in a project's subfolder counting
-as the project's. Each folder opens to show its chats — the sidebar up to eight,
+they work in: each agent's home, named after the agent, and each project, a
+chat in a project's subfolder counting as the project's. Each folder opens to show its chats — the sidebar up to eight,
 then *N more in …*, which opens the Sessions page at that folder — and remembers
 whether it was left open. The folder of the chat you open is opened for you. A
 project without chats is there all the same, and the **+** on a folder's line
@@ -171,8 +172,8 @@ so the link keeps it); the ✕ on the chip goes back to all of them. A link to a
 folder that is gone since says so. A folder's count, and the mark that something
 in it is running, take in its pinned chats too, in the sidebar as on the page.
 
-Folders are ordered **Latest first** (by their latest chat), **By name** (Home
-first), or in **Your order**: drag a folder by its grip, or press Alt with ↑/↓ on
+Folders are ordered **Latest first** (by their latest chat), **By name** (the
+first agent first, then the other agents), or in **Your order**: drag a folder by its grip, or press Alt with ↑/↓ on
 its name, and the order is yours from then on. The list button next to the order
 puts the chats back into one list, Pinned then Recents, as before. The order,
 the grouping and which folders are open are kept per browser, and the sidebar

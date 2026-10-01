@@ -1,8 +1,8 @@
 import { useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
-import { LuChevronRight, LuFolder, LuFolderOpen, LuFolderSearch, LuFolderTree, LuGripVertical, LuHouse, LuList, LuPlus } from "react-icons/lu";
+import { LuBot, LuChevronRight, LuFolder, LuFolderOpen, LuFolderSearch, LuFolderTree, LuGripVertical, LuHouse, LuList, LuPlus } from "react-icons/lu";
 import type { SessionStatus } from "../api";
 import { followPointer } from "../pointer-drag";
-import { folderName, type Folder, type FolderSort } from "../session-folders";
+import { HOME, folderName, type Folder, type FolderSort } from "../session-folders";
 import type { Grouping } from "../use-session-folders";
 import { Select } from "./Select";
 import { StatusDot } from "./StatusDot";
@@ -147,7 +147,8 @@ export function FolderTree<S extends { status: SessionStatus }>({
         const before = drag && !carried && drag.to === other;
         if (!carried) other++;
         const running = !open && f.sessions.some((s) => s.status === "running");
-        const Icon = f.kind === "home" ? LuHouse : f.kind === "elsewhere" ? LuFolderSearch : open ? LuFolderOpen : LuFolder;
+        // Home is the first agent's; every other agent's home is its own.
+        const Icon = f.kind === "home" ? (f.key === HOME ? LuHouse : LuBot) : f.kind === "elsewhere" ? LuFolderSearch : open ? LuFolderOpen : LuFolder;
         return (
           <div key={f.key} data-folder={f.key} className={carried ? "opacity-50" : undefined}>
             {before && mark}

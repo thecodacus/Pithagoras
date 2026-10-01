@@ -1,12 +1,13 @@
 /**
- * The chats gathered by the folder they work in: Home, where "New" starts
- * one, and each project. A chat started in a project's subfolder belongs to
+ * The chats gathered by the folder they work in: each agent's home, the
+ * first of them where "New" starts one, and each project. A chat started in a project's subfolder belongs to
  * the project all the same, as it does on the Projects page. One that is in
  * neither — the workspace root itself, say — goes under "Elsewhere", which is
  * only there while it has any.
  *
- * Home and every project are there even without chats, so that a chat can be
- * started in any of them from the tree.
+ * Every agent's home and every project are there even without chats, so that
+ * a chat can be started in any of them from the tree. An agent's home is named
+ * after the agent.
  */
 
 import { msg, t } from "./i18n";
@@ -18,6 +19,8 @@ export type Folder<S> = {
   key: string;
   kind: FolderKind;
   name: string;
+  /** The agent whose home it is, for a home. */
+  agent?: string;
   /** Where a chat started in it works; null for Elsewhere, which is no one place. */
   path: string | null;
   /** Its chats, in the order they were given. */
@@ -26,24 +29,43 @@ export type Folder<S> = {
   lastActive: string;
 };
 
-/** What a folder is called where it is shown: Home and Elsewhere in the language shown, a project as it is named. */
-export const folderName = (f: { kind: string; name: string }) => (f.kind === "project" ? f.name : t(f.name));
+/**
+ * What a folder is called where it is shown: an agent's home and a project as
+ * they are named, Home (from a server without agents) and Elsewhere in the
+ * language shown.
+ */
+export const folderName = (f: { kind: string; name: string; agent?: string }) => (f.kind === "project" || f.agent ? f.name : t(f.name));
 
+/** The first agent's home: what it was called before there were others, so that what is kept about it stays. */
 export const HOME = "home";
 export const ELSEWHERE = "elsewhere";
 export const projectKey = (name: string) => `project:${name}`;
+export const agentKey = (id: string) => (id === "home" ? HOME : `agent:${id}`);
 
-/** What the chats are gathered into: where Home is, and the projects. */
-export type Places = { home: string; projects: readonly { name: string; path: string }[] };
+export type PlaceAgent = { id: string; name: string; home: string };
+
+/** What the chats are gathered into: where Home is, the agents' homes, and the projects. */
+export type Places = { home: string; agents?: readonly PlaceAgent[]; projects: readonly { name: string; path: string }[] };
+
+/** The agents: the first one's home is Home, from a server that names none. */
+const agentsOf = (places: Places): PlaceAgent[] =>
+  places.agents?.length ? [...places.agents] : places.home ? [{ id: "home", name: "", home: places.home }] : [];
 
 /**
- * The projects that are folders of their own: not one that is Home itself,
- * which a Home made inside the workspace root would be listed as.
+ * The projects that are folders of their own: not one that is an agent's
+ * home, which a home made inside the workspace root would be listed as.
  */
-const projectsOf = (places: Places) => places.projects.filter((p) => p.path !== places.home);
+const projectsOf = (places: Places) => {
+  const homes = new Set([places.home, ...agentsOf(places).map((a) => a.home)]);
+  return places.projects.filter((p) => !homes.has(p.path));
+};
 
-/** The keys of every folder there can be with these places: Home, the projects, and Elsewhere. */
-export const folderKeys = (places: Places) => [HOME, ...projectsOf(places).map((p) => projectKey(p.name)), ELSEWHERE];
+/** The keys of every folder there can be with these places: the agents' homes, the projects, and Elsewhere. */
+export const folderKeys = (places: Places) => [
+  ...new Set([HOME, ...agentsOf(places).map((a) => agentKey(a.id))]),
+  ...projectsOf(places).map((p) => projectKey(p.name)),
+  ELSEWHERE,
+];
 
 /**
  * The chats in their folders, each in the deepest that holds it — Home
@@ -55,7 +77,15 @@ export function groupByFolder<S extends { workspace: string; updated_at: string 
   places: Places,
   { elsewhere: always = false }: { elsewhere?: boolean } = {},
 ): Folder<S>[] {
-  const home: Folder<S> = { key: HOME, kind: "home", name: msg("Home"), path: places.home, sessions: [], lastActive: "" };
+  const homes = agentsOf(places).map<Folder<S>>((a) => ({
+    key: agentKey(a.id),
+    kind: "home",
+    // Home where the server has not said what the agent is called.
+    ...(a.name ? { name: a.name, agent: a.id } : { name: msg("Home") }),
+    path: a.home,
+    sessions: [],
+    lastActive: "",
+  }));
   const elsewhere: Folder<S> = { key: ELSEWHERE, kind: "elsewhere", name: msg("Elsewhere"), path: null, sessions: [], lastActive: "" };
   const projects = projectsOf(places).map<Folder<S>>((p) => ({
     key: projectKey(p.name),
@@ -66,13 +96,15 @@ export function groupByFolder<S extends { workspace: string; updated_at: string 
     lastActive: "",
   }));
   // Deepest first. A server that did not say where Home is: nothing is taken for it.
-  const deepest = [...(places.home ? [home] : []), ...projects].sort((a, b) => b.path!.length - a.path!.length);
+  const deepest = [...homes.filter((h) => h.path), ...projects].sort((a, b) => b.path!.length - a.path!.length);
   for (const s of sessions) {
     const folder = deepest.find((f) => within(f.path!, s.workspace)) ?? elsewhere;
     folder.sessions.push(s);
     if (s.updated_at > folder.lastActive) folder.lastActive = s.updated_at;
   }
-  return [home, ...projects, ...(always || elsewhere.sessions.length ? [elsewhere] : [])];
+  // Home is there even before the server has said where it is.
+  const first = homes.length ? homes : [{ key: HOME, kind: "home" as const, name: msg("Home"), path: places.home, sessions: [], lastActive: "" }];
+  return [...first, ...projects, ...(always || elsewhere.sessions.length ? [elsewhere] : [])];
 }
 
 /** How the folders are ordered: by their latest chat, by name, or as they were put. */
@@ -82,12 +114,12 @@ export const FOLDER_SORTS: FolderSort[] = ["recent", "name", "manual"];
 
 /**
  * The folders in `sort`'s order. By name, Home comes first, as the place
- * chats start. As they were put (`order`, by key), a folder never put
+ * chats start, then the other agents' homes. As they were put (`order`, by key), a folder never put
  * anywhere — a project made since — comes after the rest, the latest first.
  * Elsewhere is last unless it was put somewhere.
  */
 export function sortFolders<S>(folders: readonly Folder<S>[], sort: FolderSort, order: readonly string[] = []): Folder<S>[] {
-  const rank = (f: Folder<S>) => (f.kind === "home" ? 0 : f.kind === "project" ? 1 : 2);
+  const rank = (f: Folder<S>) => (f.key === HOME ? 0 : f.kind === "home" ? 1 : f.kind === "project" ? 2 : 3);
   const byName = (a: Folder<S>, b: Folder<S>) => rank(a) - rank(b) || a.name.localeCompare(b.name);
   const byRecent = (a: Folder<S>, b: Folder<S>) =>
     Number(a.kind === "elsewhere") - Number(b.kind === "elsewhere") || (b.lastActive > a.lastActive ? 1 : b.lastActive < a.lastActive ? -1 : 0) || byName(a, b);

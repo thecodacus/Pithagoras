@@ -5,7 +5,8 @@ import { ModelErrors } from "./model-errors.js";
 import { EventEmitter } from "node:events";
 import type { PersonRow, Role } from "./people.js";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { agentHome, agentHomePath } from "./agent-home.js";
+import { agentHome } from "./agent-home.js";
+import { agentAt } from "./agents.js";
 import path from "node:path";
 import type { Draft, PiClient, PiTool, PromptTaken } from "./pi/types.js";
 import { effectiveOff, exceptionsFor, toolEnabled, toolSource } from "./tool-policy.js";
@@ -889,8 +890,8 @@ class SessionManager extends EventEmitter {
     // A session can outlive its folder: a routine's past runs stay, the record
     // of what it did, when the project they ran in is deleted. Said plainly,
     // rather than as whatever starting pi in no directory comes to.
-    // Home is made again if need be; a project is not.
-    if (session.workspace === agentHomePath()) agentHome();
+    // An agent's home is made again if need be; a project is not.
+    if (agentAt(session.workspace)) agentHome(session.workspace);
     if (!existsSync(session.workspace)) {
       throw new Error(`The folder this chat worked in, ${session.workspace}, is gone. Its history can still be read, but it cannot go on.`);
     }

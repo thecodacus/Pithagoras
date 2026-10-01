@@ -26,6 +26,8 @@ import { checkWorkspace, workspaceRoot } from "./workspaces.js";
 import { insideReal, isUnderText, isWithinText } from "./within.js";
 import { agentHomePath } from "./agent-home.js";
 import { agentHome, resolveChannelSession } from "./agent.js";
+import { AgentError, agentOf, deletable, deleteAgent, getAgent, listAgents } from "./agents.js";
+import { agentsRouter } from "./api/agents.js";
 import {
   agentFileStatus,
   runWizard,
@@ -342,10 +344,12 @@ function workingIn<T extends { workspace: string }>(dir: string, rows: T[]): T[]
  */
 app.get("/api/projects", (req, res) => {
   const home = agentHomePath();
+  // Each agent's home is a folder of chats of its own, named after the agent.
+  const agents = listAgents().map((a) => ({ id: a.id, name: a.name, home: a.home }));
   try {
-    if (!existsSync(WORKSPACE_ROOT)) return res.json({ root: WORKSPACE_ROOT, home, projects: [] });
+    if (!existsSync(WORKSPACE_ROOT)) return res.json({ root: WORKSPACE_ROOT, home, agents, projects: [] });
     if (req.query.bare === "1") {
-      return res.json({ root: WORKSPACE_ROOT, home, projects: listProjects(WORKSPACE_ROOT).map((p) => ({ name: p.name, path: p.path })) });
+      return res.json({ root: WORKSPACE_ROOT, home, agents, projects: listProjects(WORKSPACE_ROOT).map((p) => ({ name: p.name, path: p.path })) });
     }
     // Read once, not once per project.
     const all = listSessions();
@@ -359,7 +363,7 @@ app.get("/api/projects", (req, res) => {
         lastActive: chats.reduce((latest, s) => (s.updated_at > latest ? s.updated_at : latest), "") || null,
       };
     });
-    res.json({ root: WORKSPACE_ROOT, home, projects });
+    res.json({ root: WORKSPACE_ROOT, home, agents, projects });
   } catch (e) {
     projectFailure(res, e);
   }
@@ -572,6 +576,48 @@ app.delete("/api/projects/:name", async (req, res) => {
   }
 });
 
+// --- agents ---
+
+/**
+ * The agent, its chats, and its folder if `?folder=delete` says so; kept
+ * otherwise, and taken up again by an agent made under the same name. Refused
+ * for the first agent, for one a channel talks as, and while any of its chats
+ * or a routine running as it is working. Its routines are switched off, as a
+ * deleted project's are, and keep their sessions.
+ */
+app.delete("/api/agents/:id", async (req, res) => {
+  try {
+    // Checked before anything is stopped; deleteAgent checks again once they are.
+    const agent = deletable(req.params.id);
+    // Its chats and its conversations: those started on the Agent page and through channels.
+    const chats = workingIn(agent.home, [...listSessions(), ...listAgentSessions()]);
+    if (chats.some((s) => sessions.isBusy(s.id) || sessions.backgroundWork(s.id))) {
+      return res.status(409).json({ error: "A chat with this agent is still working. Stop it first." });
+    }
+    const routines = routinesIn(agent.home);
+    const runs = workingIn(agent.home, listRoutineSessions().filter((s) => sessions.isLoaded(s.id)));
+    if (routines.some((r) => routineSupervisor.isRunning(r.slug)) || runs.some((s) => sessions.isBusy(s.id))) {
+      return res.status(409).json({ error: "A routine is running as this agent. Wait for it to finish, or stop it." });
+    }
+    const release = routineSupervisor.hold(routines.map((r) => r.slug));
+    try {
+      for (const run of runs) await sessions.discard(run.id);
+      for (const chat of chats) await sessions.discard(chat.id);
+      deleteAgent(agent.id, { deleteFolder: req.query.folder === "delete" });
+      const switchedOff = switchOffRoutines(routines);
+      getDb().transaction(() => {
+        for (const chat of chats) deleteSession(chat.id);
+      })();
+      for (const chat of chats) sessions.removeFiles(chat.id);
+      res.json({ ok: true, sessionsDeleted: chats.length, routinesSwitchedOff: switchedOff });
+    } finally {
+      release();
+    }
+  } catch (e) {
+    res.status(e instanceof AgentError ? e.status : 500).json({ error: (e as Error).message });
+  }
+});
+
 // --- sessions ---
 
 /** The longest name a chat can be given: what the rename field takes. */
@@ -604,15 +650,18 @@ app.get("/api/sessions", (_req, res) => {
  * transcript, same replay, same model handling — so the Agent tab opens them
  * with the ordinary chat view rather than a parallel implementation.
  */
-app.get("/api/agent/sessions", (_req, res) => {
+app.get("/api/agent/sessions", (req, res) => {
+  // One agent's, given `?agent=`; the first agent's otherwise.
+  const agent = typeof req.query.agent === "string" ? getAgent(req.query.agent) : getAgent("home");
+  if (!agent) return res.status(404).json({ error: "No such agent" });
   const channels = getDb()
     .prepare("SELECT id, slug, name, kind FROM channels")
     .all() as { id: string; slug: string; name: string; kind: string }[];
   const bySlug = new Map(channels.map((c) => [c.slug, c]));
 
   res.json({
-    agentHome: agentHome(),
-    sessions: listAgentSessions().map((s) => ({
+    agentHome: agent.home,
+    sessions: listAgentSessions().filter((s) => agentOf(s.workspace)?.id === agent.id).map((s) => ({
       ...toApi(s),
       // Matched on the slug, so a channel deleted and recreated under the same
       // one still owns its conversations.
@@ -638,12 +687,15 @@ app.get("/api/agent/sessions", (_req, res) => {
  */
 app.post("/api/agent/sessions", (req, res) => {
   const title = cleanTitle(req.body?.title);
+  const agentId = req.body?.agent;
+  if (agentId !== undefined && (typeof agentId !== "string" || !getAgent(agentId))) return res.status(404).json({ error: "No such agent" });
   try {
     const { session } = resolveChannelSession({
       channelSlug: "browser",
       key: nanoid(8),
       title: title || `Chat ${new Date().toISOString().slice(0, 16).replace("T", " ")}`,
       executor: EXECUTOR_KIND,
+      agentId,
     });
     res.json(toApi(session));
   } catch (e) {
@@ -709,15 +761,18 @@ app.put("/api/agent/orb", (req, res) => {
 });
 
 app.post("/api/sessions", (req, res) => {
-  const { workspace } = req.body ?? {};
+  const { workspace, agent: agentId } = req.body ?? {};
   const title = cleanTitle(req.body?.title);
   if (workspace !== undefined && (typeof workspace !== "string" || !workspace)) {
     return res.status(400).json({ error: "workspace must be a path" });
   }
-  // Without one, a chat starts in Home: the agent's own directory, where its
-  // SOUL.md, PrimaryUser.md and MEMORY.md are. Home is the one place outside
-  // the workspace root a chat may start.
-  const where = workspace === undefined ? { path: agentHome() } : checkWorkspace(workspace);
+  // `agent` starts it in that agent's home.
+  const agent = agentId === undefined ? undefined : typeof agentId === "string" ? getAgent(agentId) : undefined;
+  if (agentId !== undefined && !agent) return res.status(404).json({ error: "No such agent" });
+  // Without either, a chat starts in Home: the first agent's own directory,
+  // where its SOUL.md, PrimaryUser.md and MEMORY.md are. Agents' homes are the
+  // only places outside the workspace root a chat may start.
+  const where = agent ? { path: agentHome(agent.home) } : workspace === undefined ? { path: agentHome() } : checkWorkspace(workspace);
   if ("error" in where) return res.status(400).json({ error: where.error });
   const resolved = where.path;
 
@@ -1316,6 +1371,7 @@ app.use("/api", extensionsRouter());
 app.use("/api", featuresRouter());
 app.use("/api", memoryRouter());
 app.use("/api", channelsRouter());
+app.use("/api", agentsRouter());
 app.use("/api", routinesRouter());
 app.use("/api", skillsRouter());
 app.use("/api", filesRouter());

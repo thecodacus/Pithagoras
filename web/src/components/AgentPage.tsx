@@ -1,8 +1,11 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useSearchParams } from "react-router-dom";
 import { OrbStudio } from "./OrbStudio";
+import { VoiceOrb, useOrbStyle, type VoiceLevels } from "./VoiceOrb";
 import {
   LuBot,
   LuCheck,
+  LuChevronLeft,
   LuFileText,
   LuFolder,
   LuMessageSquare,
@@ -15,14 +18,142 @@ import {
 } from "react-icons/lu";
 import { PageHeader, Stat } from "./PageHeader";
 import { RowsSkeleton } from "./Skeleton";
-import { api, type AgentSession, type AgentSetup as Setup } from "../api";
+import { api, type Agent, type AgentSession, type AgentSetup as Setup } from "../api";
 import { AgentSetup } from "./AgentSetup";
 import { confirmDialog } from "./ConfirmDialog";
+import { Modal } from "./Modal";
 import { StatusDot } from "./StatusDot";
 import { TitleInput } from "./TitleInput";
 import { pollWhileVisible } from "../poll";
-import { t } from "../i18n";
+import { t, tp } from "../i18n";
 import { when } from "../time";
+
+/**
+ * The agents: a card for each, with its avatar and name, and a way to make
+ * another. A card opens that agent (`?agent=`), with its own home, files and
+ * conversations.
+ */
+export function AgentPage({ onSelect }: { onSelect: (id: string) => void }) {
+  const [params, setParams] = useSearchParams();
+  const [agents, setAgents] = useState<Agent[] | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState("");
+
+  const loadAgents = useCallback(
+    () =>
+      api.agents().then(
+        (r) => {
+          setAgents(r.agents);
+          setError("");
+        },
+        (e) => setError((e as Error).message),
+      ),
+    [],
+  );
+  useEffect(() => {
+    void loadAgents();
+  }, [loadAgents]);
+
+  const asked = params.get("agent");
+  const agent = asked ? agents?.find((a) => a.id === asked) : undefined;
+
+  if (creating) {
+    return (
+      <div className="flex h-full flex-col overflow-y-auto">
+        <AgentSetup
+          onCancel={() => setCreating(false)}
+          onSubmit={async (input) => {
+            const made = await api.createAgent(input);
+            await loadAgents();
+            setCreating(false);
+            setParams({ agent: made.id });
+          }}
+        />
+      </div>
+    );
+  }
+
+  if (!agents) {
+    return (
+      <div className="mx-auto w-full max-w-3xl px-4 py-6">
+        {error ? <div className="rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div> : <RowsSkeleton />}
+      </div>
+    );
+  }
+
+  // No agent asked for, or one that is gone since: the cards.
+  if (!agent) return <AgentCards agents={agents} onOpen={(id) => setParams({ agent: id })} onNew={() => setCreating(true)} />;
+
+  return (
+    <AgentView
+      // Its own state for each agent: a draft of one's SOUL.md is not another's.
+      key={agent.id}
+      agent={agent}
+      back={
+        <button
+          onClick={() => setParams({})}
+          className="mb-4 inline-flex items-center gap-1.5 text-xs text-fg-subtle transition hover:text-fg-muted"
+        >
+          <LuChevronLeft className="h-3.5 w-3.5" /> {t("Agents")}
+        </button>
+      }
+      onChanged={loadAgents}
+      onDeleted={async () => {
+        await loadAgents();
+        setParams({});
+      }}
+      onSelect={onSelect}
+    />
+  );
+}
+
+/** A card for each agent, with its avatar and name, and one that makes a new agent. */
+function AgentCards({ agents, onOpen, onNew }: { agents: Agent[]; onOpen: (id: string) => void; onNew: () => void }) {
+  const look = useOrbStyle();
+  // Still: a page of them all moving at once would be busy.
+  const still = useRef<VoiceLevels>({ input: 0, output: 0 });
+  return (
+    <div className="h-full overflow-y-auto px-4 py-6">
+      <div className="mx-auto w-full max-w-3xl">
+        <PageHeader
+          icon={<LuBot />}
+          title={t("Agents")}
+          description={t("Each agent has its own character, memory and files, in a home folder of its own. Open one for its conversations and files.")}
+        />
+        <ul className="stagger-in mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3">
+          {agents.map((a) => (
+            <li key={a.id}>
+              <button
+                onClick={() => onOpen(a.id)}
+                className="group flex w-full flex-col items-center rounded-2xl border border-line bg-raised/40 px-3 pb-4 pt-5 text-center transition hover:border-accent/40 hover:bg-raised/70"
+              >
+                <div className="flex h-24 w-24 items-center justify-center rounded-2xl bg-[#0b1220]">
+                  <div className="voice-avatar w-[70%]">
+                    <VoiceOrb mode="idle" levels={still} look={look} />
+                  </div>
+                </div>
+                <p className="mt-3 w-full truncate text-sm font-medium text-fg">{a.name}</p>
+                <p className="mt-0.5 text-[11px] text-fg-faint">
+                  {a.initialised ? tp(a.chats, "{n} chat", "{n} chats") : t("Not set up yet")}
+                  {a.channels.length > 0 && ` · ${tp(a.channels.length, "{n} channel", "{n} channels")}`}
+                </p>
+              </button>
+            </li>
+          ))}
+          <li>
+            <button
+              onClick={onNew}
+              className="flex h-full min-h-[11rem] w-full flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-line text-sm text-fg-subtle transition hover:border-accent/40 hover:text-accent"
+            >
+              <LuPlus className="h-5 w-5" />
+              {t("New agent")}
+            </button>
+          </li>
+        </ul>
+      </div>
+    </div>
+  );
+}
 
 /**
  * The agent's conversations, one per chat rather than one overall.
@@ -35,9 +166,20 @@ import { when } from "../time";
 /** Conversations started here rather than arriving through a channel. */
 const BROWSER = "browser";
 
-export function AgentPage({ onSelect }: { onSelect: (id: string) => void }) {
+function AgentView({
+  agent,
+  back,
+  onChanged,
+  onDeleted,
+  onSelect,
+}: {
+  agent: Agent;
+  back: ReactNode;
+  onChanged: () => Promise<void>;
+  onDeleted: () => Promise<void>;
+  onSelect: (id: string) => void;
+}) {
   const [sessions, setSessions] = useState<AgentSession[]>([]);
-  const [home, setHome] = useState("");
   const [setup, setSetup] = useState<Setup | null>(null);
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
@@ -46,15 +188,15 @@ export function AgentPage({ onSelect }: { onSelect: (id: string) => void }) {
   // refresh works, and must not wipe out — or be wiped by — the answer to a
   // rename or a delete.
   const [loadError, setLoadError] = useState("");
-  // The conversation whose name is open for editing, if any.
+  // The conversation whose name is open for editing, if any; the agent's own as "agent".
   const [renaming, setRenaming] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const load = () =>
     api
-      .agentSessions()
+      .agentSessions(agent.id)
       .then((r) => {
         setSessions(r.sessions);
-        setHome(r.agentHome);
         setLoadError("");
       })
       // The list stays as it was rather than being emptied, and the page says
@@ -64,10 +206,24 @@ export function AgentPage({ onSelect }: { onSelect: (id: string) => void }) {
       .finally(() => setLoading(false));
 
   useEffect(() => {
-    api.agentSetup().then(setSetup).catch(() => {});
+    api.agentSetup(agent.id).then(setSetup).catch(() => {});
     load();
     return pollWhileVisible(load, 5000);
+    // Keyed on the agent by its parent: one agent per mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const renameAgent = async (next: string) => {
+    setRenaming(null);
+    if (next === agent.name) return;
+    setError("");
+    try {
+      await api.renameAgent(agent.id, next);
+      await onChanged();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
 
   /**
    * Rename and delete, as the sidebar does them: these are the same sessions,
@@ -135,7 +291,14 @@ export function AgentPage({ onSelect }: { onSelect: (id: string) => void }) {
   if (setup && !setup.initialised) {
     return (
       <div className="flex h-full flex-col overflow-y-auto">
-        <AgentSetup home={setup.home} onDone={setSetup} />
+        <div className="mx-auto w-full max-w-xl px-4 pt-6">{back}</div>
+        <AgentSetup
+          home={setup.home}
+          onSubmit={async (input) => {
+            setSetup(await api.runAgentWizard(agent.id, input));
+            await onChanged();
+          }}
+        />
       </div>
     );
   }
@@ -144,9 +307,36 @@ export function AgentPage({ onSelect }: { onSelect: (id: string) => void }) {
     <div className="flex h-full flex-col">
       <div className="flex-1 overflow-y-auto px-4 py-6">
         <div className="mx-auto w-full max-w-3xl">
+          {back}
           <PageHeader
             icon={<LuBot />}
-            title={t("Agent")}
+            title={
+              renaming === "agent" ? (
+                <TitleInput value={agent.name} label={t("Agent name")} className="w-full" onCommit={renameAgent} onCancel={() => setRenaming(null)} />
+              ) : (
+                <span className="inline-flex min-w-0 items-center gap-1">
+                  <span className="truncate">{agent.name}</span>
+                  <button
+                    onClick={() => setRenaming("agent")}
+                    title={t("Rename")}
+                    aria-label={t("Rename {name}", { name: agent.name })}
+                    className="rounded p-1 text-fg-subtle transition hover:text-accent"
+                  >
+                    <LuPencil className="h-3.5 w-3.5" />
+                  </button>
+                  {!agent.first && (
+                    <button
+                      onClick={() => setDeleting(true)}
+                      title={t("Delete agent")}
+                      aria-label={t("Delete {name}", { name: agent.name })}
+                      className="rounded p-1 text-fg-subtle transition hover:text-danger"
+                    >
+                      <LuTrash2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </span>
+              )
+            }
             description={
               <>
                 {t("Conversations that reached the agent through a channel. Each chat gets its own session, so a group and a DM never share a memory.")}
@@ -157,7 +347,7 @@ export function AgentPage({ onSelect }: { onSelect: (id: string) => void }) {
                 onClick={async () => {
                   setStarting(true);
                   try {
-                    onSelect((await api.startAgentChat()).id);
+                    onSelect((await api.startAgentChat(agent.id)).id);
                   } finally {
                     setStarting(false);
                   }
@@ -179,12 +369,12 @@ export function AgentPage({ onSelect }: { onSelect: (id: string) => void }) {
               <Stat value={sessions.filter((s) => s.status === "running").length} label={t("running")} tone="text-accent" />
               <div className="flex min-w-0 items-center gap-1.5 rounded-lg bg-raised/60 px-2.5 py-1">
                 <LuFolder className="h-3 w-3 shrink-0 text-fg-faint" />
-                <span className="truncate font-mono text-[11px] text-fg-subtle">{home}</span>
+                <span className="truncate font-mono text-[11px] text-fg-subtle">{agent.home}</span>
               </div>
             </div>
           </PageHeader>
 
-          {setup?.initialised && <AgentFiles setup={setup} onSaved={setSetup} />}
+          {setup?.initialised && <AgentFiles agent={agent.id} setup={setup} onSaved={setSetup} />}
 
           <OrbStudio />
 
@@ -295,7 +485,85 @@ export function AgentPage({ onSelect }: { onSelect: (id: string) => void }) {
           )}
         </div>
       </div>
+      {deleting && <DeleteAgent agent={agent} onClose={() => setDeleting(false)} onDeleted={onDeleted} />}
     </div>
+  );
+}
+
+/**
+ * Deleting an agent: its chats go with it, and its folder — SOUL.md, its
+ * memory, anything it kept there — only if that is chosen. Kept, the folder is
+ * taken up again by an agent made under the same name.
+ */
+function DeleteAgent({ agent, onClose, onDeleted }: { agent: Agent; onClose: () => void; onDeleted: () => Promise<void> }) {
+  const [folder, setFolder] = useState<"keep" | "delete">("keep");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const bound = agent.channels.length > 0;
+
+  const remove = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      await api.deleteAgent(agent.id, folder);
+      onClose();
+      await onDeleted();
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
+  };
+
+  const choice = (value: "keep" | "delete", title: string, detail: string) => (
+    <label
+      className={`flex cursor-pointer items-start gap-3 rounded-xl border px-3 py-2.5 transition ${
+        folder === value ? (value === "delete" ? "border-danger/40 bg-danger/5" : "border-accent/40 bg-accent/5") : "border-line hover:bg-fg/5"
+      }`}
+    >
+      <input type="radio" name="agent-folder" checked={folder === value} onChange={() => setFolder(value)} className="mt-1" />
+      <span className="min-w-0">
+        <span className="block text-sm text-fg">{title}</span>
+        <span className="block text-xs text-fg-muted">{detail}</span>
+      </span>
+    </label>
+  );
+
+  return (
+    <Modal
+      title={t("Delete \"{name}\"?", { name: agent.name })}
+      onClose={onClose}
+      footer={
+        <div className="flex items-center justify-end gap-2">
+          {error && <p className="mr-auto text-xs text-danger">{error}</p>}
+          <button onClick={onClose} className="rounded-lg px-3 py-1.5 text-sm text-fg-muted hover:bg-fg/5">
+            {t("Cancel")}
+          </button>
+          <button
+            onClick={remove}
+            disabled={busy || bound}
+            className="rounded-lg bg-danger/15 px-3 py-1.5 text-sm text-danger ring-1 ring-inset ring-danger/30 hover:bg-danger/25 disabled:opacity-40"
+          >
+            {busy ? t("Deleting…") : t("Delete agent")}
+          </button>
+        </div>
+      }
+    >
+      {bound ? (
+        <p role="alert" className="text-sm text-warn">
+          {t("{channels} talks as this agent. Give it another agent under Settings → Channels first.", { channels: agent.channels.map((c) => c.name).join(", ") })}
+        </p>
+      ) : (
+        <div className="space-y-3">
+          <p className="text-sm text-fg-muted">
+            {agent.chats === 1
+              ? t("Its one chat is stopped and deleted with it.")
+              : t("Its {n} chats are stopped and deleted with it.", { n: agent.chats })}
+          </p>
+          {choice("keep", t("Keep its folder"), t("Its files and memory stay in {home}. An agent made under the same name picks them up again.", { home: agent.home }))}
+          {choice("delete", t("Delete its folder too"), t("Everything in {home} is removed, its memory with it. This cannot be undone.", { home: agent.home }))}
+        </div>
+      )}
+    </Modal>
   );
 }
 
@@ -320,7 +588,7 @@ function RowBody({ s, title }: { s: AgentSession; title: ReactNode }) {
 }
 
 /** The files that define the agent, editable in place. */
-function AgentFiles({ setup, onSaved }: { setup: Setup; onSaved: (s: Setup) => void }) {
+function AgentFiles({ agent, setup, onSaved }: { agent: string; setup: Setup; onSaved: (s: Setup) => void }) {
   const [open, setOpen] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -334,7 +602,7 @@ function AgentFiles({ setup, onSaved }: { setup: Setup; onSaved: (s: Setup) => v
     if (!file) return;
     setBusy(true);
     try {
-      onSaved(await api.saveAgentFile(file.name, draft));
+      onSaved(await api.saveAgentFile(agent, file.name, draft));
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } finally {

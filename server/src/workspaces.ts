@@ -1,6 +1,7 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { agentHomePath } from "./agent-home.js";
+import { agentAt } from "./agents.js";
 import { isWithinText, pathBelow, realPath } from "./within.js";
 
 /** Where projects live. WORKSPACE_ROOT is the new name; WORKSPACES_DIR still works for existing deploys. */
@@ -14,10 +15,10 @@ export function workspaceRoot(): string {
  * A bare name is a project under the root.
  */
 export function checkWorkspace(raw: string): { path: string } | { error: string } {
-  const home = agentHomePath();
   const root = workspaceRoot();
   const resolved = path.isAbsolute(raw) ? path.resolve(raw) : path.join(root, raw);
-  if (resolved === home) return { path: home };
+  // An agent's home is the one place outside the workspace root a chat may work in.
+  if (resolved === agentHomePath() || agentAt(resolved)) return { path: resolved };
   // Keep pi inside the mounted workspace area — no escaping to the rest of the FS.
   if (!isWithinText(root, resolved)) {
     return { error: "workspace must be inside the workspace root" };

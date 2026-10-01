@@ -1,11 +1,18 @@
 import { nanoid } from "nanoid";
-import { createSession, findChannelSession, type SessionRow } from "./db.js";
+import { createSession, findChannelSession, getDb, type SessionRow } from "./db.js";
+import { DEFAULT_AGENT, channelAgentHome } from "./agents.js";
 import { agentHome } from "./agent-home.js";
 
 export { agentHome };
 
 /** Keys come from outside, so they are bounded before touching the database. */
 const MAX_KEY = 200;
+
+/** The agent a channel talks as, by its slug: "" for the first agent, as every channel was before there were others. */
+function channelAgent(channelSlug: string): string {
+  const row = getDb().prepare("SELECT agent_id FROM channels WHERE slug = ?").get(channelSlug) as { agent_id: string } | undefined;
+  return row?.agent_id && row.agent_id !== DEFAULT_AGENT ? row.agent_id : "";
+}
 
 /**
  * The key a package supplies is namespaced by its channel's slug.
@@ -17,24 +24,22 @@ const MAX_KEY = 200;
  * back up, and picking a different one is a deliberate fresh start.
  *
  * It also reads: `my-bot:chat:999` rather than `jAUF15d6Gg:chat:999`.
- */
-export const scopeKey = (channelSlug: string, key: string) => `${channelSlug}:${key}`;
-
-/** The channel's own key, with the prefix taken back off. */
-export const unscopeKey = (channelSlug: string, stored: string) =>
-  stored.startsWith(`${channelSlug}:`) ? stored.slice(channelSlug.length + 1) : stored;
-
-/**
- * Find or create the session for one conversation on one channel.
  *
- * The channel package decides what counts as a conversation — a Telegram chat
- * id, a Slack channel, a Discord channel — and the portal turns that key into
- * an isolated session. A group chat and a DM produce different keys, so they
- * get different sessions and never share a memory.
- *
- * The key is prefixed with the channel's slug, so two channels using the same
- * obvious key ("general") stay separate without either knowing.
+ * The agent it talks as goes in too, when that is not the first one: a channel
+ * moved to another agent starts new conversations there, and moved back finds
+ * its old ones. The first agent's keys are as they always were.
  */
+export const scopeKey = (channelSlug: string, key: string, agentId = channelAgent(channelSlug)) =>
+  agentId && agentId !== DEFAULT_AGENT ? `${channelSlug}@${agentId}:${key}` : `${channelSlug}:${key}`;
+
+export function unscopeKey(channelSlug: string, stored: string): string {
+  for (const prefix of [`${channelSlug}:`, `${channelSlug}@`]) {
+    if (!stored.startsWith(prefix)) continue;
+    return prefix.endsWith(":") ? stored.slice(prefix.length) : stored.slice(stored.indexOf(":", prefix.length) + 1);
+  }
+  return stored;
+}
+
 export function resolveChannelSession(opts: {
   /** The channel's stable slug, not its primary key. */
   channelSlug: string;
@@ -42,11 +47,14 @@ export function resolveChannelSession(opts: {
   /** Human label for the first time this conversation is seen. */
   title?: string;
   executor: string;
+  /** The agent to talk to: the channel's own, unless given. */
+  agentId?: string;
 }): { session: SessionRow; created: boolean } {
   const key = String(opts.key ?? "").trim().slice(0, MAX_KEY);
   if (!key) throw new Error("A channel must supply a session key for each conversation");
 
-  const scoped = scopeKey(opts.channelSlug, key);
+  const agentId = opts.agentId ?? channelAgent(opts.channelSlug);
+  const scoped = scopeKey(opts.channelSlug, key, agentId);
 
   const existing = findChannelSession(scoped);
   if (existing) return { session: existing, created: false };
@@ -55,7 +63,7 @@ export function resolveChannelSession(opts: {
   createSession({
     id,
     title: (opts.title ?? "").trim().slice(0, 120) || key,
-    workspace: agentHome(),
+    workspace: channelAgentHome(agentId),
     executor: opts.executor,
     kind: "agent",
     channel_slug: opts.channelSlug,
