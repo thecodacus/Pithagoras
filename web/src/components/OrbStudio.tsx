@@ -3,7 +3,7 @@ import { LuCheck, LuPalette, LuRefreshCw, LuRotateCcw } from "react-icons/lu";
 import { Modal } from "./Modal";
 import { api } from "../api";
 import { msg, t } from "../i18n";
-import { DEFAULT_ORB, ORB_PALETTES, itemColor, type OrbEyes, type OrbHat, type OrbPersonality, type OrbProp, type OrbState, type OrbStyle } from "../../../server/src/orb-style";
+import { DEFAULT_ORB, ORB_PALETTES, itemColor, type OrbEyes, type OrbFinish, type OrbHat, type OrbPersonality, type OrbProp, type OrbState, type OrbStyle } from "../../../server/src/orb-style";
 import { ORB_STYLE_EVENT, VoiceOrb, type VoiceLevels } from "./VoiceOrb";
 
 const PERSONALITIES: [OrbPersonality, string, string][] = [
@@ -31,6 +31,11 @@ const PROPS: [OrbProp, string][] = [
   ["none", msg("None")], ["headphones", msg("Headphones")], ["antenna", msg("Antenna")], ["halo", msg("Halo")],
   ["glasses", msg("Glasses")], ["monocle", msg("Monocle")], ["mustache", msg("Moustache")], ["bow", msg("Bow")],
   ["catears", msg("Cat ears")], ["sprout", msg("Sprout")], ["flower", msg("Flower")],
+];
+
+const FINISHES: [OrbFinish, string, string][] = [
+  ["glossy", msg("Glossy"), msg("A bright highlight and rim")],
+  ["matte", msg("Matte"), msg("A faint sheen and a fine grain")],
 ];
 
 const STATES: [OrbState, string][] = [
@@ -232,6 +237,26 @@ export function OrbStudio() {
                   />
                   {t(label)}
                 </label>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <p className="text-xs text-fg-muted">{t("Surface")}</p>
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {FINISHES.map(([value, label, hint]) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={draft.finish === value}
+                  onClick={() => change({ finish: value })}
+                  title={t(hint)}
+                  className={`rounded-lg border px-2.5 py-1 text-[11px] transition ${
+                    draft.finish === value ? "border-accent/50 bg-accent/10 text-fg" : "border-line text-fg-muted hover:bg-fg/5"
+                  }`}
+                >
+                  {t(label)}
+                </button>
               ))}
             </div>
           </div>

@@ -70,3 +70,9 @@ test('names an object inherits are not personalities or palettes',()=>{
   assert.equal(normalizeOrb({palette:name}).palette,'aurora');
  }
 });
+
+test('the surface is glossy unless matte is chosen',()=>{
+ assert.equal(DEFAULT_ORB.finish,'glossy');
+ assert.equal(normalizeOrb({finish:'matte'}).finish,'matte');
+ assert.equal(normalizeOrb({finish:'satin'}).finish,'glossy');
+});

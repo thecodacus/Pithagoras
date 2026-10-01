@@ -573,6 +573,7 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
     layer.width = element.width; layer.height = element.height;
     const worn = layer.getContext("2d")!;
     const texture = grain(worn);
+    const skin = grain(ctx);
     let frame = 0, level = 0;
     let color: number[] = hexToRgb(style.current.colors[current.current]);
     // Blinks come at uneven intervals, as they do; the personality sets how often.
@@ -625,7 +626,8 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
       ctx.fillStyle = sphere; ctx.fill(); ctx.shadowBlur = 0;
       // Lit from the upper left, as the gradient is: brightest where the light meets the edge.
       const rim = ctx.createLinearGradient(-r, -r, r, r);
-      rim.addColorStop(0, "rgba(255,255,255,0.7)"); rim.addColorStop(0.45, `rgba(${rgb},0.75)`); rim.addColorStop(1, `rgba(${rgb},0.3)`);
+      const matte = look.finish === "matte";
+      rim.addColorStop(0, `rgba(255,255,255,${matte ? 0.3 : 0.7})`); rim.addColorStop(0.45, `rgba(${rgb},${matte ? 0.6 : 0.75})`); rim.addColorStop(1, `rgba(${rgb},${matte ? 0.25 : 0.3})`);
       ctx.strokeStyle = rim; ctx.lineWidth = 1.8; ctx.stroke(); ctx.save(); ctx.clip();
       // Translucent ribbons bend across the sphere rather than flat sine bars, in
       // two layers: the back ones dimmer and moving less as the face turns, the
@@ -663,9 +665,23 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
       const under = ctx.createLinearGradient(0, r * 0.25, 0, r);
       under.addColorStop(0, "rgba(0,0,0,0)"); under.addColorStop(1, "rgba(0,0,0,0.22)");
       ctx.fillStyle = under; ctx.fillRect(-r * 1.2, r * 0.25, r * 2.4, r);
-      const shine = ctx.createRadialGradient(-r * 0.33, -r * 0.55, 0, -r * 0.33, -r * 0.55, r * 0.85);
-      shine.addColorStop(0, "rgba(238,255,255,0.45)"); shine.addColorStop(0.35, "rgba(233,253,255,0.08)"); shine.addColorStop(1, "rgba(255,255,255,0)");
-      ctx.fillStyle = shine; ctx.fillRect(-r, -r, 2 * r, 2 * r);
+      if (matte) {
+        // A broad, faint sheen where the light falls, not a highlight spot.
+        const sheen = ctx.createRadialGradient(-r * 0.33, -r * 0.5, 0, -r * 0.33, -r * 0.5, r * 1.1);
+        sheen.addColorStop(0, "rgba(238,255,255,0.12)"); sheen.addColorStop(1, "rgba(255,255,255,0)");
+        ctx.fillStyle = sheen; ctx.fillRect(-r, -r, 2 * r, 2 * r);
+        // The same grain as what it wears, sized from its radius so it grows with the voice rather than drifting over it.
+        const k = (r / 132) * 0.5;
+        for (const [pattern, alpha] of [[skin.dark, 0.45], [skin.light, 0.3]] as const) {
+          pattern.setTransform(new DOMMatrix([k, 0, 0, k, 0, 0]));
+          ctx.globalAlpha = alpha; ctx.fillStyle = pattern; ctx.fillRect(-r * 1.2, -r * 1.2, r * 2.4, r * 2.4);
+        }
+        ctx.globalAlpha = 1;
+      } else {
+        const shine = ctx.createRadialGradient(-r * 0.33, -r * 0.55, 0, -r * 0.33, -r * 0.55, r * 0.85);
+        shine.addColorStop(0, "rgba(238,255,255,0.45)"); shine.addColorStop(0.35, "rgba(233,253,255,0.08)"); shine.addColorStop(1, "rgba(255,255,255,0)");
+        ctx.fillStyle = shine; ctx.fillRect(-r, -r, 2 * r, 2 * r);
+      }
       ctx.restore();
       if (look.eyes !== "none") {
         if (!reduced && timestamp > nextBlink) { blinkAt = timestamp; nextBlink = timestamp + (2200 + Math.random() * 3200) / motion.blink; }

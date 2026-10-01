@@ -66,6 +66,10 @@ export function itemColor(kind: Exclude<OrbHat | OrbProp, "none">, chosen: strin
   return chosen === "auto" ? ORB_ITEM_COLORS[kind] : chosen;
 }
 
+/** The orb's surface: glossy, with a highlight and a bright rim, or matte, with a faint sheen and a grain. */
+export const ORB_FINISHES = ["glossy", "matte"] as const;
+export type OrbFinish = (typeof ORB_FINISHES)[number];
+
 export type OrbColors = Record<OrbState, string>;
 
 /** Aurora is the orb as it always was. */
@@ -88,6 +92,7 @@ export interface OrbStyle {
   glow: number;
   /** The translucent ribbons inside the sphere. */
   ribbons: boolean;
+  finish: OrbFinish;
   eyes: OrbEyes;
   eyeColor: string;
   hat: OrbHat;
@@ -104,6 +109,7 @@ export const DEFAULT_ORB: OrbStyle = {
   reactivity: 1,
   glow: 1,
   ribbons: true,
+  finish: "glossy",
   eyes: "none",
   eyeColor: "#111111",
   hat: "none",
@@ -144,6 +150,7 @@ export function normalizeOrb(value: unknown): OrbStyle {
     reactivity: between(v.reactivity, 0, 2.5, DEFAULT_ORB.reactivity),
     glow: between(v.glow, 0, 2, DEFAULT_ORB.glow),
     ribbons: typeof v.ribbons === "boolean" ? v.ribbons : DEFAULT_ORB.ribbons,
+    finish: (ORB_FINISHES as readonly unknown[]).includes(v.finish) ? (v.finish as OrbFinish) : DEFAULT_ORB.finish,
     eyes: (ORB_EYES as readonly unknown[]).includes(v.eyes) ? (v.eyes as OrbEyes) : DEFAULT_ORB.eyes,
     eyeColor: hex(v.eyeColor, DEFAULT_ORB.eyeColor),
     hat: (ORB_HATS as readonly unknown[]).includes(v.hat) ? (v.hat as OrbHat) : DEFAULT_ORB.hat,
