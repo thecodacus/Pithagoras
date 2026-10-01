@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { LuCheck, LuRefreshCw, LuRotateCcw } from "react-icons/lu";
 import { api } from "../api";
 import { msg, t } from "../i18n";
-import { DEFAULT_ORB, ORB_PALETTES, type OrbPersonality, type OrbState, type OrbStyle } from "../../../server/src/orb-style";
+import { DEFAULT_ORB, ORB_PALETTES, type OrbEyes, type OrbPersonality, type OrbProp, type OrbState, type OrbStyle } from "../../../server/src/orb-style";
 import { ORB_STYLE_EVENT, VoiceOrb, type VoiceLevels } from "./VoiceOrb";
 
 const PERSONALITIES: [OrbPersonality, string, string][] = [
@@ -16,6 +16,15 @@ const PERSONALITIES: [OrbPersonality, string, string][] = [
 const PALETTE_NAMES: Record<string, string> = {
   aurora: msg("Aurora"), ember: msg("Ember"), forest: msg("Forest"), rose: msg("Rose"), mono: msg("Mono"),
 };
+
+const EYES: [OrbEyes, string][] = [
+  ["none", msg("None")], ["dots", msg("Dots")], ["round", msg("Round")], ["happy", msg("Happy")], ["sleepy", msg("Sleepy")], ["visor", msg("Visor")],
+];
+
+const PROPS: [OrbProp, string][] = [
+  ["none", msg("None")], ["headphones", msg("Headphones")], ["antenna", msg("Antenna")], ["crown", msg("Crown")],
+  ["halo", msg("Halo")], ["party", msg("Party hat")], ["glasses", msg("Glasses")], ["bow", msg("Bow")],
+];
 
 const STATES: [OrbState, string][] = [
   ["idle", msg("Idle")], ["input", msg("Listening")], ["output", msg("Speaking")], ["muted", msg("Muted")],
@@ -166,6 +175,38 @@ export function OrbStudio() {
               ))}
             </div>
           </div>
+
+          {([["eyes", "eyeColor", msg("Eyes"), EYES], ["prop", "propColor", msg("Props"), PROPS]] as const).map(([key, colorKey, title, options]) => (
+            <div key={key}>
+              <p className="text-xs text-fg-muted">{t(title)}</p>
+              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                {options.map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    aria-pressed={draft[key] === value}
+                    onClick={() => change({ [key]: value } as Partial<OrbStyle>)}
+                    className={`rounded-lg border px-2.5 py-1 text-[11px] transition ${
+                      draft[key] === value ? "border-accent/50 bg-accent/10 text-fg" : "border-line text-fg-muted hover:bg-fg/5"
+                    }`}
+                  >
+                    {t(label)}
+                  </button>
+                ))}
+                {draft[key] !== "none" && (
+                  <label className="ml-1 flex items-center gap-1.5 text-[11px] text-fg-muted">
+                    <input
+                      type="color"
+                      aria-label={t("Colour")}
+                      value={draft[colorKey]}
+                      onChange={(e) => change({ [colorKey]: e.target.value } as Partial<OrbStyle>)}
+                      className="h-6 w-8 cursor-pointer rounded border border-line bg-transparent"
+                    />
+                  </label>
+                )}
+              </div>
+            </div>
+          ))}
 
           {SLIDERS.map(([key, label, min, max, help]) => (
             <label key={key} className="block text-xs text-fg-muted">

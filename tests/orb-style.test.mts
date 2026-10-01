@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_ORB, ORB_PALETTES, ORB_PERSONALITIES, hexToRgb, normalizeOrb } from '../server/src/orb-style.ts';
+import { DEFAULT_ORB, ORB_EYES, ORB_PALETTES, ORB_PERSONALITIES, ORB_PROPS, hexToRgb, normalizeOrb } from '../server/src/orb-style.ts';
 
 test('nothing stored is the orb as it always was',()=>{
  assert.deepEqual(normalizeOrb(undefined),DEFAULT_ORB);
  assert.deepEqual(normalizeOrb('garbage'),DEFAULT_ORB);
  // The balanced personality with the aurora colours is the orb drawn before styles existed.
- assert.deepEqual(ORB_PERSONALITIES.balanced,{lobes:[3,5],wave:1,attack:0.3,release:0.09,rings:2,bounce:0,wobble:0.12,drift:1});
+ assert.deepEqual(ORB_PERSONALITIES.balanced,{lobes:[3,5],wave:1,attack:0.3,release:0.09,rings:2,bounce:0,wobble:0.12,drift:1,blink:1});
+ // No face and nothing worn: the plain orb.
+ assert.equal(DEFAULT_ORB.eyes,'none');assert.equal(DEFAULT_ORB.prop,'none');
  assert.deepEqual(DEFAULT_ORB.colors,{idle:'#82bcff',input:'#53f7d7',output:'#be9fff',muted:'#a1b3cc'});
  assert.deepEqual(hexToRgb(DEFAULT_ORB.colors.idle),[130,188,255]);
 });
@@ -31,4 +33,15 @@ test('unknown names and malformed colours fall back field by field',()=>{
  assert.equal(style.colors.output,'#be9fff');
  assert.equal(style.speed,1);
  for(const name of Object.keys(ORB_PALETTES))assert.equal(normalizeOrb({palette:name}).palette,name);
+});
+
+test('eyes and props are kept when known, and their colours checked',()=>{
+ const style=normalizeOrb({eyes:'round',eyeColor:'#00FF88',prop:'headphones',propColor:'#123abc'});
+ assert.equal(style.eyes,'round');assert.equal(style.eyeColor,'#00ff88');
+ assert.equal(style.prop,'headphones');assert.equal(style.propColor,'#123abc');
+ for(const eyes of ORB_EYES)assert.equal(normalizeOrb({eyes}).eyes,eyes);
+ for(const prop of ORB_PROPS)assert.equal(normalizeOrb({prop}).prop,prop);
+ const odd=normalizeOrb({eyes:'laser',prop:'cape',eyeColor:'white',propColor:42});
+ assert.equal(odd.eyes,'none');assert.equal(odd.prop,'none');
+ assert.equal(odd.eyeColor,DEFAULT_ORB.eyeColor);assert.equal(odd.propColor,DEFAULT_ORB.propColor);
 });
