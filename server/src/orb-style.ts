@@ -42,8 +42,12 @@ export const ORB_PERSONALITIES: Record<OrbPersonality, OrbMotion> = {
 export const ORB_EYES = ["none", "dots", "round", "happy", "sleepy", "visor"] as const;
 export type OrbEyes = (typeof ORB_EYES)[number];
 
-/** Something the orb wears. */
-export const ORB_PROPS = ["none", "headphones", "antenna", "crown", "halo", "party", "glasses", "bow"] as const;
+/** A hat, worn on top. It goes with any prop, so a crown can have glasses. */
+export const ORB_HATS = ["none", "crown", "party", "tophat", "beanie", "cap", "wizard", "cowboy"] as const;
+export type OrbHat = (typeof ORB_HATS)[number];
+
+/** Something else the orb wears. */
+export const ORB_PROPS = ["none", "headphones", "antenna", "halo", "glasses", "bow", "catears", "sprout", "flower", "mustache", "monocle"] as const;
 export type OrbProp = (typeof ORB_PROPS)[number];
 
 export type OrbColors = Record<OrbState, string>;
@@ -70,6 +74,8 @@ export interface OrbStyle {
   ribbons: boolean;
   eyes: OrbEyes;
   eyeColor: string;
+  hat: OrbHat;
+  hatColor: string;
   prop: OrbProp;
   propColor: string;
 }
@@ -84,6 +90,8 @@ export const DEFAULT_ORB: OrbStyle = {
   ribbons: true,
   eyes: "none",
   eyeColor: "#111111",
+  hat: "none",
+  hatColor: "#71717a",
   prop: "none",
   propColor: "#a1a1aa",
 };
@@ -122,6 +130,8 @@ export function normalizeOrb(value: unknown): OrbStyle {
     ribbons: typeof v.ribbons === "boolean" ? v.ribbons : DEFAULT_ORB.ribbons,
     eyes: (ORB_EYES as readonly unknown[]).includes(v.eyes) ? (v.eyes as OrbEyes) : DEFAULT_ORB.eyes,
     eyeColor: hex(v.eyeColor, DEFAULT_ORB.eyeColor),
+    hat: (ORB_HATS as readonly unknown[]).includes(v.hat) ? (v.hat as OrbHat) : DEFAULT_ORB.hat,
+    hatColor: hex(v.hatColor, DEFAULT_ORB.hatColor),
     prop: (ORB_PROPS as readonly unknown[]).includes(v.prop) ? (v.prop as OrbProp) : DEFAULT_ORB.prop,
     propColor: hex(v.propColor, DEFAULT_ORB.propColor),
   };

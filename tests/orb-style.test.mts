@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_ORB, ORB_EYES, ORB_PALETTES, ORB_PERSONALITIES, ORB_PROPS, hexToRgb, normalizeOrb } from '../server/src/orb-style.ts';
+import { DEFAULT_ORB, ORB_EYES, ORB_HATS, ORB_PALETTES, ORB_PERSONALITIES, ORB_PROPS, hexToRgb, normalizeOrb } from '../server/src/orb-style.ts';
 
 test('nothing stored is the orb as it always was',()=>{
  assert.deepEqual(normalizeOrb(undefined),DEFAULT_ORB);
@@ -8,7 +8,7 @@ test('nothing stored is the orb as it always was',()=>{
  // The balanced personality with the aurora colours is the orb drawn before styles existed.
  assert.deepEqual(ORB_PERSONALITIES.balanced,{lobes:[3,5],wave:1,attack:0.3,release:0.09,rings:2,bounce:0,wobble:0.12,drift:1,blink:1});
  // No face and nothing worn: the plain orb.
- assert.equal(DEFAULT_ORB.eyes,'none');assert.equal(DEFAULT_ORB.prop,'none');
+ assert.equal(DEFAULT_ORB.eyes,'none');assert.equal(DEFAULT_ORB.prop,'none');assert.equal(DEFAULT_ORB.hat,'none');
  assert.deepEqual(DEFAULT_ORB.colors,{idle:'#82bcff',input:'#53f7d7',output:'#be9fff',muted:'#a1b3cc'});
  assert.deepEqual(hexToRgb(DEFAULT_ORB.colors.idle),[130,188,255]);
 });
@@ -44,4 +44,12 @@ test('eyes and props are kept when known, and their colours checked',()=>{
  const odd=normalizeOrb({eyes:'laser',prop:'cape',eyeColor:'white',propColor:42});
  assert.equal(odd.eyes,'none');assert.equal(odd.prop,'none');
  assert.equal(odd.eyeColor,DEFAULT_ORB.eyeColor);assert.equal(odd.propColor,DEFAULT_ORB.propColor);
+});
+
+test('a hat is its own slot, worn with any prop',()=>{
+ const style=normalizeOrb({hat:'tophat',hatColor:'#334455',prop:'monocle'});
+ assert.equal(style.hat,'tophat');assert.equal(style.hatColor,'#334455');assert.equal(style.prop,'monocle');
+ for(const hat of ORB_HATS)assert.equal(normalizeOrb({hat}).hat,hat);
+ assert.equal(normalizeOrb({hat:'fez'}).hat,'none');
+ assert.equal(normalizeOrb({hatColor:'blue'}).hatColor,DEFAULT_ORB.hatColor);
 });

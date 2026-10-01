@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { api } from "../api";
-import { DEFAULT_ORB, ORB_PERSONALITIES, hexToRgb, type OrbState, type OrbStyle } from "../../../server/src/orb-style";
+import { DEFAULT_ORB, ORB_PERSONALITIES, hexToRgb, type OrbHat, type OrbProp, type OrbState, type OrbStyle } from "../../../server/src/orb-style";
 
 type Ctx = CanvasRenderingContext2D;
 
@@ -55,6 +55,30 @@ function gloss(ctx: Ctx, x: number, y: number, rx: number, ry: number, alpha = 0
   const g = ctx.createRadialGradient(x, y, 0, x, y, Math.max(rx, ry));
   g.addColorStop(0, `rgba(255,255,255,${alpha})`); g.addColorStop(1, "rgba(255,255,255,0)");
   ctx.save(); ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+}
+
+/** A rounded surface lit from the left, darker toward its right edge: cylinders and cones. */
+function sideLit(ctx: Ctx, base: Rgb, left: number, right: number): CanvasGradient {
+  const g = ctx.createLinearGradient(left, 0, right, 0);
+  g.addColorStop(0, css(shade(base, 0.45))); g.addColorStop(0.4, css(base)); g.addColorStop(1, css(shade(base, -0.6)));
+  return g;
+}
+
+/** A colour a step lighter (k > 0) or darker, for a second part of the same object. */
+function mixHex(hex: string, k: number): string {
+  const c = shade(hexToRgb(hex), k).map((v) => Math.round(v).toString(16).padStart(2, "0"));
+  return `#${c.join("")}`;
+}
+
+/** A small five-pointed star. */
+function star(ctx: Ctx, x: number, y: number, size: number, color: Rgb) {
+  ctx.save(); ctx.translate(x, y); ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const a = -Math.PI / 2 + i * Math.PI / 5, d = i % 2 ? size * 0.45 : size;
+    ctx.lineTo(Math.cos(a) * d, Math.sin(a) * d);
+  }
+  ctx.closePath(); ctx.fillStyle = css(color); ctx.shadowColor = css(color, 0.6); ctx.shadowBlur = 6; ctx.fill();
+  ctx.restore();
 }
 
 /** Lifts a prop off the orb with a soft shadow below it. */
@@ -192,14 +216,14 @@ function drawEyes(ctx: Ctx, look: OrbStyle, r: number, mode: OrbState, level: nu
  * object in the UI's own colours: neutral surfaces, with the accent only in
  * small lights.
  */
-function drawProp(ctx: Ctx, look: OrbStyle, r: number, t: number, level: number, mode: OrbState, turn: Turn) {
-  const color = look.propColor;
+function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t: number, level: number, mode: OrbState, turn: Turn) {
   const base = mix(hexToRgb(color), ZINC, 0.55);
   ctx.save();
   ctx.lineCap = "round"; ctx.lineJoin = "round";
-  // What sits on top rides round with the turn a little, less than the face does.
-  if (!["headphones", "glasses"].includes(look.prop)) ctx.translate(Math.sin(turn.yaw) * r * 0.3, Math.sin(turn.pitch) * r * 0.12);
-  switch (look.prop) {
+  // What sits on top rides round with the turn a little, less than the face
+  // does; what is on the face places itself with the eyes.
+  if (!["headphones", "glasses", "mustache", "monocle"].includes(kind)) ctx.translate(Math.sin(turn.yaw) * r * 0.3, Math.sin(turn.pitch) * r * 0.12);
+  switch (kind) {
     case "headphones": {
       const shift = Math.sin(turn.yaw) * r * 0.08;
       lift(ctx, r);
@@ -320,6 +344,173 @@ function drawProp(ctx: Ctx, look: OrbStyle, r: number, t: number, level: number,
       ball(ctx, 0, 0, r * 0.085, shade(base, -0.1));
       break;
     }
+    case "tophat": {
+      ctx.rotate(-0.1);
+      const brim = -r * 0.9, w = r * 0.68, top = -r * 1.58;
+      const cylinder = () => { ctx.beginPath(); ctx.moveTo(-w / 2, brim); ctx.lineTo(-w * 0.47, top); ctx.lineTo(w * 0.47, top); ctx.lineTo(w / 2, brim); ctx.ellipse(0, brim, w / 2, r * 0.07, 0, 0, Math.PI); ctx.closePath(); };
+      lift(ctx, r);
+      ctx.fillStyle = material(ctx, color, brim - r * 0.12, brim + r * 0.12);
+      ctx.beginPath(); ctx.ellipse(0, brim, r * 0.64, r * 0.13, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = sideLit(ctx, base, -w / 2, w / 2); cylinder(); ctx.fill();
+      unlift(ctx);
+      ctx.save(); cylinder(); ctx.clip();
+      ctx.fillStyle = css(mix(ACCENT, ZINC, 0.55), 0.85); ctx.fillRect(-w, brim - r * 0.22, w * 2, r * 0.12);
+      ctx.restore();
+      ctx.fillStyle = css(shade(base, 0.2)); ctx.beginPath(); ctx.ellipse(0, top, w * 0.47, r * 0.07, 0, 0, Math.PI * 2); ctx.fill();
+      gloss(ctx, -w * 0.24, top + r * 0.28, w * 0.09, r * 0.22, 0.3);
+      break;
+    }
+    case "beanie": {
+      const cuff = -r * 0.7;
+      lift(ctx, r);
+      ctx.fillStyle = material(ctx, color, -r * 1.3, cuff);
+      ctx.beginPath(); ctx.ellipse(0, cuff + r * 0.06, r * 0.92, r * 0.6, 0, Math.PI, Math.PI * 2); ctx.closePath(); ctx.fill();
+      unlift(ctx);
+      ctx.strokeStyle = "rgba(0,0,0,0.14)"; ctx.lineWidth = r * 0.025;
+      for (let i = -3; i <= 3; i++) { ctx.beginPath(); ctx.moveTo(i * r * 0.22, cuff); ctx.quadraticCurveTo(i * r * 0.12, -r * 1.0, i * r * 0.04, -r * 1.24); ctx.stroke(); }
+      lift(ctx, r);
+      ctx.fillStyle = material(ctx, mixHex(color, -0.15), cuff - r * 0.06, cuff + r * 0.2);
+      ctx.beginPath(); ctx.roundRect(-r * 0.97, cuff - r * 0.06, r * 1.94, r * 0.25, r * 0.11); ctx.fill();
+      unlift(ctx);
+      ctx.strokeStyle = "rgba(0,0,0,0.16)"; ctx.lineWidth = r * 0.018;
+      for (let x = -r * 0.88; x <= r * 0.88; x += r * 0.09) { ctx.beginPath(); ctx.moveTo(x, cuff - r * 0.02); ctx.lineTo(x, cuff + r * 0.15); ctx.stroke(); }
+      gloss(ctx, -r * 0.3, -r * 1.05, r * 0.25, r * 0.1, 0.3);
+      ball(ctx, 0, -r * 1.3, r * 0.15, shade(base, 0.15));
+      break;
+    }
+    case "cap": {
+      const rim = -r * 0.66;
+      lift(ctx, r);
+      ctx.fillStyle = material(ctx, color, -r * 1.2, rim);
+      ctx.beginPath(); ctx.ellipse(0, rim, r * 0.86, r * 0.52, 0, Math.PI, Math.PI * 2); ctx.closePath(); ctx.fill();
+      unlift(ctx);
+      ctx.strokeStyle = "rgba(0,0,0,0.18)"; ctx.lineWidth = r * 0.02;
+      for (const x of [-0.42, 0, 0.42]) { ctx.beginPath(); ctx.moveTo(x * r * 1.6, rim); ctx.quadraticCurveTo(x * r * 0.9, -r * 1.0, 0, -r * 1.18); ctx.stroke(); }
+      lift(ctx, r);
+      ctx.fillStyle = material(ctx, mixHex(color, -0.2), rim - r * 0.1, rim + r * 0.1);
+      ctx.beginPath(); ctx.ellipse(r * 0.62, rim + r * 0.02, r * 0.55, r * 0.11, -0.06, 0, Math.PI * 2); ctx.fill();
+      unlift(ctx);
+      gloss(ctx, -r * 0.25, -r * 1.0, r * 0.22, r * 0.09, 0.32);
+      ball(ctx, 0, -r * 1.18, r * 0.06, shade(base, -0.1));
+      break;
+    }
+    case "wizard": {
+      ctx.translate(0, -r * 0.86); ctx.rotate(-0.12 + Math.sin(t * 1.2) * 0.03);
+      lift(ctx, r);
+      ctx.fillStyle = material(ctx, color, -r * 0.12, r * 0.12);
+      ctx.beginPath(); ctx.ellipse(0, 0, r * 0.78, r * 0.14, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = sideLit(ctx, base, -r * 0.42, r * 0.42);
+      ctx.beginPath(); ctx.moveTo(-r * 0.42, -r * 0.02);
+      ctx.quadraticCurveTo(-r * 0.12, -r * 0.6, r * 0.32, -r * 1.02);
+      ctx.quadraticCurveTo(r * 0.18, -r * 0.55, r * 0.42, -r * 0.02);
+      ctx.ellipse(0, -r * 0.02, r * 0.42, r * 0.08, 0, 0, Math.PI); ctx.closePath(); ctx.fill();
+      unlift(ctx);
+      for (const [x, y, size] of [[-r * 0.12, -r * 0.25, r * 0.07], [r * 0.12, -r * 0.5, r * 0.05], [r * 0.2, -r * 0.18, r * 0.04]]) star(ctx, x, y, size, mix(ACCENT, ZINC, 0.45));
+      break;
+    }
+    case "cowboy": {
+      const y = -r * 0.86;
+      lift(ctx, r);
+      ctx.fillStyle = sideLit(ctx, base, -r * 0.42, r * 0.42);
+      ctx.beginPath(); ctx.moveTo(-r * 0.44, y); ctx.lineTo(-r * 0.38, y - r * 0.46);
+      ctx.quadraticCurveTo(-r * 0.15, y - r * 0.56, 0, y - r * 0.42); ctx.quadraticCurveTo(r * 0.15, y - r * 0.56, r * 0.38, y - r * 0.46);
+      ctx.lineTo(r * 0.44, y); ctx.closePath(); ctx.fill();
+      unlift(ctx);
+      ctx.fillStyle = css(mix(ACCENT, ZINC, 0.6), 0.8); ctx.fillRect(-r * 0.43, y - r * 0.12, r * 0.86, r * 0.08);
+      lift(ctx, r);
+      ctx.fillStyle = material(ctx, color, y - r * 0.18, y + r * 0.12);
+      ctx.beginPath(); ctx.moveTo(-r * 1.02, y - r * 0.14);
+      ctx.quadraticCurveTo(-r * 0.8, y + r * 0.08, 0, y + r * 0.1); ctx.quadraticCurveTo(r * 0.8, y + r * 0.08, r * 1.02, y - r * 0.14);
+      ctx.quadraticCurveTo(r * 0.75, y - r * 0.02, 0, y - r * 0.04); ctx.quadraticCurveTo(-r * 0.75, y - r * 0.02, -r * 1.02, y - r * 0.14);
+      ctx.closePath(); ctx.fill();
+      unlift(ctx);
+      gloss(ctx, -r * 0.2, y - r * 0.32, r * 0.12, r * 0.08, 0.3);
+      break;
+    }
+    case "catears": {
+      for (const side of [-1, 1]) {
+        const a = side * 0.62;
+        ctx.save(); ctx.translate(Math.sin(a) * r * 0.9, -Math.cos(a) * r * 0.9); ctx.rotate(a + Math.sin(t * 2 + side) * 0.04);
+        lift(ctx, r);
+        ctx.fillStyle = material(ctx, color, -r * 0.4, 0);
+        ctx.beginPath(); ctx.moveTo(-r * 0.22, r * 0.04); ctx.quadraticCurveTo(-r * 0.1, -r * 0.3, 0, -r * 0.42); ctx.quadraticCurveTo(r * 0.1, -r * 0.3, r * 0.22, r * 0.04); ctx.closePath(); ctx.fill();
+        unlift(ctx);
+        ctx.fillStyle = css(mix([236, 160, 180], ZINC, 0.55));
+        ctx.beginPath(); ctx.moveTo(-r * 0.11, 0); ctx.quadraticCurveTo(-r * 0.05, -r * 0.18, 0, -r * 0.27); ctx.quadraticCurveTo(r * 0.05, -r * 0.18, r * 0.11, 0); ctx.closePath(); ctx.fill();
+        gloss(ctx, -r * 0.06, -r * 0.2, r * 0.04, r * 0.08, 0.3);
+        ctx.restore();
+      }
+      break;
+    }
+    case "sprout": {
+      const sway = Math.sin(t * 1.6) * r * 0.05;
+      lift(ctx, r);
+      ctx.strokeStyle = material(ctx, color, -r * 1.35, -r * 0.95); ctx.lineWidth = r * 0.035;
+      ctx.beginPath(); ctx.moveTo(0, -r * 0.96); ctx.quadraticCurveTo(sway * 0.3, -r * 1.18, sway, -r * 1.36); ctx.stroke();
+      for (const side of [-1, 1]) {
+        ctx.save(); ctx.translate(sway, -r * 1.36); ctx.rotate(side * 0.8);
+        ctx.fillStyle = material(ctx, color, -r * 0.4, 0);
+        ctx.beginPath(); ctx.moveTo(0, 0); ctx.quadraticCurveTo(-r * 0.18, -r * 0.22, 0, -r * 0.42); ctx.quadraticCurveTo(r * 0.18, -r * 0.22, 0, 0); ctx.fill();
+        ctx.strokeStyle = "rgba(255,255,255,0.3)"; ctx.lineWidth = r * 0.012;
+        ctx.beginPath(); ctx.moveTo(0, -r * 0.03); ctx.lineTo(0, -r * 0.36); ctx.stroke();
+        ctx.restore();
+      }
+      unlift(ctx);
+      break;
+    }
+    case "flower": {
+      ctx.translate(r * 0.64, -r * 0.74); ctx.rotate(t * 0.2);
+      lift(ctx, r);
+      for (let i = 0; i < 5; i++) {
+        const a = i / 5 * Math.PI * 2;
+        const x = Math.cos(a) * r * 0.15, y = Math.sin(a) * r * 0.15;
+        const petal = ctx.createRadialGradient(x - r * 0.04, y - r * 0.04, r * 0.01, x, y, r * 0.15);
+        petal.addColorStop(0, css(shade(base, 0.55))); petal.addColorStop(1, css(shade(base, -0.3)));
+        ctx.fillStyle = petal; ctx.beginPath(); ctx.ellipse(x, y, r * 0.14, r * 0.1, a, 0, Math.PI * 2); ctx.fill();
+      }
+      unlift(ctx);
+      ball(ctx, 0, 0, r * 0.09, mix([251, 191, 36], ZINC, 0.5));
+      break;
+    }
+    case "mustache": {
+      const { ey, es } = faceOf(r, mode, level);
+      ctx.translate(Math.sin(turn.yaw) * r, ey + es * 1.55 + Math.sin(turn.pitch) * r * 0.6);
+      ctx.scale(Math.cos(turn.yaw), 1);
+      const wiggle = mode === "output" ? level * 0.15 : 0;
+      lift(ctx, r);
+      ctx.fillStyle = material(ctx, color, -r * 0.08, r * 0.1);
+      for (const s of [-1, 1]) {
+        ctx.save(); ctx.rotate(s * wiggle);
+        ctx.beginPath(); ctx.moveTo(0, -r * 0.02);
+        ctx.bezierCurveTo(s * r * 0.12, -r * 0.1, s * r * 0.28, -r * 0.05, s * r * 0.34, r * 0.03);
+        ctx.bezierCurveTo(s * r * 0.38, r * 0.08, s * r * 0.44, r * 0.0, s * r * 0.41, -r * 0.05);
+        ctx.bezierCurveTo(s * r * 0.44, r * 0.07, s * r * 0.33, r * 0.11, s * r * 0.22, r * 0.07);
+        ctx.bezierCurveTo(s * r * 0.12, r * 0.04, s * r * 0.04, r * 0.06, 0, r * 0.04);
+        ctx.closePath(); ctx.fill();
+        ctx.restore();
+      }
+      unlift(ctx);
+      gloss(ctx, -r * 0.14, -r * 0.03, r * 0.08, r * 0.02, 0.3);
+      break;
+    }
+    case "monocle": {
+      const { ex, ey, es } = faceOf(r, mode, level);
+      const p = eyePlace(r, ex, ey, 1, turn);
+      const radius = es * 1.15;
+      lift(ctx, r);
+      ctx.strokeStyle = material(ctx, mixHex(color, -0.3), p.y - radius, p.y + radius); ctx.lineWidth = r * 0.06;
+      ctx.beginPath(); ctx.ellipse(p.x, p.y, radius * p.fx, radius, 0, 0, Math.PI * 2); ctx.stroke();
+      unlift(ctx);
+      ctx.strokeStyle = "rgba(255,255,255,0.35)"; ctx.lineWidth = r * 0.012;
+      ctx.beginPath(); ctx.ellipse(p.x, p.y, (radius - r * 0.02) * p.fx, radius - r * 0.02, 0, Math.PI * 1.1, Math.PI * 1.6); ctx.stroke();
+      const lens = ctx.createLinearGradient(p.x - radius, p.y - radius, p.x + radius, p.y + radius);
+      lens.addColorStop(0, "rgba(255,255,255,0.24)"); lens.addColorStop(0.5, "rgba(255,255,255,0.04)"); lens.addColorStop(1, "rgba(255,255,255,0.12)");
+      ctx.fillStyle = lens; ctx.beginPath(); ctx.ellipse(p.x, p.y, radius * p.fx, radius, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = css(shade(base, 0.2), 0.8); ctx.lineWidth = r * 0.012; ctx.setLineDash([r * 0.03, r * 0.02]);
+      ctx.beginPath(); ctx.moveTo(p.x + radius * 0.6 * p.fx, p.y + radius * 0.8); ctx.quadraticCurveTo(p.x + r * 0.2, p.y + r * 0.7, r * 0.82, r * 0.5); ctx.stroke();
+      ctx.setLineDash([]);
+      break;
+    }
   }
   ctx.restore();
 }
@@ -412,7 +603,8 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
         const open = mode === "muted" ? 0 : blinking ? Math.abs(Math.cos((timestamp - blinkAt) / 160 * Math.PI)) : 1;
         drawEyes(ctx, look, r, mode, level, open, gx, gy, turn);
       }
-      if (look.prop !== "none") drawProp(ctx, look, r, t, level, mode, turn);
+      if (look.prop !== "none") drawWorn(ctx, look.prop, look.propColor, r, t, level, mode, turn);
+      if (look.hat !== "none") drawWorn(ctx, look.hat, look.hatColor, r, t, level, mode, turn);
       ctx.restore();
       frame = requestAnimationFrame(render);
     };

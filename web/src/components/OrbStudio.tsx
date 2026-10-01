@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { LuCheck, LuRefreshCw, LuRotateCcw } from "react-icons/lu";
 import { api } from "../api";
 import { msg, t } from "../i18n";
-import { DEFAULT_ORB, ORB_PALETTES, type OrbEyes, type OrbPersonality, type OrbProp, type OrbState, type OrbStyle } from "../../../server/src/orb-style";
+import { DEFAULT_ORB, ORB_PALETTES, type OrbEyes, type OrbHat, type OrbPersonality, type OrbProp, type OrbState, type OrbStyle } from "../../../server/src/orb-style";
 import { ORB_STYLE_EVENT, VoiceOrb, type VoiceLevels } from "./VoiceOrb";
 
 const PERSONALITIES: [OrbPersonality, string, string][] = [
@@ -21,9 +21,15 @@ const EYES: [OrbEyes, string][] = [
   ["none", msg("None")], ["dots", msg("Dots")], ["round", msg("Round")], ["happy", msg("Happy")], ["sleepy", msg("Sleepy")], ["visor", msg("Visor")],
 ];
 
+const HATS: [OrbHat, string][] = [
+  ["none", msg("None")], ["crown", msg("Crown")], ["party", msg("Party hat")], ["tophat", msg("Top hat")],
+  ["beanie", msg("Beanie")], ["cap", msg("Cap")], ["wizard", msg("Wizard hat")], ["cowboy", msg("Cowboy hat")],
+];
+
 const PROPS: [OrbProp, string][] = [
-  ["none", msg("None")], ["headphones", msg("Headphones")], ["antenna", msg("Antenna")], ["crown", msg("Crown")],
-  ["halo", msg("Halo")], ["party", msg("Party hat")], ["glasses", msg("Glasses")], ["bow", msg("Bow")],
+  ["none", msg("None")], ["headphones", msg("Headphones")], ["antenna", msg("Antenna")], ["halo", msg("Halo")],
+  ["glasses", msg("Glasses")], ["monocle", msg("Monocle")], ["mustache", msg("Moustache")], ["bow", msg("Bow")],
+  ["catears", msg("Cat ears")], ["sprout", msg("Sprout")], ["flower", msg("Flower")],
 ];
 
 const STATES: [OrbState, string][] = [
@@ -176,7 +182,7 @@ export function OrbStudio() {
             </div>
           </div>
 
-          {([["eyes", "eyeColor", msg("Eyes"), EYES], ["prop", "propColor", msg("Props"), PROPS]] as const).map(([key, colorKey, title, options]) => (
+          {([["eyes", "eyeColor", msg("Eyes"), EYES], ["hat", "hatColor", msg("Hat"), HATS], ["prop", "propColor", msg("Props"), PROPS]] as const).map(([key, colorKey, title, options]) => (
             <div key={key}>
               <p className="text-xs text-fg-muted">{t(title)}</p>
               <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
