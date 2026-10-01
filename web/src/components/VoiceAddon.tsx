@@ -24,11 +24,12 @@ export function VoiceAddon({ onError }: { onError: (message: string) => void }) 
     const poll=async()=>{try { const state=await api.voiceInstallStatus(); if(!disposed)setInstall(state); } catch(e) { if(!disposed)setInstall({available:false,state:'unavailable',busy:false,progress:'',error:(e as Error).message}); } finally { if(!disposed)timer=setTimeout(poll,2500); }};
     void poll(); return ()=>{disposed=true;clearTimeout(timer);};
   },[]);
-  // Asked again once the service exists: before the first install the voice
-  // image is not on the host, and the probe answers with nothing.
+  // Asked again once the service runs: during the first install the voice
+  // image is still arriving, and the probe answers with nothing.
   const [gpus, setGpus] = useState<{ gpus: VoiceGpu[]; selected: string } | null>(null);
   const installed = Boolean(install && install.state !== 'absent' && install.state !== 'unavailable');
-  useEffect(() => { if (installed) void api.voiceGpus().then(setGpus).catch(() => setGpus(null)); }, [installed]);
+  const running = install?.state === 'running';
+  useEffect(() => { if (installed) void api.voiceGpus().then(setGpus).catch(() => setGpus(null)); }, [installed, running]);
   const chooseGpu = async (gpu: string) => {
     setActionBusy(true);
     try { await api.setVoiceGpu(gpu); setGpus(await api.voiceGpus()); setInstall(await api.voiceInstallStatus()); }

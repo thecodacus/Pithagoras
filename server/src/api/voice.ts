@@ -160,7 +160,11 @@ export function voiceRouter(): Router {
       else getDb().prepare("DELETE FROM settings WHERE key = 'voice_gpu'").run();
       voiceService.useGpu(id);
       const restarting = ['running', 'starting'].includes((await voiceService.status()).state);
-      if (restarting) await voiceService.install();
+      if (restarting) {
+        // Saved either way: a setup already under way picks the new GPU up on the next start.
+        try { await voiceService.install(); }
+        catch (e) { return res.status(409).json({ error: `GPU choice saved, but voice could not restart on it now: ${(e as Error).message}. It moves on the next start.` }); }
+      }
       res.json({ selected: id, restarting });
     } catch (e) { res.status(400).json({ error: (e as Error).message }); }
   });
