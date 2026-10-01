@@ -123,121 +123,42 @@ function grain(ctx: Ctx): Grain {
 }
 
 /**
- * A felt of short tangled fibres for the plush orb: many more and longer
- * strands than the props' grain, and no specks. Each fibre is drawn again
- * across the tile's edges so the repeat has no seams.
- */
-function felt(ctx: Ctx): Grain {
-  const make = (tone: string, fibres: number, alpha: number) => {
-    const tile = document.createElement("canvas");
-    tile.width = tile.height = 192;
-    const g = tile.getContext("2d")!;
-    g.lineCap = "round";
-    for (let i = 0; i < fibres; i++) {
-      const x = Math.random() * 192, y = Math.random() * 192, a = Math.random() * Math.PI * 2, len = 5 + Math.random() * 12, bend = (Math.random() - 0.5) * 6;
-      g.strokeStyle = `rgba(${tone},${0.12 + Math.random() * alpha})`; g.lineWidth = 0.6 + Math.random() * 0.7;
-      for (const ox of [-192, 0, 192]) for (const oy of [-192, 0, 192]) {
-        const sx = x + ox, sy = y + oy;
-        g.beginPath(); g.moveTo(sx, sy);
-        g.quadraticCurveTo(sx + Math.cos(a) * len / 2 + bend, sy + Math.sin(a) * len / 2 - bend, sx + Math.cos(a) * len, sy + Math.sin(a) * len);
-        g.stroke();
-      }
-    }
-    return ctx.createPattern(tile, "repeat")!;
-  };
-  return { dark: make("0,0,0", 1500, 0.35), light: make("255,255,255", 900, 0.3) };
-}
-
-/**
- * The plush orb's pile, drawn once and shared by every orb on the page: a disc
- * of short strands in tufts, combed down and outward as plush lies, with dark
- * roots and light tips, over broad soft patches where the nap lies differently.
- * Strands near the rim lean out and look longer, as fur seen side-on does.
- * Light and dark only, so it sits over whatever colour the orb is.
- *
- * Strands are gathered by tone and width and drawn as a few paths, then the
- * whole is softened with one blur: tens of thousands of separate strokes, each
- * blurred, took seconds and froze the page.
+ * The plush orb's pile, drawn once and shared by every orb on the page: a very
+ * fine, short, even nap, as on a minky toy, in light only so it never reads as
+ * specks. Combed gently down and outward; softened by one blur over the whole.
+ * Scaled with the orb each frame, so its only cost after the first is one image.
  */
 let pileCache: HTMLCanvasElement | undefined;
-function furSprite(): HTMLCanvasElement {
+function minkySprite(): HTMLCanvasElement {
   if (pileCache) return pileCache;
   const size = 640, c = size / 2, R = size / 2;
   const raw = document.createElement("canvas");
   raw.width = raw.height = size;
   const g = raw.getContext("2d")!;
-  for (let i = 0; i < 160; i++) {
-    const d = Math.sqrt(Math.random()), a = Math.random() * Math.PI * 2, x = c + Math.cos(a) * d * R, y = c + Math.sin(a) * d * R, rad = 20 + Math.random() * 30;
+  // Barely there: where the nap lies a little differently.
+  for (let i = 0; i < 120; i++) {
+    const d = Math.sqrt(Math.random()), a = Math.random() * Math.PI * 2, x = c + Math.cos(a) * d * R, y = c + Math.sin(a) * d * R, rad = 24 + Math.random() * 36;
     const patch = g.createRadialGradient(x, y, 0, x, y, rad);
-    patch.addColorStop(0, Math.random() < 0.5 ? "rgba(0,0,0,0.07)" : "rgba(255,255,255,0.06)"); patch.addColorStop(1, "rgba(0,0,0,0)");
+    patch.addColorStop(0, "rgba(255,255,255,0.035)"); patch.addColorStop(1, "rgba(255,255,255,0)");
     g.fillStyle = patch; g.fillRect(x - rad, y - rad, rad * 2, rad * 2);
   }
-  // [tone 0-7][width 0-1] → the strands' roots (whole strand) and tips.
-  const roots = Array.from({ length: 16 }, () => new Path2D()), tips = Array.from({ length: 16 }, () => new Path2D());
-  for (let tuft = 0; tuft < 2600; tuft++) {
+  const strands = [new Path2D(), new Path2D(), new Path2D()];
+  for (let i = 0; i < 36000; i++) {
     const d = Math.sqrt(Math.random()), a = Math.random() * Math.PI * 2;
     const u = Math.cos(a) * d, v = Math.sin(a) * d;
-    // Combed: down, and out from the middle, more so toward the rim.
-    let dx = u * (0.4 + d * 0.8), dy = v * (0.4 + d * 0.8) + 0.65;
+    let dx = u * 0.5 + (Math.random() - 0.5) * 0.6, dy = v * 0.5 + 0.6 + (Math.random() - 0.5) * 0.6;
     const n = Math.hypot(dx, dy) || 1; dx /= n; dy /= n;
-    const lean = (Math.random() - 0.5) * 0.5, tone = Math.random();
-    for (let i = 0; i < 10; i++) {
-      const turn = lean + (Math.random() - 0.5) * 0.35;
-      const sx = dx * Math.cos(turn) - dy * Math.sin(turn), sy = dx * Math.sin(turn) + dy * Math.cos(turn);
-      const len = (7 + Math.random() * 7) * (1 + d * d * d * 1.6);
-      const x = c + u * R * 0.98 + (Math.random() - 0.5) * 9, y = c + v * R * 0.98 + (Math.random() - 0.5) * 9;
-      const ex = x + sx * len, ey = y + sy * len, mx = x + sx * len * 0.5 - sy * len * 0.12, my = y + sy * len * 0.5 + sx * len * 0.12;
-      const k = Math.min(7, Math.floor(Math.min(1, tone * 0.7 + Math.random() * 0.4) * 8)) * 2 + (Math.random() < 0.5 ? 0 : 1);
-      roots[k].moveTo(x, y); roots[k].quadraticCurveTo(mx, my, ex, ey);
-      tips[k].moveTo(mx, my); tips[k].quadraticCurveTo(mx + sx * len * 0.3, my + sy * len * 0.3, ex, ey);
-    }
+    const len = 2 + Math.random() * 2.5, x = c + u * R, y = c + v * R;
+    const path = strands[i % 3];
+    path.moveTo(x, y); path.lineTo(x + dx * len, y + dy * len);
   }
-  g.lineCap = "round";
-  for (let k = 0; k < 16; k++) {
-    const tone = (k >> 1) / 7, width = k & 1 ? 2 : 1.4;
-    // The root is in the shade of the pile around it; the tip catches the light.
-    g.lineWidth = width; g.strokeStyle = `rgba(0,0,0,${0.06 + tone * 0.08})`; g.stroke(roots[k]);
-    g.lineWidth = width * 0.8; g.strokeStyle = `rgba(255,255,255,${0.06 + tone * 0.11})`; g.stroke(tips[k]);
-  }
-  // Soft strands rather than sharp hairs: one blur over the whole.
+  g.lineCap = "round"; g.lineWidth = 1;
+  strands.forEach((path, i) => { g.strokeStyle = `rgba(255,255,255,${0.07 + i * 0.04})`; g.stroke(path); });
   const soft = document.createElement("canvas");
   soft.width = soft.height = size;
   const sg = soft.getContext("2d")!;
-  sg.filter = "blur(0.6px)"; sg.drawImage(raw, 0, 0);
+  sg.filter = "blur(0.9px)"; sg.drawImage(raw, 0, 0);
   return (pileCache = soft);
-}
-
-/** One strand of the plush orb's fuzzy edge: where on the edge, how long, how far it leans, how bright. */
-interface Fibre { a: number; len: number; tilt: number; tone: number }
-
-/**
- * The plush orb's silhouette: short fibres standing out from its edge, along
- * the outline as it moves, lighter where the light falls and darker on the far
- * side, puffing out a little with the voice.
- */
-function drawFuzz(ctx: Ctx, fibres: readonly Fibre[], edge: (a: number) => number, r: number, level: number, color: Rgb) {
-  const light = Math.atan2(-0.45, -0.33);
-  // Gathered into a few shades and drawn as one path each: hundreds of strokes
-  // with a colour apiece, every frame, is what would make the orb costly.
-  const shades = Array.from({ length: 6 }, () => new Path2D());
-  for (const f of fibres) {
-    const e = edge(f.a);
-    const x = Math.cos(f.a) * e * 0.97, y = Math.sin(f.a) * e * 0.97;
-    // Combed down as the pile is: strands on the sides lean toward the bottom.
-    const d = f.a + f.tilt + Math.cos(f.a) * 0.35, len = f.len * r * (1 + level * 0.35);
-    const lit = 0.5 + 0.5 * Math.cos(f.a - light);
-    const path = shades[Math.min(5, Math.floor(lit * 6))];
-    path.moveTo(x, y);
-    path.quadraticCurveTo(x + Math.cos(d) * len * 0.5 + Math.cos(f.a) * len * 0.2, y + Math.sin(d) * len * 0.5 + Math.sin(f.a) * len * 0.2, x + Math.cos(d) * len, y + Math.sin(d) * len);
-  }
-  ctx.save();
-  ctx.lineCap = "round"; ctx.lineWidth = 1.3;
-  shades.forEach((path, i) => {
-    const lit = (i + 0.5) / 6;
-    ctx.strokeStyle = css(lit > 0.5 ? shade(color, (lit - 0.5) * 0.45) : shade(color, -(0.5 - lit) * 0.8), 0.45);
-    ctx.stroke(path);
-  });
-  ctx.restore();
 }
 
 /** A point of light for the starry pattern: where in the sphere (a unit disc), its size, its twinkle, and which layer it is in. */
@@ -808,9 +729,7 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
     layer.width = element.width; layer.height = element.height;
     const worn = layer.getContext("2d")!;
     const texture = grain(worn);
-    const skin = felt(ctx);
-    const fuzz: Fibre[] = Array.from({ length: 600 }, () => ({ a: Math.random() * Math.PI * 2, len: 0.03 + Math.random() * 0.05, tilt: (Math.random() - 0.5) * 0.8, tone: Math.random() }));
-    const pile = furSprite();
+    const pile = minkySprite();
     const sparkles: Sparkle[] = Array.from({ length: 46 }, () => {
       const d = Math.sqrt(Math.random()), a = Math.random() * Math.PI * 2;
       return { x: Math.cos(a) * d, y: Math.sin(a) * d, size: Math.random(), phase: Math.random() * Math.PI * 2, back: Math.random() < 0.55 };
@@ -852,28 +771,28 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
         ctx.strokeStyle = `rgba(${rgb},${Math.max(0.04, 0.2 + level * 0.15 - ring * 0.05)})`; ctx.lineWidth = 1.2; ctx.stroke();
       }
       const [first, second] = motion.lobes;
-      // How far the edge is from the middle at an angle: the outline, and where the plush fuzz grows from.
+      // How far the edge is from the middle at an angle: the outline the sphere is filled, clipped and feathered by.
       const edge = (a: number) => r + (Math.sin(a * first + t * 1.3) * (3 + level * 7) + Math.sin(a * second - t * 2) * level * 10) * motion.wave;
-      ctx.beginPath();
+      const outline = new Path2D();
       for (let i = 0; i <= 160; i++) {
         const a = i / 160 * Math.PI * 2, e = edge(a);
         const x = Math.cos(a) * e, y = Math.sin(a) * e;
-        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        if (i === 0) outline.moveTo(x, y); else outline.lineTo(x, y);
       }
-      ctx.closePath();
+      outline.closePath();
       const sphere = ctx.createRadialGradient(-r * 0.32, -r * 0.45, 1, r * 0.12, r * 0.1, r * 1.32);
       sphere.addColorStop(0, `rgba(${rgb},0.98)`); sphere.addColorStop(0.32, `rgba(${rgb},0.95)`);
       sphere.addColorStop(0.7, `rgb(${color.map(v => Math.round(v * 0.62)).join(",")})`); sphere.addColorStop(1, `rgb(${color.map(v => Math.round(v * 0.34)).join(",")})`);
       ctx.shadowColor = `rgba(${rgb},0.65)`; ctx.shadowBlur = 22 * look.glow;
-      ctx.fillStyle = sphere; ctx.fill(); ctx.shadowBlur = 0;
+      ctx.fillStyle = sphere; ctx.fill(outline); ctx.shadowBlur = 0;
       const plush = look.finish === "plush";
       if (!plush) {
         // Lit from the upper left, as the gradient is: brightest where the light meets the edge.
         const rim = ctx.createLinearGradient(-r, -r, r, r);
         rim.addColorStop(0, "rgba(255,255,255,0.7)"); rim.addColorStop(0.45, `rgba(${rgb},0.75)`); rim.addColorStop(1, `rgba(${rgb},0.3)`);
-        ctx.strokeStyle = rim; ctx.lineWidth = 1.8; ctx.stroke();
+        ctx.strokeStyle = rim; ctx.lineWidth = 1.8; ctx.stroke(outline);
       }
-      ctx.save(); ctx.clip();
+      ctx.save(); ctx.clip(outline);
       const tint = color as Rgb;
       drawPattern(ctx, look.pattern, true, r, t, level, tint, turn, sparkles);
       // A glowing core between the layers, drifting against the turn, as something deep inside would.
@@ -885,15 +804,8 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
       // Felt goes on before the shading, so the shadow side darkens it as it does the surface under it.
       if (plush) {
         // The pile over the whole body, scaled with the orb and riding a little with the turn.
-        const R = r * 1.08;
+        const R = r * 1.04;
         ctx.drawImage(pile, -R + Math.sin(turn.yaw) * r * 0.06, -R + Math.sin(turn.pitch) * r * 0.06, R * 2, R * 2);
-        // And a fine felt under it, so no bare colour shows between the tufts.
-        const k = (r / 132) * 0.5;
-        for (const [pattern, alpha] of [[skin.dark, 0.3], [skin.light, 0.2]] as const) {
-          pattern.setTransform(new DOMMatrix([k, 0, 0, k, 0, 0]));
-          ctx.globalAlpha = alpha; ctx.fillStyle = pattern; ctx.fillRect(-r * 1.3, -r * 1.3, r * 2.6, r * 2.6);
-        }
-        ctx.globalAlpha = 1;
       }
       // The side away from the light falls into shadow, and the underside darkens most.
       const turned = ctx.createRadialGradient(-r * 0.35, -r * 0.45, r * 0.4, -r * 0.35, -r * 0.45, r * 1.9);
@@ -905,7 +817,7 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
       if (plush) {
         // Velvet catches light at its edges rather than in a spot: a soft brightening inside the rim, most where the light falls.
         const sheen = ctx.createRadialGradient(r * 0.12, r * 0.15, r * 0.55, -r * 0.05, -r * 0.05, r * 1.05);
-        sheen.addColorStop(0, "rgba(255,255,255,0)"); sheen.addColorStop(0.75, "rgba(255,255,255,0.05)"); sheen.addColorStop(1, "rgba(255,255,255,0.2)");
+        sheen.addColorStop(0, "rgba(255,255,255,0)"); sheen.addColorStop(0.7, "rgba(255,255,255,0.03)"); sheen.addColorStop(1, "rgba(255,255,255,0.1)");
         ctx.fillStyle = sheen; ctx.fillRect(-r * 1.2, -r * 1.2, r * 2.4, r * 2.4);
       } else {
         // The highlight is light falling on the surface, so it goes on last.
@@ -914,7 +826,13 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
         ctx.fillStyle = shine; ctx.fillRect(-r, -r, 2 * r, 2 * r);
       }
       ctx.restore();
-      if (plush) drawFuzz(ctx, fuzz, edge, r, level, color as Rgb);
+      if (plush) {
+        // A soft edge, as a minky toy's silhouette is: the orb's own colour feathering outward in a few wide, faint passes, and no lines.
+        const soft = color.map((v) => Math.round(v * 0.85)).join(",");
+        for (const [width, alpha] of [[r * 0.03, 0.22], [r * 0.06, 0.1], [r * 0.1, 0.04]] as const) {
+          ctx.lineWidth = width; ctx.strokeStyle = `rgba(${soft},${alpha})`; ctx.stroke(outline);
+        }
+      }
       if (look.eyes !== "none") {
         if (!reduced && timestamp > nextBlink) { blinkAt = timestamp; nextBlink = timestamp + (2200 + Math.random() * 3200) / motion.blink; }
         const blinking = timestamp - blinkAt < 160;
