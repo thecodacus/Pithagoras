@@ -5,6 +5,7 @@ import { api } from "../api";
 import { msg, t } from "../i18n";
 import { DEFAULT_ORB, ORB_PALETTES, itemColor, type OrbEyes, type OrbFinish, type OrbHat, type OrbPattern, type OrbPersonality, type OrbProp, type OrbState, type OrbStyle } from "../../../server/src/orb-style";
 import { ORB_STYLE_EVENT, VoiceOrb, type VoiceLevels } from "./VoiceOrb";
+import { VoicePicker } from "./AgentVoice";
 
 const PERSONALITIES: [OrbPersonality, string, string][] = [
   ["balanced", msg("Balanced"), msg("The orb as it has always been")],
@@ -66,9 +67,12 @@ const SLIDERS: ["speed" | "reactivity" | "glow", string, number, number, string]
  * The preview speaks with a made-up voice level so the motion can be judged
  * without starting voice mode; saved, the style reaches every open voice stage.
  */
-export function OrbStudio({ agent, orb, onSaved }: { agent: string; orb: OrbStyle; onSaved: () => void }) {
+export function OrbStudio({ agent, orb, voice, onSaved }: { agent: string; orb: OrbStyle; voice: string; onSaved: () => void }) {
   const [saved, setSaved] = useState<OrbStyle>(orb);
   const [draft, setDraft] = useState<OrbStyle>(orb);
+  // The voice it speaks with, saved with the look: see VoicePicker.
+  const [savedVoice, setSavedVoice] = useState(voice);
+  const [voiceDraft, setVoiceDraft] = useState(voice);
   const [state, setState] = useState<OrbState>("output");
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
@@ -95,7 +99,7 @@ export function OrbStudio({ agent, orb, onSaved }: { agent: string; orb: OrbStyl
   }, [state, open]);
 
   // Closing without saving puts the saved orb back.
-  const close = () => { setOpen(false); setDraft(saved); setError(""); setDone(false); };
+  const close = () => { setOpen(false); setDraft(saved); setVoiceDraft(savedVoice); setError(""); setDone(false); };
   const shown = saved;
   const name = <T extends string>(list: [T, string, ...unknown[]][], value: T) => t(list.find(([v]) => v === value)?.[1] ?? value);
   const summary = [
@@ -106,13 +110,15 @@ export function OrbStudio({ agent, orb, onSaved }: { agent: string; orb: OrbStyl
   ].filter(Boolean).join(" · ");
 
   const change = (patch: Partial<OrbStyle>) => { setDraft((d) => ({ ...d, ...patch })); setDone(false); };
-  const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
+  const dirty = JSON.stringify(draft) !== JSON.stringify(saved) || voiceDraft !== savedVoice;
 
   const save = async () => {
     setBusy(true); setError("");
     try {
       const next = await api.setAgentOrb(agent, draft);
-      setSaved(next); setDraft(next); setDone(true);
+      setSaved(next); setDraft(next);
+      if (voiceDraft !== savedVoice) setSavedVoice((await api.setAgentVoice(agent, voiceDraft)).voice);
+      setDone(true);
       window.dispatchEvent(new CustomEvent(ORB_STYLE_EVENT));
       onSaved();
       setTimeout(() => setDone(false), 2000);
@@ -205,7 +211,7 @@ export function OrbStudio({ agent, orb, onSaved }: { agent: string; orb: OrbStyl
       </div>
 
       {open && (
-      <Modal title={t("Avatar")} subtitle={t("How the agent looks and moves in voice mode.")} wide onClose={close} footer={footer}>
+      <Modal title={t("Avatar")} subtitle={t("How the agent looks, moves and sounds in voice mode.")} wide onClose={close} footer={footer}>
       <div className="grid gap-5 sm:grid-cols-[220px_1fr]">
         {/* Stays in view while the options scroll past, so a change is seen as it is made. */}
         <div className="sm:sticky sm:top-0 sm:self-start">
@@ -227,6 +233,7 @@ export function OrbStudio({ agent, orb, onSaved }: { agent: string; orb: OrbStyl
               </button>
             ))}
           </div>
+          <VoicePicker value={voiceDraft} onChange={(v) => { setVoiceDraft(v); setDone(false); }} />
         </div>
 
         <div className="min-w-0">

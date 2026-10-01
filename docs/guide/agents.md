@@ -27,8 +27,9 @@ name, with the pencil beside it, renames it; the folder keeps its name.
 
 ## Its voice
 
-With the voice add-on installed, an agent's page has a **Voice** menu: the
-voice it speaks with in voice mode. **As in the voice settings** follows the
+With the voice add-on installed, the avatar customizer (the palette on the
+agent's avatar) has a **Voice** menu under the preview: the voice the agent
+speaks with in voice mode, saved with **Save avatar**. **As in the voice settings** follows the
 voice chosen in Settings; a designed voice or one from the voice library is the
 agent's own. **Add voice** at the end of the menu adds a voice to the library,
 a clone from a recording or one designed from a description, and gives it to
