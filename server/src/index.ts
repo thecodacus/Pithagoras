@@ -32,4 +32,10 @@ const cli = piCli();
 if (cli) process.argv[1] = cli;
 else console.error("[portal] pi's command line was not found: an extension that starts pi from process.argv[1] starts the server instead, and is turned away.");
 
+// Upgraded, if it needs to be, before anything opens the database: checked and
+// backed up first, with a page up meanwhile. Where it cannot be, this does not
+// return, and the page says why.
+const { prepareDatabase } = await import("./db-upgrade.js");
+await prepareDatabase();
+
 await import("./server.js");

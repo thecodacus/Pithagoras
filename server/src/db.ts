@@ -8,6 +8,7 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { agentHome } from "./agent-home.js";
 import { DATA_DIR } from "./data-dir.js";
+import { SCHEMA_VERSION, dbFile } from "./schema-version.js";
 
 export type SessionStatus = "idle" | "running" | "error" | "interrupted";
 
@@ -80,11 +81,19 @@ export interface EventRow {
 
 let db: Database.Database | null = null;
 
+
 export function getDb(): Database.Database {
   if (db) return db;
   mkdirSync(DATA_DIR, { recursive: true });
-  db = new Database(path.join(DATA_DIR, "portal.db"));
+  db = new Database(dbFile());
   db.pragma("journal_mode = WAL");
+  // All of it or none: a failure part way leaves the database as it was, at
+  // its old version, rather than half changed and marked done.
+  db.transaction(() => schema(db!))();
+  return db;
+}
+
+function schema(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
@@ -351,7 +360,7 @@ export function getDb(): Database.Database {
     );
   `);
   migrate(db);
-  return db;
+  if ((db.pragma("user_version", { simple: true }) as number) < SCHEMA_VERSION) db.pragma(`user_version = ${SCHEMA_VERSION}`);
 }
 
 /**
