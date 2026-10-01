@@ -30,21 +30,24 @@ PORTAL_UPGRADE_BACKUP=skip
 
 ### A damaged database
 
-SQLite can recover everything still readable into a new file. With the Compose deployment, the data volume is `pithagoras_portal-data` unless yours is named otherwise:
+SQLite can recover everything still readable into a new file. Both shipped Compose files name the container `pithagoras`; the volume holding its data is read from it, since the Compose files name it differently:
 
 ```sh
-docker compose stop portal
+docker stop pithagoras
+DATA=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/data"}}{{if .Name}}{{.Name}}{{else}}{{.Source}}{{end}}{{end}}{{end}}' pithagoras)
 
 # Recover what can be read into a new file
-docker run --rm -v pithagoras_portal-data:/data alpine sh -c \
+docker run --rm -v "$DATA:/data" alpine sh -c \
   "apk add -q sqlite && sqlite3 /data/portal.db .recover | sqlite3 /data/portal-recovered.db"
 
 # Keep the damaged file, put the recovered one in its place
-docker run --rm -v pithagoras_portal-data:/data alpine sh -c \
+docker run --rm -v "$DATA:/data" alpine sh -c \
   "cd /data && mv portal.db portal-damaged.db && rm -f portal.db-wal portal.db-shm && mv portal-recovered.db portal.db"
 
-docker compose start portal
+docker start pithagoras
 ```
+
+With `PORTAL_DATA_DIR` set to a folder on the host, `DATA` comes out as that folder.
 
 The portal checks the recovered database before upgrading it. Rows on damaged pages can't be recovered, which usually means part of the event history of some conversations. Once you're happy with the result, delete `portal-damaged.db`.
 

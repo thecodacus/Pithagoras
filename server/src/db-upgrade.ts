@@ -41,14 +41,21 @@ export function upgradeCheck(file = dbFile()): UpgradeCheck {
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 
-/** How to repair a damaged database, shown on the page and in the log. */
+/**
+ * How to repair a damaged database, shown on the page and in the log. By the
+ * container, which both shipped Compose files name `pithagoras`, and the volume
+ * it has at /data, read from it: the Compose service and the volume are named
+ * differently in each.
+ */
+const VOLUME_OF = `DATA=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/data"}}{{if .Name}}{{.Name}}{{else}}{{.Source}}{{end}}{{end}}{{end}}' pithagoras)`;
 export const REPAIR_STEPS = [
-  "Stop the portal (docker compose stop portal).",
-  "Recover what can be read into a new file, in the data volume (pithagoras_portal-data unless yours is named otherwise):\n" +
-    "docker run --rm -v pithagoras_portal-data:/data alpine sh -c \"apk add -q sqlite && sqlite3 /data/portal.db .recover | sqlite3 /data/portal-recovered.db\"",
+  "Stop the portal (docker stop pithagoras, or the name your container has).",
+  `Find the volume that holds its data:\n${VOLUME_OF}`,
+  "Recover what can be read into a new file:\n" +
+    'docker run --rm -v "$DATA:/data" alpine sh -c "apk add -q sqlite && sqlite3 /data/portal.db .recover | sqlite3 /data/portal-recovered.db"',
   "Keep the damaged file and put the recovered one in its place:\n" +
-    "docker run --rm -v pithagoras_portal-data:/data alpine sh -c \"cd /data && mv portal.db portal-damaged.db && rm -f portal.db-wal portal.db-shm && mv portal-recovered.db portal.db\"",
-  "Start the portal again. It checks the recovered database before upgrading it.",
+    'docker run --rm -v "$DATA:/data" alpine sh -c "cd /data && mv portal.db portal-damaged.db && rm -f portal.db-wal portal.db-shm && mv portal-recovered.db portal.db"',
+  "Start the portal again (docker start pithagoras). It checks the recovered database before upgrading it.",
 ];
 
 function page(state: { message: string; failed?: string; damaged?: boolean }): string {
@@ -79,10 +86,13 @@ function maintenance() {
   };
   const tlsAt = tlsFiles();
   const server = tlsAt ? createHttpsServer({ cert: readFileSync(tlsAt.cert), key: readFileSync(tlsAt.key) }, answer) : createHttpServer(answer);
+  // The page is a courtesy: a port it cannot have is said, and the upgrade goes on without it.
+  server.on("error", (e) => console.error(`[portal] the upgrade page could not be shown: ${e.message}`));
   server.listen(Number(process.env.PORT || 4100), bindHost(process.env.PORTAL_PASSWORD, process.env.ALLOW_OPEN));
   return {
     say: (message: string) => { state.message = message; },
     fail: (error: string, damaged: boolean) => { state.failed = error; state.damaged = damaged; },
+    // Resolved whether or not it was listening, so the server proper can start either way.
     close: () => new Promise<void>((resolve) => { server.closeAllConnections(); server.close(() => resolve()); }),
   };
 }

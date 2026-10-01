@@ -137,3 +137,21 @@ test("a damaged database on startup keeps the page up with how to repair it, rat
     run.child.kill();
   }
 });
+
+test("an upgrade whose page cannot have its port still upgrades", async () => {
+  const a = fresh("port-taken");
+  oldDatabase(a.file, 50);
+  const { createServer } = await import("node:http");
+  const holder = createServer(() => {});
+  await new Promise((r) => holder.listen(0, "127.0.0.1", r));
+  const run = startUpgrade(a.dir, holder.address().port);
+  try {
+    const exited = await new Promise((resolve) => run.child.on("exit", resolve));
+    assert.equal(exited, 0, run.output());
+    assert.match(run.output(), /upgrade page could not be shown/);
+    assert.match(run.output(), /READY/);
+    assert.equal(upgradeCheck(a.file).needed, false);
+  } finally {
+    holder.close();
+  }
+});
