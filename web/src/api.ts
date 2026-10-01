@@ -123,6 +123,8 @@ export interface Agent {
   channels: { slug: string; name: string }[];
   /** Its avatar. */
   orb: OrbStyle;
+  /** The voice it speaks with: "design", a voice library id, or "" for the one in the voice settings. */
+  voice: string;
 }
 
 export type AgentWizard = {
@@ -736,6 +738,8 @@ export const api = {
       `/api/agents/${encodeURIComponent(id)}?folder=${folder}`,
       { method: "DELETE" }
     ),
+  setAgentVoice: (agent: string, voice: string) =>
+    json<Agent>(`/api/agents/${encodeURIComponent(agent)}/voice`, { method: "PUT", body: JSON.stringify({ voice }) }),
   agentSetup: (agent: string) => json<AgentSetup>(`/api/agents/${encodeURIComponent(agent)}/setup`),
   /** The avatar voice mode shows for a chat: its agent's. */
   chatOrb: (session: string) => json<OrbStyle>(`/api/agent/orb?session=${encodeURIComponent(session)}`),

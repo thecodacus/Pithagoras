@@ -102,3 +102,14 @@ test("each agent has an avatar of its own, and voice mode shows its chat's agent
   assert.deepEqual((await call("GET", `/api/agent/orb?session=${homeChat.id}`)).body, before);
   assert.equal((await call("PUT", "/api/agents/ops/orb", [])).status, 400);
 });
+
+test("an agent speaks with a voice of its own, or the one in the voice settings", async () => {
+  await call("POST", "/api/agents", { name: "Herald" });
+  assert.equal((await call("GET", "/api/agents")).body.agents.find((a) => a.id === "herald").voice, "");
+  const designed = await call("PUT", "/api/agents/herald/voice", { voice: "design" });
+  assert.equal(designed.status, 200);
+  assert.equal(designed.body.voice, "design");
+  assert.equal((await call("PUT", "/api/agents/herald/voice", { voice: "voice-missing" })).status, 400);
+  assert.equal((await call("PUT", "/api/agents/herald/voice", { voice: "" })).body.voice, "");
+  assert.equal((await call("PUT", "/api/agents/nobody/voice", { voice: "" })).status, 404);
+});

@@ -10,7 +10,8 @@ import { once } from "node:events";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import express, { type Router } from "express";
-import { getDb, getStoredSettings } from "../db.js";
+import { getDb, getSession, getStoredSettings } from "../db.js";
+import { agentOf } from "../agents.js";
 
 const DEFAULT_VAD = { positiveSpeechThreshold: 0.65, negativeSpeechThreshold: 0.35, minSpeechMs: 256, preSpeechPadMs: 320, redemptionMs: 1000 };
 export interface VoiceConfig {
@@ -286,7 +287,9 @@ export function voiceRouter(): Router {
     const text = req.body?.text;
     if (typeof text !== "string" || !text.trim() || text.length > 600)
       return res.status(400).json({ error: "Speech text must contain 1–600 characters" });
-    const settings = config();
+    // The voice of the agent the chat is with, where it has one of its own.
+    const own = agentOf(getSession(req.params.id)?.workspace)?.voice;
+    const settings = { ...config(), ...(own ? { voice: own } : {}) };
     const controller = new AbortController();
     res.on("close", () => controller.abort());
     try {

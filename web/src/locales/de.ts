@@ -89,6 +89,8 @@ const de: Locale = {
     "Everything in {home} is removed, its memory with it. This cannot be undone.": "Alles in {home} wird entfernt, auch sein Gedächtnis. Das lässt sich nicht rückgängig machen.",
     "Talks as": "Spricht als",
     "The agent that answers here, with its own character and memory. Moved to another, it starts new conversations; moved back, it picks up the ones it had.": "Der Agent, der hier antwortet, mit eigenem Charakter und Gedächtnis. Einem anderen zugewiesen, beginnt er neue Gespräche; zurückgewechselt, nimmt er die bisherigen wieder auf.",
+    "As in the voice settings": "Wie in den Spracheinstellungen",
+    "Saved in the voice library, and spoken with by {name}.": "Wird in der Stimmenbibliothek gespeichert, und {name} spricht damit.",
     "Customize the avatar": "Avatar anpassen",
     "Not set up yet": "Noch nicht eingerichtet",
     "{n} channels": { one: "{n} Kanal", other: "{n} Kanäle" },

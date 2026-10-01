@@ -4,6 +4,7 @@ import { getDb } from "./db.js";
 import { agentHomePath } from "./agent-home.js";
 import { isWithinText } from "./within.js";
 import { normalizeOrb, type OrbStyle } from "./orb-style.js";
+import { readVoice } from "./voice-presets.js";
 
 /**
  * The agents, each a home folder of its own with its own SOUL.md,
@@ -21,6 +22,8 @@ export interface Agent {
   home: string;
   /** Its avatar as stored: see orbOf. */
   orb: string | null;
+  /** The voice it speaks with: a voice library id or "design"; null is the one in the voice settings. */
+  voice: string | null;
   created_at: string;
 }
 
@@ -116,6 +119,24 @@ export function setOrb(id: string, style: unknown): OrbStyle {
   const orb = normalizeOrb(style);
   getDb().prepare("UPDATE agents SET orb = ? WHERE id = ?").run(JSON.stringify(orb), id);
   return orb;
+}
+
+/**
+ * The voice it speaks with in voice mode: "design", a voice in the library, or
+ * "" for the one chosen in the voice settings.
+ */
+export function setVoice(id: string, voice: unknown): Agent {
+  if (!getAgent(id)) throw new AgentError("No such agent", 404);
+  if (typeof voice !== "string") throw new AgentError("Choose a voice", 400);
+  if (voice && voice !== "design") {
+    try {
+      readVoice(voice);
+    } catch {
+      throw new AgentError("That voice is not in the voice library", 400);
+    }
+  }
+  getDb().prepare("UPDATE agents SET voice = ? WHERE id = ?").run(voice || null, id);
+  return getAgent(id)!;
 }
 
 /** The channels that talk as this agent: an agent with any cannot be deleted until they are moved. */

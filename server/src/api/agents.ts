@@ -1,5 +1,5 @@
 import express, { type Router } from "express";
-import { AgentError, DEFAULT_AGENT, agentOf, channelsOf, createAgent, getAgent, listAgents, orbOf, renameAgent, setOrb, type Agent } from "../agents.js";
+import { AgentError, DEFAULT_AGENT, agentOf, channelsOf, createAgent, getAgent, listAgents, orbOf, renameAgent, setOrb, setVoice, type Agent } from "../agents.js";
 import { agentFileStatus, isInitialised, runWizard, writeAgentFile, type WizardInput } from "../agent-setup.js";
 import { listAgentSessions, listSessions } from "../db.js";
 
@@ -14,7 +14,7 @@ const failed = (res: express.Response, e: unknown) =>
 
 /** An agent as the page sees it: what it is, whether it is set up, and what uses it. */
 export function agentToApi(a: Agent, chats = 0) {
-  return { id: a.id, name: a.name, home: a.home, first: a.id === DEFAULT_AGENT, initialised: isInitialised(a.home), chats, channels: channelsOf(a.id), orb: orbOf(a) };
+  return { id: a.id, name: a.name, home: a.home, first: a.id === DEFAULT_AGENT, initialised: isInitialised(a.home), chats, channels: channelsOf(a.id), orb: orbOf(a), voice: a.voice ?? "" };
 }
 
 export function agentsRouter(): Router {
@@ -60,6 +60,15 @@ export function agentsRouter(): Router {
   router.put("/agents/:id/orb", (req, res) => {
     try {
       res.json(setOrb(req.params.id, req.body));
+    } catch (e) {
+      failed(res, e);
+    }
+  });
+
+  /** `{ voice }`: "design", a voice library id, or "" for the one in the voice settings. */
+  router.put("/agents/:id/voice", (req, res) => {
+    try {
+      res.json(agentToApi(setVoice(req.params.id, req.body?.voice)));
     } catch (e) {
       failed(res, e);
     }

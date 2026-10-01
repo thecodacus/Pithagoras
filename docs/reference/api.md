@@ -366,7 +366,7 @@ Each agent has a home folder of its own, with its own `SOUL.md`,
 
 | Route | Purpose |
 | --- | --- |
-| `GET /api/agents` | `{ agents }`, each `{ id, name, home, first, initialised, chats, channels, orb }` |
+| `GET /api/agents` | `{ agents }`, each `{ id, name, home, first, initialised, chats, channels, orb, voice }` |
 | `POST /api/agents` | `{ name, setup? }` — a new agent and its folder; `setup` takes the wizard's answers. A folder kept from a deleted agent of the same name is taken up again. |
 | `PATCH /api/agents/:id` | `{ name }` — its folder stays where it is |
 | `DELETE /api/agents/:id` | Deletes it and its chats, and its folder with `?folder=delete`. Refused for the first agent, for one a channel talks as, and while one of its chats or routines is working. Its routines are switched off. |
@@ -374,6 +374,7 @@ Each agent has a home folder of its own, with its own `SOUL.md`,
 | `POST /api/agents/:id/setup` | Writes its identity files from the wizard's answers |
 | `PUT /api/agents/:id/files/:name` | Saves one of its files |
 | `PUT /api/agents/:id/orb` | Saves its avatar; answers the style as stored |
+| `PUT /api/agents/:id/voice` | `{ voice }` — the voice it speaks with in voice mode: `"design"`, a voice library id, or `""` for the one in the voice settings |
 | `GET /api/agent/orb?session=` | The avatar voice mode shows for that chat: its agent's, or the first agent's |
 | `POST /api/agent/sessions` | `{ agent?, title? }` — a conversation with that agent, the first without one |
 | `GET /api/agent/setup`, `POST /api/agent/setup`, `PUT /api/agent/files/:name` | The same for the first agent |

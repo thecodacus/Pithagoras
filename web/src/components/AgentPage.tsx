@@ -18,10 +18,12 @@ import {
 } from "react-icons/lu";
 import { PageHeader, Stat } from "./PageHeader";
 import { RowsSkeleton } from "./Skeleton";
-import { api, type Agent, type AgentSession, type AgentSetup as Setup } from "../api";
+import { api, type Agent, type AgentSession, type AgentSetup as Setup, type VoiceConfig } from "../api";
 import { AgentSetup } from "./AgentSetup";
 import { confirmDialog } from "./ConfirmDialog";
 import { Modal } from "./Modal";
+import { Select } from "./Select";
+import { AddVoiceForm, voicePresets, type Preset } from "./VoiceLibrary";
 import { StatusDot } from "./StatusDot";
 import { TitleInput } from "./TitleInput";
 import { pollWhileVisible } from "../poll";
@@ -365,6 +367,7 @@ function AgentView({
               </button>
             }
           >
+            <AgentVoice agent={agent} onChanged={onChanged} />
             <div className="mt-4 flex flex-wrap items-center gap-2">
               <Stat value={sessions.length} label={t("conversations")} />
               <Stat value={sessions.filter((s) => s.status === "running").length} label={t("running")} tone="text-accent" />
@@ -486,6 +489,77 @@ function AgentView({
         </div>
       </div>
       {deleting && <DeleteAgent agent={agent} onClose={() => setDeleting(false)} onDeleted={onDeleted} />}
+    </div>
+  );
+}
+
+/** Picked in the voice menu to add a voice rather than choose one. */
+const ADD_VOICE = "\u0000add";
+
+/**
+ * The voice the agent speaks with in voice mode, and a way to add one to the
+ * library from the same menu. Only there with the voice add-on installed and
+ * speaking.
+ */
+function AgentVoice({ agent, onChanged }: { agent: Agent; onChanged: () => Promise<void> }) {
+  const [config, setConfig] = useState<VoiceConfig | null>(null);
+  const [voices, setVoices] = useState<Preset[]>([]);
+  const [adding, setAdding] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    api.voice().then(setConfig, () => {});
+    voicePresets().then(setVoices, () => {});
+  }, []);
+
+  if (!config?.enabled || config.speech === false) return null;
+
+  const choose = async (voice: string) => {
+    if (voice === ADD_VOICE) return setAdding(true);
+    setError("");
+    try {
+      await api.setAgentVoice(agent.id, voice);
+      await onChanged();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+  const named = (id: string | undefined) => (!id || id === "design" ? t("Designed voice") : (voices.find((v) => v.id === id)?.name ?? id));
+
+  return (
+    <div className="mt-4 max-w-sm">
+      <div className="text-xs text-fg-muted">
+        {t("Voice")}
+        <Select
+          className="mt-1 w-full"
+          aria-label={t("Voice")}
+          value={agent.voice}
+          onChange={(v) => void choose(v)}
+          options={[
+            { value: "", label: t("As in the voice settings"), hint: named(config.voice) },
+            { value: "design", label: t("Designed voice") },
+            ...voices.map((v) => ({ value: v.id, label: v.name, text: v.name, hint: v.kind === "clone" ? t("Reference clone") : t("Designed") })),
+            {
+              value: ADD_VOICE,
+              label: <span className="inline-flex items-center gap-1.5 text-accent"><LuPlus className="h-3.5 w-3.5" />{t("Add voice")}</span>,
+              text: t("Add voice"),
+            },
+          ]}
+        />
+      </div>
+      {error && <p role="alert" className="mt-1 text-xs text-danger">{error}</p>}
+      {adding && (
+        <Modal title={t("Add voice")} subtitle={t("Saved in the voice library, and spoken with by {name}.", { name: agent.name })} onClose={() => setAdding(false)}>
+          <AddVoiceForm
+            onError={setError}
+            onAdded={(voice) => {
+              setVoices((v) => [...v, voice]);
+              setAdding(false);
+              void choose(voice.id);
+            }}
+          />
+        </Modal>
+      )}
     </div>
   );
 }

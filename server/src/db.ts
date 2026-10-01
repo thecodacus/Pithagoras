@@ -370,6 +370,9 @@ function schema(db: Database.Database): void {
       home TEXT NOT NULL UNIQUE,
       -- Its avatar, as JSON: NULL is the default orb.
       orb TEXT,
+      -- The voice it speaks with in voice mode: a voice library id or 'design';
+      -- NULL is the one chosen in the voice settings.
+      voice TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
   `);
@@ -485,6 +488,8 @@ function migrate(d: Database.Database): void {
     d.exec("ALTER TABLE channels ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''");
   }
   d.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_slug ON channels(slug)");
+  const agentCols = (d.prepare("PRAGMA table_info(agents)").all() as { name: string }[]).map((c) => c.name);
+  if (!agentCols.includes("voice")) d.exec("ALTER TABLE agents ADD COLUMN voice TEXT");
   // The Home there always was is the first agent, named as its SOUL.md names
   // it, and wearing the avatar the portal had.
   if (!d.prepare("SELECT 1 FROM agents LIMIT 1").get()) {

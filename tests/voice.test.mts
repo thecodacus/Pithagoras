@@ -7,6 +7,7 @@ import express from 'express';
 import { speechChunks, newSpeech } from '../web/src/voice.js';
 const dir = mkdtempSync(join(tmpdir(), 'pithagoras-voice-'));
 process.env.DATA_DIR = dir;
+process.env.AGENT_HOME = join(dir, 'agent-home');
 // No Docker here, whatever this machine has: the managed service is tested on its own.
 process.env.DOCKER_SOCKET = join(dir, 'no-docker.sock');
 const { voiceRouter, pcmWav, wavPcm, validateConfig, connectManagedVoice } = await import('../server/src/api/voice.js');
@@ -159,6 +160,25 @@ test('audio.cpp receives cloning context and exposes incremental playback', asyn
   assert.equal(nativeRequest.options.guidance_scale, '1'); await response.arrayBuffer();
 });
 
+
+test('voice mode speaks with the voice of the agent the chat is with', async () => {
+  const { createAgent, setVoice } = await import('../server/src/agents.js');
+  const { createSession } = await import('../server/src/db.js');
+  const saved = await fetch(`${base}/voice`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...settings, runtime: 'audio-cpp', voice: 'design' }) });
+  assert.equal(saved.status, 200);
+  const { addVoice } = await import('../server/src/voice-presets.js');
+  const { samplesWav } = await import('../web/src/voice.js');
+  const audio = Buffer.from(await samplesWav(new Float32Array(16000)).arrayBuffer()).toString('base64');
+  const clone = addVoice({ name: 'Herald voice', kind: 'clone', instruction: 'Warm.', transcript: 'Herald reference.', audio });
+  const agent = createAgent({ name: 'Herald' });
+  setVoice(agent.id, clone.id);
+  createSession({ id: 'herald-chat', title: 'Herald', workspace: agent.home, executor: 'host' });
+  nativeRequest = undefined;
+  const response = await fetch(`${base}/sessions/herald-chat/voice/speech`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'Hello.' }) });
+  assert.equal(response.status, 200);
+  await response.arrayBuffer();
+  assert.equal(nativeRequest.reference_text, 'Herald reference.', "the agent's clone, not the designed voice in the settings");
+});
 
 test('custom clone sends its saved recording, transcript and description to audio.cpp', async () => {
   const { addVoice } = await import('../server/src/voice-presets.js');

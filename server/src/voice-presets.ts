@@ -41,5 +41,7 @@ export function updateVoice(id:string,value:any){
 export function deleteVoice(id:string){readVoice(id);db().transaction(()=>{
  const row=db().prepare("SELECT value FROM settings WHERE key='voice'").get() as {value:string}|undefined;
  if(row){const config=JSON.parse(row.value);if(config.voice===id){config.voice='design';db().prepare("UPDATE settings SET value=? WHERE key='voice'").run(JSON.stringify(config));}}
+ // An agent that spoke with it goes back to the voice in the settings.
+ db().prepare('UPDATE agents SET voice=NULL WHERE voice=?').run(id);
  db().prepare('DELETE FROM voice_presets WHERE id=?').run(id);
 })();}
