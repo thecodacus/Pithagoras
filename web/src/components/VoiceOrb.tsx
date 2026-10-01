@@ -92,12 +92,14 @@ function star(ctx: Ctx, x: number, y: number, size: number, color: Rgb) {
   ctx.restore();
 }
 
+interface Grain { dark: CanvasPattern; light: CanvasPattern }
+
 /**
  * A matte grain for what the orb wears: specks and short fibres, one pattern
  * that darkens and one that lightens, so a surface reads as felt or matte
  * plastic rather than polished. Made once per orb, so it does not shimmer.
  */
-function grain(ctx: Ctx): { dark: CanvasPattern; light: CanvasPattern } {
+function grain(ctx: Ctx): Grain {
   const make = (tone: string, specks: number, fibres: number, alpha: number) => {
     const tile = document.createElement("canvas");
     tile.width = tile.height = 192;
@@ -253,7 +255,7 @@ function drawEyes(ctx: Ctx, look: OrbStyle, r: number, mode: OrbState, level: nu
  * object in the UI's own colours: neutral surfaces, with the accent only in
  * small lights.
  */
-function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t: number, level: number, mode: OrbState, turn: Turn) {
+function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t: number, level: number, mode: OrbState, turn: Turn, texture: Grain) {
   const base = tame(hexToRgb(color));
   ctx.save();
   ctx.lineCap = "round"; ctx.lineJoin = "round";
@@ -533,6 +535,16 @@ function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t:
       break;
     }
   }
+  // The grain goes on here, in the item's own space: it moves, turns and
+  // grows with it (the orb's radius swells with the voice), rather than
+  // staying put on the screen while the item moves under it.
+  unlift(ctx);
+  const k = (r / 132) * 0.5;
+  for (const [pattern, alpha] of [[texture.dark, 0.6], [texture.light, 0.45]] as const) {
+    pattern.setTransform(new DOMMatrix([k, 0, 0, k, 0, 0]));
+    ctx.globalCompositeOperation = "source-atop"; ctx.globalAlpha = alpha;
+    ctx.fillStyle = pattern; ctx.fillRect(-r * 4, -r * 4, r * 8, r * 8);
+  }
   ctx.restore();
 }
 
@@ -632,12 +644,7 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
       const wear = (kind: OrbHat | OrbProp, tint: string) => {
         worn.setTransform(1, 0, 0, 1, 0, 0); worn.clearRect(0, 0, layer.width, layer.height);
         worn.setTransform(ratio, 0, 0, ratio, 0, 0); worn.translate(size / 2, size / 2);
-        drawWorn(worn, kind, tint, r, t, level, mode, turn);
-        worn.setTransform(1, 0, 0, 1, 0, 0);
-        worn.globalCompositeOperation = "source-atop";
-        worn.globalAlpha = 0.6; worn.fillStyle = texture.dark; worn.fillRect(0, 0, layer.width, layer.height);
-        worn.globalAlpha = 0.45; worn.fillStyle = texture.light; worn.fillRect(0, 0, layer.width, layer.height);
-        worn.globalAlpha = 1; worn.globalCompositeOperation = "source-over";
+        drawWorn(worn, kind, tint, r, t, level, mode, turn, texture);
         ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(layer, 0, 0); ctx.restore();
       };
       if (look.prop !== "none") wear(look.prop, itemColor(look.prop, look.propColor));

@@ -1372,6 +1372,7 @@ const de: Locale = {
     "Ribbons of light inside the orb": "Lichtbänder im Inneren des Orbs",
     "Reset to default": "Auf Standard zurücksetzen",
     "Save orb": "Orb speichern",
+    "Customize": "Anpassen",
     "Auto": "Automatisch",
     "Hat": "Hut",
     "Top hat": "Zylinder",

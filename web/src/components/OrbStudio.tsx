@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { LuCheck, LuRefreshCw, LuRotateCcw } from "react-icons/lu";
+import { LuCheck, LuPalette, LuRefreshCw, LuRotateCcw } from "react-icons/lu";
+import { Modal } from "./Modal";
 import { api } from "../api";
 import { msg, t } from "../i18n";
 import { DEFAULT_ORB, ORB_PALETTES, itemColor, type OrbEyes, type OrbHat, type OrbPersonality, type OrbProp, type OrbState, type OrbStyle } from "../../../server/src/orb-style";
@@ -55,14 +56,18 @@ export function OrbStudio() {
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState("");
+  const [open, setOpen] = useState(false);
   const levels = useRef<VoiceLevels>({ input: 0, output: 0 });
+  const still = useRef<VoiceLevels>({ input: 0, output: 0 });
 
   useEffect(() => {
     api.agentOrb().then((s) => { setSaved(s); setDraft(s); }).catch((e) => setError((e as Error).message));
   }, []);
 
-  // Syllables rising and falling inside slower phrases, like the meter during speech.
+  // Syllables rising and falling inside slower phrases, like the meter during
+  // speech. Only while the customizer is open: the card's orb stays idle.
   useEffect(() => {
+    if (!open) return;
     let frame = 0;
     const tick = (ms: number) => {
       const syllable = Math.max(0, Math.sin(ms * 0.012));
@@ -73,7 +78,18 @@ export function OrbStudio() {
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [state]);
+  }, [state, open]);
+
+  // Closing without saving puts the saved orb back.
+  const close = () => { setOpen(false); if (saved) setDraft(saved); setError(""); setDone(false); };
+  const shown = saved ?? DEFAULT_ORB;
+  const name = <T extends string>(list: [T, string, ...unknown[]][], value: T) => t(list.find(([v]) => v === value)?.[1] ?? value);
+  const summary = [
+    name(PERSONALITIES, shown.personality),
+    shown.eyes !== "none" && name(EYES, shown.eyes),
+    shown.hat !== "none" && name(HATS, shown.hat),
+    shown.prop !== "none" && name(PROPS, shown.prop),
+  ].filter(Boolean).join(" · ");
 
   const change = (patch: Partial<OrbStyle>) => { setDraft((d) => ({ ...d, ...patch })); setDone(false); };
   const dirty = saved !== null && JSON.stringify(draft) !== JSON.stringify(saved);
@@ -92,14 +108,51 @@ export function OrbStudio() {
     }
   };
 
-  return (
-    <section className="mt-6 rounded-xl border border-line bg-surface/50 p-4">
-      <div>
-        <h3 className="text-sm font-medium">{t("Voice orb")}</h3>
-        <p className="mt-1 text-xs text-fg-muted">{t("How the agent looks and moves in voice mode.")}</p>
-      </div>
+  const footer = (
+    <div className="flex items-center justify-end gap-2">
+      <button
+        type="button"
+        onClick={() => change({ ...DEFAULT_ORB, colors: { ...DEFAULT_ORB.colors } })}
+        className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs text-fg-muted transition hover:bg-fg/5"
+      >
+        <LuRotateCcw className="h-3.5 w-3.5" />
+        {t("Reset to default")}
+      </button>
+      <button
+        type="button"
+        onClick={save}
+        disabled={busy || !dirty}
+        className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-black transition disabled:opacity-40"
+      >
+        {busy ? <LuRefreshCw className="h-3.5 w-3.5 animate-spin" /> : done ? <LuCheck className="h-3.5 w-3.5" /> : null}
+        {done ? t("Saved") : t("Save orb")}
+      </button>
+    </div>
+  );
 
-      <div className="mt-4 grid gap-5 sm:grid-cols-[220px_1fr]">
+  return (
+    <section className="mt-6 flex items-center gap-4 rounded-xl border border-line bg-surface/50 p-4">
+      <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-xl bg-[#0b1220]">
+        <div className="voice-avatar w-[60%]">
+          <VoiceOrb mode="idle" levels={still} look={shown} />
+        </div>
+      </div>
+      <div className="min-w-0 flex-1">
+        <h3 className="text-sm font-medium">{t("Voice orb")}</h3>
+        <p className="mt-0.5 truncate text-xs text-fg-muted">{summary}</p>
+      </div>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-accent/12 px-3 py-1.5 text-sm text-accent ring-1 ring-inset ring-accent/25 transition hover:bg-accent/20"
+      >
+        <LuPalette className="h-4 w-4" />
+        {t("Customize")}
+      </button>
+
+      {open && (
+      <Modal title={t("Voice orb")} subtitle={t("How the agent looks and moves in voice mode.")} wide onClose={close} footer={footer}>
+      <div className="grid gap-5 sm:grid-cols-[220px_1fr]">
         <div>
           <div className="flex aspect-square items-center justify-center overflow-hidden rounded-xl bg-[#0b1220]">
             <div className="voice-avatar w-[58%]">
@@ -247,26 +300,8 @@ export function OrbStudio() {
       </div>
 
       {error && <p role="alert" className="mt-3 text-xs text-danger">{error}</p>}
-
-      <div className="mt-4 flex items-center justify-end gap-2">
-        <button
-          type="button"
-          onClick={() => change({ ...DEFAULT_ORB, colors: { ...DEFAULT_ORB.colors } })}
-          className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs text-fg-muted transition hover:bg-fg/5"
-        >
-          <LuRotateCcw className="h-3.5 w-3.5" />
-          {t("Reset to default")}
-        </button>
-        <button
-          type="button"
-          onClick={save}
-          disabled={busy || !dirty}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-black transition disabled:opacity-40"
-        >
-          {busy ? <LuRefreshCw className="h-3.5 w-3.5 animate-spin" /> : done ? <LuCheck className="h-3.5 w-3.5" /> : null}
-          {done ? t("Saved") : t("Save orb")}
-        </button>
-      </div>
+      </Modal>
+      )}
     </section>
   );
 }
