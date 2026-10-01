@@ -4,20 +4,20 @@ import { copyFileSync, existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-// A database made by v0.1.0's own code (fixtures/portal-v0.1.0.db): two
-// conversations, the event types the newer indexes cover, and settings. An
-// upgrade has to bring it to the current schema without losing any of it, and
-// the portal has to read and write it afterwards.
-const home = mkdtempSync(path.join(tmpdir(), "pithagoras-from-0.1.0-"));
+// A database from before the schema had a version (fixtures/portal-unversioned.db),
+// made by that code itself, at 0718375: two conversations, the event types the
+// newer indexes cover, and settings. An upgrade has to bring it to the current
+// schema without losing any of it, and the portal has to read and write it after.
+const home = mkdtempSync(path.join(tmpdir(), "pithagoras-unversioned-"));
 process.env.DATA_DIR = home;
 const file = path.join(home, "portal.db");
-copyFileSync(new URL("./fixtures/portal-v0.1.0.db", import.meta.url), file);
+copyFileSync(new URL("./fixtures/portal-unversioned.db", import.meta.url), file);
 
 const { runUpgrade } = await import("../dist/db-upgrade-steps.js");
 const { SCHEMA_VERSION } = await import("../dist/schema-version.js");
 const { upgradeCheck } = await import("../dist/db-upgrade.js");
 
-test("a v0.1.0 database is upgraded, keeps everything, and works afterwards", async () => {
+test("a database from before versions is upgraded, keeps everything, and works afterwards", async () => {
   assert.deepEqual(upgradeCheck(file), { needed: true, from: 0 });
   const backup = await runUpgrade({ file, from: 0, backupDir: path.join(home, "backups") }, () => {});
   assert.ok(backup && existsSync(backup));

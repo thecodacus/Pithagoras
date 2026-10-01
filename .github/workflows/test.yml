@@ -1,7 +1,7 @@
 name: Tests
 
 # The image workflow builds; this one runs the server's tests, among them the
-# upgrade of a database made by an earlier release (test/upgrade-from-*).
+# upgrade of a database from before schema versions (test/upgrade-unversioned).
 on:
   pull_request:
   push:

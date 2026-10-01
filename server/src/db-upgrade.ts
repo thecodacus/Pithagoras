@@ -115,10 +115,12 @@ export async function prepareDatabase(): Promise<void> {
       workerData: { file: dbFile(), from: check.from, backupDir: path.join(DATA_DIR, "backups"), skipBackup: process.env.PORTAL_UPGRADE_BACKUP === "skip" },
     });
     let settled = false;
+    let said = "";
     // Ended once it has answered: what it loaded to migrate would otherwise keep it, and the process, running.
     const end = (result: { backup?: string } | { error: string; damaged: boolean }) => { settled = true; void worker.terminate(); resolve(result); };
     worker.on("message", (m: { type: string; message?: string; backup?: string; error?: string; damaged?: boolean }) => {
-      if (m.type === "progress") { view.say(m.message!); console.log(`[portal] ${m.message}`); }
+      // Logged when it says something new: the backup reports progress far more often than its percentage moves.
+      if (m.type === "progress" && m.message !== said) { said = m.message!; view.say(said); console.log(`[portal] ${said}`); }
       if (m.type === "done") end({ backup: m.backup });
       if (m.type === "failed") end({ error: m.error!, damaged: Boolean(m.damaged) });
     });
