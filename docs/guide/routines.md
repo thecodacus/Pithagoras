@@ -47,7 +47,7 @@ Two places to set it:
   report* for one that should stay quiet whatever the default is.
 
 A destination is a conversation that already exists — you pick "telegram —
-Anirban Kar", not a chat id. Only channels that can start a conversation appear;
+Sam Rivera", not a chat id. Only channels that can start a conversation appear;
 a webhook cannot, because it only ever answers a request that is already open.
 
 A routine created from a chat reports back **into that chat** — asking for a

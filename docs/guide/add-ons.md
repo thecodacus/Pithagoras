@@ -244,7 +244,7 @@ To change the engines of an installed service, pick others under **Speech engine
 Open a session, click the **microphone**, allow microphone access, and speak.
 The first connection loads the speech model into GPU memory.
 
-Use **Add voice** for your own designed or reference-cloned voice. Installing the runtime does not install a personal Aria recording. See [voice control](/guide/voice) for references and speech detection settings.
+Use **Add voice** for your own designed or reference-cloned voice. Installing the runtime does not install a reference recording. See [voice control](/guide/voice) for references and speech detection settings.
 
 ::: details What the installer downloads and builds
 

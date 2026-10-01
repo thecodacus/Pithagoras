@@ -30,7 +30,7 @@ test("a database from before versions is upgraded, keeps everything, and works a
   const events = db.eventsSince("task1");
   assert.deepEqual(events.map((e) => e.type), ["portal_prompt", "portal_taken", "message_end", "portal_command", "portal_command_end"]);
   assert.equal(JSON.parse(db.eventsSince("agent1")[0].payload).message.content[0].text, "Hello from the agent.");
-  assert.equal(JSON.parse(db.getStoredSettings().voice).voice, "aria");
+  assert.equal(JSON.parse(db.getStoredSettings().voice).voice, "design");
 
   db.appendEvent("task1", "message_end", { message: { role: "assistant", content: [{ type: "text", text: "after the upgrade" }] } });
   assert.equal(db.eventsSince("task1").length, 6);

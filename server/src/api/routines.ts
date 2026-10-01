@@ -138,7 +138,7 @@ function freeSlug(desired: string, exceptId?: string): string {
  * Somewhere a report could be sent.
  *
  * Built from conversations that already exist rather than asked for as a chat
- * id: you pick "Telegram — Anirban Kar", and a channel that can only answer
+ * id: you pick "Telegram — Sam Rivera", and a channel that can only answer
  * (a webhook) never appears, because it cannot speak first.
  */
 function reportTargets() {

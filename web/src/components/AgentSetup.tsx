@@ -85,7 +85,7 @@ export function AgentSetup({ home, onDone }: { home: string; onDone: (s: Setup) 
               value={agentName}
               onChange={(e) => setAgentName(e.target.value)}
               onKeyDown={(e) => isEnter(e) && agentName.trim() && go(1)}
-              placeholder="Aria"
+              placeholder="Nova"
               className={`${inputCls} mt-1`}
             />
           </label>
@@ -124,7 +124,7 @@ export function AgentSetup({ home, onDone }: { home: string; onDone: (s: Setup) 
               value={userName}
               onChange={(e) => setUserName(e.target.value)}
               onKeyDown={(e) => isEnter(e) && userName.trim() && void create()}
-              placeholder="Anirban"
+              placeholder="Sam"
               className={`${inputCls} mt-1`}
             />
           </label>

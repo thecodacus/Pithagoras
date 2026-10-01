@@ -231,7 +231,7 @@ test('the agent setup shows its steps as the assistant does, Back before Create,
   await expect(current).toHaveText('1. Who it is');
   await expect(main.getByText('Step 1 of 2')).toHaveClass(/sr-only/);
   await expect(main.getByRole('button', { name: 'Back' })).toHaveCount(0);
-  await main.getByLabel('Name').fill('Aria');
+  await main.getByLabel('Name').fill('Nova');
   await main.getByRole('button', { name: 'Next' }).click();
   await expect(current).toHaveText('2. Who it works for');
   // Back where it is in the assistant: at the left, the way forward at the right.
@@ -255,7 +255,7 @@ test('the agent setup shows its steps as the assistant does, Back before Create,
   expect(form.x + form.width).toBeLessThanOrEqual(390);
   await main.getByRole('button', { name: 'Back' }).click();
   await expect(current).toHaveText('1. Who it is');
-  await expect(main.getByLabel('Name')).toHaveValue('Aria');
+  await expect(main.getByLabel('Name')).toHaveValue('Nova');
   // Back again, the failure is not shown for a Create not yet sent.
   await main.getByRole('button', { name: 'Next' }).click();
   await expect(current).toHaveText('2. Who it works for');

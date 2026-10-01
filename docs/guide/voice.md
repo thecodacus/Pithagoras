@@ -212,11 +212,12 @@ The URLs must point to the full endpoints shown above. Whisper uses the
 Whisper.cpp multipart API; Breeze uses its native multipart API, not an
 OpenAI-compatible JSON speech endpoint.
 
-Choose **Speaking voice → Aria · reference clone** to use Aria’s installed
-reference. The portal sends `DATA_DIR/voices/aria.wav` and its exact transcript
-from `DATA_DIR/voices/aria.txt` to Breeze. These files live on the persistent data
-volume and are never served as public assets. A missing reference produces an
-error rather than silently switching voices. Cortex has this reference installed.
+To speak in a voice of your own, add a reference clone with **Add voice**: a
+recording and the exact words spoken in it. Choose it under **Speaking voice**,
+and the portal sends the recording and its transcript to Breeze. Recordings are
+kept in the portal's database on the persistent data volume and are never served
+as public assets. A voice that is missing produces an error rather than silently
+switching voices.
 
 Choose **Designed voice** to generate a voice without a reference.
 **Describe the speaking voice** controls delivery in either mode. Breeze supports English and Chinese speech.
@@ -299,7 +300,7 @@ Open **Settings → Add-ons → Voice → Advanced connection** and set:
 Then choose your **Input language** — it selects the spoken language too — and a
 **Speaking voice**. Chatterbox has no detection mode, so **Auto-detect** is not
 offered for it and the dropdown lists only the nineteen languages above.
-Chatterbox always clones a reference recording: choose Aria or add a voice with
+Chatterbox always clones a reference recording: choose or add a voice with
 a recording in the language you want to hear. A designed voice is refused when
 you save, not silently replaced. Use a clean 10-second reference.
 
@@ -487,7 +488,7 @@ each runtime has its own address:
 | --- | --- | --- |
 | `breeze` | A Python Breeze-TTS-2 service | Designed or cloned voices |
 | `audio-cpp` | Breeze on audio.cpp, streaming — what the managed container runs | Whisper on CPU |
-| `chatterbox` | Speech in another language, on audio.cpp | Needs an input language (not auto-detect) and a reference clone — Aria or a voice with a recording; see above |
+| `chatterbox` | Speech in another language, on audio.cpp | Needs an input language (not auto-detect) and a reference clone — a voice with a recording; see above |
 
 Recognition is Whisper by default. **Speech recognition model** takes another
 model id (letters, digits, `.`, `:`, `-`, `_`), such as `qwen3-asr` behind
@@ -603,14 +604,14 @@ built for CUDA architecture 86 with the `breeze_tts` model. The Q8 package is
 `breeze_tts_2_q8_0`, installed under `/root/breeze/audio-cpp-models`.
 `pithagoras-audio-cpp.service` serves loopback port 7861; the Voice add-on uses
 runtime `audio-cpp` and URL `http://127.0.0.1:7861/v1/audio/speech`.
-The Aria reference and transcript are sent inline and cached by the runtime.
+The reference recording and transcript are sent inline and cached by the runtime.
 
 The player begins with 650 ms of PCM buffered, then schedules arriving audio
 chunks contiguously. Synthesis stays single-file while playback runs independently.
 Barge-in cancels the HTTP stream and scheduled audio. The Python runtime retains
 whole-phrase buffering because its measured synthesis is slower than playback.
 
-On the RTX 3060 with Qwen resident, a warmed Aria sample generated 4.88 seconds
+On the RTX 3060 with Qwen resident, a warmed reference-clone sample generated 4.88 seconds
 of audio in 3.05 seconds, with first audio at 0.94 seconds. The prior Python
 runtime took 8.40 seconds for the same text (its output duration was 4.32 seconds).
 The audio.cpp process used 4414 MiB VRAM. These are sample measurements, not
@@ -676,8 +677,8 @@ Qwen3-ASR on a GPU host can be put on the CPU too, to spare the card. See
 [Docker add-ons](/guide/add-ons#no-gpu-recognition-only).
 
 Once the health checks of what was installed pass, Settings connects the installed services automatically.
-Existing voice choices and Aria reference files are preserved. A reference clone
-still needs the private reference WAV and transcript described above.
+Existing voice choices and saved voices are preserved. A reference clone
+still needs a voice with a recording, as described above.
 
 **Stop · release VRAM** stops both managed services without deleting models.
 **Start voice** reuses the installed files. The managed container does not start
