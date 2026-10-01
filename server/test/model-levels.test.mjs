@@ -18,7 +18,9 @@ writeFileSync(path.join(dir, "models.json"), JSON.stringify({
   },
 }));
 mkdirSync(path.join(dir, "ext"), { recursive: true });
-writeFileSync(path.join(dir, "ext", "slow.js"), `await new Promise((r) => setTimeout(r, 1500));
+// Far slower than the answer may take, so waiting for it cannot pass for a slow
+// machine: pi's own loading, before the race starts, took 1.5s on CI.
+writeFileSync(path.join(dir, "ext", "slow.js"), `await new Promise((r) => setTimeout(r, 5000));
 export default function () {}`);
 writeFileSync(path.join(dir, "settings.json"), JSON.stringify({ extensions: [path.join(dir, "ext", "slow.js")] }));
 
@@ -32,11 +34,11 @@ test("a chat's levels do not wait for pi's catalogue to be built", async () => {
   // or install, where the page has what it last saw to draw meanwhile.
   const started = Date.now();
   assert.deepEqual(await modelLevels("test-server", "switch"), []);
-  assert.ok(Date.now() - started < 1000, `answered after ${Date.now() - started}ms`);
+  assert.ok(Date.now() - started < 3000, `answered after ${Date.now() - started}ms`);
 
   // The build was started, and the next chat opened has them.
   let levels = [];
-  for (let i = 0; i < 60 && !levels.length; i++) {
+  for (let i = 0; i < 120 && !levels.length; i++) {
     await new Promise((r) => setTimeout(r, 100));
     levels = await modelLevels("test-server", "switch");
   }
