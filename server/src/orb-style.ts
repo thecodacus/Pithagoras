@@ -83,7 +83,7 @@ export const DEFAULT_ORB: OrbStyle = {
   glow: 1,
   ribbons: true,
   eyes: "none",
-  eyeColor: "#f5fbff",
+  eyeColor: "#111111",
   prop: "none",
   propColor: "#ffd166",
 };

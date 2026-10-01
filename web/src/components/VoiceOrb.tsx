@@ -32,14 +32,18 @@ function drawEyes(ctx: Ctx, look: OrbStyle, r: number, mode: OrbState, level: nu
   const ey = -r * 0.08 - (mode === "output" ? level * r * 0.03 : 0);
   const ex = r * 0.32;
   const color = look.eyeColor;
+  // The pupils and glints are white; dark eyes get a faint light edge to stand
+  // off the orb instead of a glow of their own colour.
+  const [cr, cg, cb] = hexToRgb(color);
+  const dark = cr * 0.299 + cg * 0.587 + cb * 0.114 < 110;
+  const pupil = "#ffffff";
   ctx.save();
-  ctx.shadowColor = color; ctx.shadowBlur = 10;
+  ctx.shadowColor = dark ? "rgba(255,255,255,0.35)" : color; ctx.shadowBlur = dark ? 4 : 10;
   ctx.fillStyle = color; ctx.strokeStyle = color; ctx.lineCap = "round";
   if (look.eyes === "visor") {
-    ctx.shadowBlur = 0;
     ctx.beginPath(); ctx.roundRect(-r * 0.56, ey - es * 0.62, r * 1.12, es * 1.24, es * 0.62);
-    ctx.fillStyle = "rgba(10,14,24,0.82)"; ctx.fill(); ctx.lineWidth = r * 0.02; ctx.stroke();
-    ctx.shadowBlur = 14; ctx.fillStyle = color;
+    ctx.fill();
+    ctx.shadowColor = pupil; ctx.shadowBlur = 12; ctx.fillStyle = pupil;
     for (const side of [-1, 1]) {
       ctx.beginPath(); ctx.roundRect(side * ex - es * 0.45 + gx * es * 0.35, ey - es * 0.16 * open, es * 0.9, Math.max(1, es * 0.32 * open), es * 0.16);
       ctx.fill();
@@ -61,19 +65,24 @@ function drawEyes(ctx: Ctx, look: OrbStyle, r: number, mode: OrbState, level: nu
       continue;
     }
     if (look.eyes === "dots") {
-      ctx.beginPath(); ctx.ellipse(cx + gx * es * 0.35, ey + gy * es * 0.35, es * 0.5, es * 0.62 * open, 0, 0, Math.PI * 2); ctx.fill();
+      const x = cx + gx * es * 0.35, y = ey + gy * es * 0.35;
+      ctx.beginPath(); ctx.ellipse(x, y, es * 0.5, es * 0.62 * open, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.shadowBlur = 0; ctx.fillStyle = pupil;
+      ctx.beginPath(); ctx.ellipse(x - es * 0.14, y - es * 0.2 * open, es * 0.15, es * 0.15 * open, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = color;
     } else if (look.eyes === "round") {
       ctx.beginPath(); ctx.ellipse(cx, ey, es * 0.85, es * open, 0, 0, Math.PI * 2); ctx.fill();
       ctx.save(); ctx.clip(); ctx.shadowBlur = 0;
-      ctx.fillStyle = "rgba(12,18,32,0.92)";
-      ctx.beginPath(); ctx.arc(cx + gx * es * 0.32, ey + gy * es * 0.32, es * 0.42, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = "rgba(255,255,255,0.9)";
-      ctx.beginPath(); ctx.arc(cx + gx * es * 0.32 - es * 0.14, ey + gy * es * 0.32 - es * 0.16, es * 0.12, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = pupil;
+      ctx.beginPath(); ctx.arc(cx + gx * es * 0.32, ey + gy * es * 0.32, es * 0.36, 0, Math.PI * 2); ctx.fill();
       ctx.restore();
     } else if (look.eyes === "sleepy") {
       ctx.beginPath(); ctx.ellipse(cx + gx * es * 0.2, ey + es * 0.22, es * 0.58, es * 0.34 * open, 0, 0, Math.PI); ctx.fill();
       ctx.lineWidth = es * 0.16;
       ctx.beginPath(); ctx.moveTo(cx - es * 0.7, ey + es * 0.12); ctx.quadraticCurveTo(cx, ey + es * 0.02, cx + es * 0.7, ey + es * 0.12); ctx.stroke();
+      ctx.shadowBlur = 0; ctx.fillStyle = pupil;
+      ctx.beginPath(); ctx.arc(cx + gx * es * 0.2 - es * 0.12, ey + es * 0.3, es * 0.09 * open, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = color;
     }
   }
   ctx.restore();
