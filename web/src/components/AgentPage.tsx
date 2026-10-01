@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { OrbStudio } from "./OrbStudio";
-import { VoiceOrb, useOrbStyle, type VoiceLevels } from "./VoiceOrb";
+import { VoiceOrb, type VoiceLevels } from "./VoiceOrb";
 import {
   LuBot,
   LuCheck,
@@ -109,7 +109,6 @@ export function AgentPage({ onSelect }: { onSelect: (id: string) => void }) {
 
 /** A card for each agent, with its avatar and name, and one that makes a new agent. */
 function AgentCards({ agents, onOpen, onNew }: { agents: Agent[]; onOpen: (id: string) => void; onNew: () => void }) {
-  const look = useOrbStyle();
   // Still: a page of them all moving at once would be busy.
   const still = useRef<VoiceLevels>({ input: 0, output: 0 });
   return (
@@ -129,7 +128,7 @@ function AgentCards({ agents, onOpen, onNew }: { agents: Agent[]; onOpen: (id: s
               >
                 <div className="flex h-24 w-24 items-center justify-center rounded-2xl bg-[#0b1220]">
                   <div className="voice-avatar w-[70%]">
-                    <VoiceOrb mode="idle" levels={still} look={look} />
+                    <VoiceOrb mode="idle" levels={still} look={a.orb} />
                   </div>
                 </div>
                 <p className="mt-3 w-full truncate text-sm font-medium text-fg">{a.name}</p>
@@ -310,7 +309,7 @@ function AgentView({
           {back}
           <PageHeader
             icon={<LuBot />}
-            media={<OrbStudio />}
+            media={<OrbStudio agent={agent.id} orb={agent.orb} onSaved={() => void onChanged()} />}
             title={
               renaming === "agent" ? (
                 <TitleInput value={agent.name} label={t("Agent name")} className="w-full" onCommit={renameAgent} onCancel={() => setRenaming(null)} />

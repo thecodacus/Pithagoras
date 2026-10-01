@@ -66,9 +66,9 @@ const SLIDERS: ["speed" | "reactivity" | "glow", string, number, number, string]
  * The preview speaks with a made-up voice level so the motion can be judged
  * without starting voice mode; saved, the style reaches every open voice stage.
  */
-export function OrbStudio() {
-  const [saved, setSaved] = useState<OrbStyle | null>(null);
-  const [draft, setDraft] = useState<OrbStyle>(DEFAULT_ORB);
+export function OrbStudio({ agent, orb, onSaved }: { agent: string; orb: OrbStyle; onSaved: () => void }) {
+  const [saved, setSaved] = useState<OrbStyle>(orb);
+  const [draft, setDraft] = useState<OrbStyle>(orb);
   const [state, setState] = useState<OrbState>("output");
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
@@ -77,10 +77,6 @@ export function OrbStudio() {
   const [tab, setTab] = useState<Tab>("personality");
   const levels = useRef<VoiceLevels>({ input: 0, output: 0 });
   const still = useRef<VoiceLevels>({ input: 0, output: 0 });
-
-  useEffect(() => {
-    api.agentOrb().then((s) => { setSaved(s); setDraft(s); }).catch((e) => setError((e as Error).message));
-  }, []);
 
   // Syllables rising and falling inside slower phrases, like the meter during
   // speech. Only while the customizer is open: the card's orb stays idle.
@@ -99,8 +95,8 @@ export function OrbStudio() {
   }, [state, open]);
 
   // Closing without saving puts the saved orb back.
-  const close = () => { setOpen(false); if (saved) setDraft(saved); setError(""); setDone(false); };
-  const shown = saved ?? DEFAULT_ORB;
+  const close = () => { setOpen(false); setDraft(saved); setError(""); setDone(false); };
+  const shown = saved;
   const name = <T extends string>(list: [T, string, ...unknown[]][], value: T) => t(list.find(([v]) => v === value)?.[1] ?? value);
   const summary = [
     name(PERSONALITIES, shown.personality),
@@ -110,14 +106,15 @@ export function OrbStudio() {
   ].filter(Boolean).join(" · ");
 
   const change = (patch: Partial<OrbStyle>) => { setDraft((d) => ({ ...d, ...patch })); setDone(false); };
-  const dirty = saved !== null && JSON.stringify(draft) !== JSON.stringify(saved);
+  const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
 
   const save = async () => {
     setBusy(true); setError("");
     try {
-      const next = await api.setAgentOrb(draft);
+      const next = await api.setAgentOrb(agent, draft);
       setSaved(next); setDraft(next); setDone(true);
-      window.dispatchEvent(new CustomEvent(ORB_STYLE_EVENT, { detail: next }));
+      window.dispatchEvent(new CustomEvent(ORB_STYLE_EVENT));
+      onSaved();
       setTimeout(() => setDone(false), 2000);
     } catch (e) {
       setError((e as Error).message);

@@ -19,7 +19,9 @@ and its files are written there.
 
 A card opens that agent (`/agent?agent=research-bot`): its conversations, its
 files to edit, and **New conversation** to start one with it. Its avatar is at
-the top beside its name; the palette on it opens the avatar customizer. Its
+the top beside its name; the palette on it opens the avatar customizer. Each
+agent's avatar is its own, and voice mode shows the avatar of the agent the
+chat is with (the first agent's for a chat in a project). Its
 name, with the pencil beside it, renames it; the folder keeps its name.
 **Agents** at the top goes back to the cards.
 

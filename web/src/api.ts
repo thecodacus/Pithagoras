@@ -121,6 +121,8 @@ export interface Agent {
   chats: number;
   /** The channels that talk as it. */
   channels: { slug: string; name: string }[];
+  /** Its avatar. */
+  orb: OrbStyle;
 }
 
 export type AgentWizard = {
@@ -735,9 +737,11 @@ export const api = {
       { method: "DELETE" }
     ),
   agentSetup: (agent: string) => json<AgentSetup>(`/api/agents/${encodeURIComponent(agent)}/setup`),
-  /** The voice-mode orb's look and personality, one for the portal. */
-  agentOrb: () => json<OrbStyle>("/api/agent/orb"),
-  setAgentOrb: (style: OrbStyle) => json<OrbStyle>("/api/agent/orb", { method: "PUT", body: JSON.stringify(style) }),
+  /** The avatar voice mode shows for a chat: its agent's. */
+  chatOrb: (session: string) => json<OrbStyle>(`/api/agent/orb?session=${encodeURIComponent(session)}`),
+  /** An agent's avatar: the voice-mode orb's look and personality. */
+  setAgentOrb: (agent: string, style: OrbStyle) =>
+    json<OrbStyle>(`/api/agents/${encodeURIComponent(agent)}/orb`, { method: "PUT", body: JSON.stringify(style) }),
   runAgentWizard: (agent: string, input: AgentWizard) =>
     json<AgentSetup>(`/api/agents/${encodeURIComponent(agent)}/setup`, { method: "POST", body: JSON.stringify(input) }),
   saveAgentFile: (agent: string, name: string, content: string) =>

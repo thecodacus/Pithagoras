@@ -1,5 +1,5 @@
 import express, { type Router } from "express";
-import { AgentError, DEFAULT_AGENT, agentOf, channelsOf, createAgent, getAgent, listAgents, renameAgent, type Agent } from "../agents.js";
+import { AgentError, DEFAULT_AGENT, agentOf, channelsOf, createAgent, getAgent, listAgents, orbOf, renameAgent, setOrb, type Agent } from "../agents.js";
 import { agentFileStatus, isInitialised, runWizard, writeAgentFile, type WizardInput } from "../agent-setup.js";
 import { listAgentSessions, listSessions } from "../db.js";
 
@@ -14,7 +14,7 @@ const failed = (res: express.Response, e: unknown) =>
 
 /** An agent as the page sees it: what it is, whether it is set up, and what uses it. */
 export function agentToApi(a: Agent, chats = 0) {
-  return { id: a.id, name: a.name, home: a.home, first: a.id === DEFAULT_AGENT, initialised: isInitialised(a.home), chats, channels: channelsOf(a.id) };
+  return { id: a.id, name: a.name, home: a.home, first: a.id === DEFAULT_AGENT, initialised: isInitialised(a.home), chats, channels: channelsOf(a.id), orb: orbOf(a) };
 }
 
 export function agentsRouter(): Router {
@@ -55,6 +55,15 @@ export function agentsRouter(): Router {
     if (!agent) res.status(404).json({ error: "No such agent" });
     return agent;
   };
+
+  /** Its avatar: the voice-mode orb's look and personality, the same on every device. */
+  router.put("/agents/:id/orb", (req, res) => {
+    try {
+      res.json(setOrb(req.params.id, req.body));
+    } catch (e) {
+      failed(res, e);
+    }
+  });
 
   router.get("/agents/:id/setup", (req, res) => {
     const agent = agentOr404(req.params.id, res);

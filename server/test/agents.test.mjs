@@ -84,3 +84,19 @@ test("deleting an agent removes its chats, and its folder only when asked", asyn
   assert.ok(!existsSync(path.join(home, "agents", "research-bot")));
   assert.ok(existsSync(path.join(home, "agent-home", "SOUL.md")));
 });
+
+test("each agent has an avatar of its own, and voice mode shows its chat's agent's", async () => {
+  const ops = (await call("POST", "/api/agents", { name: "Ops" })).body;
+  const before = (await call("GET", "/api/agents")).body.agents.find((a) => a.first).orb;
+  const saved = await call("PUT", "/api/agents/ops/orb", { ...ops.orb, personality: "playful", hat: "crown" });
+  assert.equal(saved.status, 200);
+  const agents = (await call("GET", "/api/agents")).body.agents;
+  assert.equal(agents.find((a) => a.id === "ops").orb.hat, "crown");
+  assert.deepEqual(agents.find((a) => a.first).orb, before, "the first agent's avatar is untouched");
+
+  const chat = (await call("POST", "/api/sessions", { agent: "ops" })).body;
+  assert.equal((await call("GET", `/api/agent/orb?session=${chat.id}`)).body.hat, "crown");
+  const homeChat = (await call("POST", "/api/sessions", {})).body;
+  assert.deepEqual((await call("GET", `/api/agent/orb?session=${homeChat.id}`)).body, before);
+  assert.equal((await call("PUT", "/api/agents/ops/orb", [])).status, 400);
+});

@@ -26,7 +26,7 @@ import { checkWorkspace, workspaceRoot } from "./workspaces.js";
 import { insideReal, isUnderText, isWithinText } from "./within.js";
 import { agentHomePath } from "./agent-home.js";
 import { agentHome, resolveChannelSession } from "./agent.js";
-import { AgentError, agentOf, deletable, deleteAgent, getAgent, listAgents } from "./agents.js";
+import { AgentError, agentOf, defaultAgent, deletable, deleteAgent, getAgent, listAgents, orbOf } from "./agents.js";
 import { agentsRouter } from "./api/agents.js";
 import {
   agentFileStatus,
@@ -71,7 +71,6 @@ import {
   writeCompactionSettings,
 } from "./pi-settings.js";
 import { eventTime, getDb } from "./db.js";
-import { normalizeOrb } from "./orb-style.js";
 import { getBuiltinCommands, picturesRefused } from "./pi/builtins.js";
 import { SessionEditError } from "./pi/session-edit.js";
 import { isValidSlug, slugify } from "./slug.js";
@@ -737,27 +736,13 @@ app.put("/api/agent/files/:name", (req, res) => {
   }
 });
 
-/** The voice-mode orb's look and personality: one for the portal, so every device shows the same orb. */
-app.get("/api/agent/orb", (_req, res) => {
-  const row = getDb().prepare("SELECT value FROM settings WHERE key = 'orb'").get() as { value: string } | undefined;
-  let stored: unknown;
-  try {
-    stored = row ? JSON.parse(row.value) : undefined;
-  } catch {
-    // A value that no longer parses is the default orb, not a broken page.
-  }
-  res.json(normalizeOrb(stored));
-});
-
-app.put("/api/agent/orb", (req, res) => {
-  if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
-    return res.status(400).json({ error: "An orb style is required" });
-  }
-  const style = normalizeOrb(req.body);
-  getDb()
-    .prepare("INSERT INTO settings (key, value) VALUES ('orb', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-    .run(JSON.stringify(style));
-  res.json(style);
+/**
+ * The avatar voice mode shows for a chat (`?session=`): its agent's, and the
+ * first agent's for a chat in a project, or without one.
+ */
+app.get("/api/agent/orb", (req, res) => {
+  const session = typeof req.query.session === "string" ? getSession(req.query.session) : undefined;
+  res.json(orbOf(agentOf(session?.workspace) ?? defaultAgent()));
 });
 
 app.post("/api/sessions", (req, res) => {

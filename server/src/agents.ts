@@ -3,6 +3,7 @@ import path from "node:path";
 import { getDb } from "./db.js";
 import { agentHomePath } from "./agent-home.js";
 import { isWithinText } from "./within.js";
+import { normalizeOrb, type OrbStyle } from "./orb-style.js";
 
 /**
  * The agents, each a home folder of its own with its own SOUL.md,
@@ -18,6 +19,8 @@ export interface Agent {
   id: string;
   name: string;
   home: string;
+  /** Its avatar as stored: see orbOf. */
+  orb: string | null;
   created_at: string;
 }
 
@@ -94,6 +97,25 @@ export function renameAgent(id: string, name: unknown): Agent {
   if (!agent) throw new AgentError("No such agent", 404);
   getDb().prepare("UPDATE agents SET name = ? WHERE id = ?").run(checkName(name), id);
   return getAgent(id)!;
+}
+
+/** An agent's avatar: the default orb where it has none, or one that no longer parses. */
+export function orbOf(agent: Agent): OrbStyle {
+  let stored: unknown;
+  try {
+    stored = agent.orb ? JSON.parse(agent.orb) : undefined;
+  } catch {
+    // The default orb, not a broken page.
+  }
+  return normalizeOrb(stored);
+}
+
+export function setOrb(id: string, style: unknown): OrbStyle {
+  if (!getAgent(id)) throw new AgentError("No such agent", 404);
+  if (!style || typeof style !== "object" || Array.isArray(style)) throw new AgentError("An orb style is required", 400);
+  const orb = normalizeOrb(style);
+  getDb().prepare("UPDATE agents SET orb = ? WHERE id = ?").run(JSON.stringify(orb), id);
+  return orb;
 }
 
 /** The channels that talk as this agent: an agent with any cannot be deleted until they are moved. */

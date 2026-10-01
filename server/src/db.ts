@@ -368,6 +368,8 @@ function schema(db: Database.Database): void {
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       home TEXT NOT NULL UNIQUE,
+      -- Its avatar, as JSON: NULL is the default orb.
+      orb TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
   `);
@@ -483,9 +485,12 @@ function migrate(d: Database.Database): void {
     d.exec("ALTER TABLE channels ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''");
   }
   d.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_slug ON channels(slug)");
-  // The Home there always was is the first agent, named as its SOUL.md names it.
+  // The Home there always was is the first agent, named as its SOUL.md names
+  // it, and wearing the avatar the portal had.
   if (!d.prepare("SELECT 1 FROM agents LIMIT 1").get()) {
-    d.prepare("INSERT INTO agents (id, name, home) VALUES ('home', ?, ?)").run(homeAgentName(agentHomePath()), agentHomePath());
+    const orb = d.prepare("SELECT value FROM settings WHERE key = 'orb'").get() as { value: string } | undefined;
+    d.prepare("INSERT INTO agents (id, name, home, orb) VALUES ('home', ?, ?, ?)").run(homeAgentName(agentHomePath()), agentHomePath(), orb?.value ?? null);
+    d.prepare("DELETE FROM settings WHERE key = 'orb'").run();
   }
   const routineCols = (d.prepare("PRAGMA table_info(routines)").all() as { name: string }[]).map(
     (c) => c.name

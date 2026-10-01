@@ -9,16 +9,20 @@ export interface VoiceLevels { input: number; output: number }
 /** Sent with the new style when it is saved, so an open voice stage changes with it. */
 export const ORB_STYLE_EVENT = "orb-style-changed";
 
-/** The portal's orb style: the default until the server answers, then whatever is saved. */
-export function useOrbStyle(): OrbStyle {
+/**
+ * The avatar of the agent a chat talks to: the default until the server
+ * answers, then whatever is saved. Asked again when an avatar is saved, since
+ * it can be this one.
+ */
+export function useOrbStyle(session: string): OrbStyle {
   const [style, setStyle] = useState<OrbStyle>(DEFAULT_ORB);
   useEffect(() => {
     let live = true;
-    api.agentOrb().then((s) => { if (live) setStyle(s); }).catch(() => {});
-    const changed = (e: Event) => setStyle((e as CustomEvent<OrbStyle>).detail);
-    window.addEventListener(ORB_STYLE_EVENT, changed);
-    return () => { live = false; window.removeEventListener(ORB_STYLE_EVENT, changed); };
-  }, []);
+    const load = () => api.chatOrb(session).then((s) => { if (live) setStyle(s); }).catch(() => {});
+    void load();
+    window.addEventListener(ORB_STYLE_EVENT, load);
+    return () => { live = false; window.removeEventListener(ORB_STYLE_EVENT, load); };
+  }, [session]);
   return style;
 }
 
