@@ -1,10 +1,10 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, chmodSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import express from 'express';
-import { speechChunks, newSpeech } from '../web/src/voice.js';
+import { speechChunks, newSpeech, samplesWav } from '../web/src/voice.js';
 const dir = mkdtempSync(join(tmpdir(), 'pithagoras-voice-'));
 process.env.DATA_DIR = dir;
 process.env.AGENT_HOME = join(dir, 'agent-home');
@@ -58,6 +58,14 @@ after(async () => {
   getDb().close(); rmSync(dir, { recursive: true, force: true });
 });
 const settings = { enabled: true, whisperUrl: `http://127.0.0.1:${port}/inference`, breezeUrl: `http://127.0.0.1:${port}/v1/audio/speech`, instruction: 'A calm English voice.' };
+/** A reference clone in the voice library, made once, for the tests that need a voice with a recording. */
+let clone: string | undefined;
+const cloneVoice = async () => {
+  if (clone) return clone;
+  const { addVoice } = await import('../server/src/voice-presets.js');
+  const audio = Buffer.from(await samplesWav(new Float32Array(16000)).arrayBuffer()).toString('base64');
+  return (clone = addVoice({ name: 'Reference', kind: 'clone', instruction: 'A calm English voice.', transcript: 'Reference voice.', audio }).id);
+};
 test('voice is opt-in, checks session existence, and proxies actual multipart contracts', async () => {
   assert.equal((await (await fetch(`${base}/voice`)).json()).enabled, false);
   assert.equal((await fetch(`${base}/sessions/test/voice/speech`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"text":"hello"}' })).status, 409);
@@ -79,21 +87,8 @@ test('voice is opt-in, checks session existence, and proxies actual multipart co
   assert.equal(Buffer.from(await busy.arrayBuffer()).toString("ascii", 0, 4), "RIFF");
   assert.match(transcriptionBody, /name="language"\r\n\r\nauto\r\n/);
 });
-test('Aria sends the installed reference and transcript; missing references never fall back to a designed voice', async () => {
-  const save = await fetch(`${base}/voice`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...settings, voice: 'aria', cfgScale: 1 }) });
-  assert.equal(save.status, 200);
-  const speak = () => fetch(`${base}/sessions/test/voice/speech`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'Hello from Aria.' }) });
-  const before = calls;
-  assert.equal((await speak()).status, 502);
-  assert.equal(calls, before);
-  mkdirSync(join(dir, 'voices'));
-  writeFileSync(join(dir, 'voices/aria.wav'), pcmWav(Buffer.alloc(32)));
-  writeFileSync(join(dir, 'voices/aria.txt'), 'This is the exact reference transcript.');
-  assert.equal((await speak()).status, 200);
-  assert.match(speechBody, /name="ref_audio"; filename="aria.wav"/);
-  assert.match(speechBody, /name="ref_text"/);
-  assert.ok(speechBody.includes('name="cfg_scale"\r\n\r\n1\r\n'));
-  assert.match(speechBody, /This is the exact reference transcript\./);
+test('a voice that is not in the library is refused rather than spoken in another', () => {
+  assert.throws(() => validateConfig({ ...settings, voice: 'missing' }));
   assert.throws(() => validateConfig({ ...settings, voice: '../other' }));
 });
 test('selected input language is sent to Whisper and invalid languages are rejected', async () => {
@@ -148,11 +143,7 @@ test('PCM reaches the client before synthesis completes, and cancelling disconne
 });
 
 test('audio.cpp receives cloning context and exposes incremental playback', async () => {
-  await fetch(`${base}/voice`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...settings, runtime: 'audio-cpp', voice: 'aria', cfgScale: 1 }) });
-  // The earlier missing-reference test removes its fixture.
-  mkdirSync(join(dir, 'voices'), { recursive: true });
-  writeFileSync(join(dir, 'voices/aria.wav'), pcmWav(Buffer.alloc(32)));
-  writeFileSync(join(dir, 'voices/aria.txt'), 'Reference voice.');
+  await fetch(`${base}/voice`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...settings, runtime: 'audio-cpp', voice: await cloneVoice(), cfgScale: 1 }) });
   const response = await fetch(`${base}/sessions/test/voice/speech`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'audio/pcm' }, body: JSON.stringify({ text: 'Speak while generating.' }) });
   assert.equal(response.status, 200); assert.equal(response.headers.get('x-voice-streaming'), 'true');
   assert.equal(nativeRequest.reference_text, 'Reference voice.');
@@ -241,7 +232,7 @@ test('a changed voice description reaches the next phrase on both Breeze runtime
 });
 
 test('Chatterbox clones a reference, writes numbers out and returns one buffered phrase', async () => {
-  const chatterbox = { ...settings, runtime: 'chatterbox', voice: 'aria', language: 'de', exaggeration: 0.3, sttModel: 'qwen3-asr' };
+  const chatterbox = { ...settings, runtime: 'chatterbox', voice: await cloneVoice(), language: 'de', exaggeration: 0.3, sttModel: 'qwen3-asr' };
   assert.equal((await fetch(`${base}/voice`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(chatterbox) })).status, 200);
   const response = await fetch(`${base}/sessions/test/voice/speech`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'audio/pcm' }, body: JSON.stringify({ text: 'Der Build nutzt 4070 Megabyte.' }) });
   assert.equal(response.status, 200);
@@ -305,7 +296,7 @@ test('a WAV whose data chunk carries a placeholder size keeps its samples', () =
 });
 
 test('connecting the managed voice drops a recognition model from another runtime', async () => {
-  const saved = await fetch(`${base}/voice`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...settings, runtime: 'chatterbox', voice: 'aria', language: 'de', sttModel: 'qwen3-asr' }) });
+  const saved = await fetch(`${base}/voice`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...settings, runtime: 'chatterbox', voice: await cloneVoice(), language: 'de', sttModel: 'qwen3-asr' }) });
   assert.equal(saved.status, 200);
   // Whisper.cpp is sent this field verbatim; another runtime's model id would
   // reach it in the multipart body of every transcription.
@@ -314,7 +305,8 @@ test('connecting the managed voice drops a recognition model from another runtim
 });
 
 test('connecting the managed voice points the settings at the engines it was built with', async () => {
-  const put = (patch: object) => fetch(`${base}/voice`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...settings, voice: 'aria', ...patch }) });
+  const voice = await cloneVoice();
+  const put = (patch: object) => fetch(`${base}/voice`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...settings, voice, ...patch }) });
   assert.equal((await put({ language: 'auto' })).status, 200);
   // Whisper: its own endpoint, and no model field in the request.
   const whisper = connectManagedVoice({ tts: 'breeze', asr: 'whisper', asrModel: 'small' });

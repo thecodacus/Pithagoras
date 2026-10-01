@@ -104,7 +104,7 @@ export function hasPrimary(): boolean {
  * What to call the person the agent works for.
  *
  * Taken from the registry when someone has been marked primary, so the framing
- * says "not Anirban" rather than "not the primary user" — the agent has to be
+ * says "not Sam" rather than "not the primary user" — the agent has to be
  * able to name them to a colleague.
  */
 export function primaryName(): string {

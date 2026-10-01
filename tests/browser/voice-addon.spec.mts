@@ -26,7 +26,7 @@ test('settings install progress, ready connection, and stop',async({page})=>{
 });
 
 test('speech detection settings save and restore defaults',async({page})=>{
- let config:any={enabled:true,whisperUrl:'http://localhost:8188/inference',breezeUrl:'http://localhost:7862/v1/audio/speech',instruction:'Clear speech',voice:'aria',runtime:'audio-cpp'};
+ let config:any={enabled:true,whisperUrl:'http://localhost:8188/inference',breezeUrl:'http://localhost:7862/v1/audio/speech',instruction:'Clear speech',voice:'design',runtime:'audio-cpp'};
  await page.route('**/api/voice/presets',r=>r.fulfill({json:[]}));
  await page.route('**/api/voice/install',r=>r.fulfill({json:{available:true,state:'running',busy:false}}));
  await page.route('**/api/voice',async r=>{if(r.request().method()==='PUT')config=r.request().postDataJSON();await r.fulfill({json:config});});
@@ -45,7 +45,7 @@ test('speech detection settings save and restore defaults',async({page})=>{
 
 test('speaking instructions show the built-in text, save an edit and reset to the built-in text',async({page})=>{
  const builtIn='Built-in speaking instructions for this test.';
- let config:any={enabled:true,whisperUrl:'http://localhost:8188/inference',breezeUrl:'http://localhost:7862/v1/audio/speech',instruction:'Clear speech',voice:'aria',runtime:'audio-cpp'};
+ let config:any={enabled:true,whisperUrl:'http://localhost:8188/inference',breezeUrl:'http://localhost:7862/v1/audio/speech',instruction:'Clear speech',voice:'design',runtime:'audio-cpp'};
  const puts:any[]=[];
  await page.route('**/api/voice/presets',r=>r.fulfill({json:[]}));
  await page.route('**/api/voice/install',r=>r.fulfill({json:{available:true,state:'running',busy:false}}));
@@ -95,7 +95,7 @@ test('speaking instructions show the built-in text, save an edit and reset to th
 test('speaking instructions say when the portal is set to send none',async({page})=>{
  await page.route('**/api/voice/presets',r=>r.fulfill({json:[]}));
  await page.route('**/api/voice/install',r=>r.fulfill({json:{available:true,state:'running',busy:false}}));
- await page.route('**/api/voice',r=>r.fulfill({json:{enabled:true,whisperUrl:'http://localhost:8188/inference',breezeUrl:'http://localhost:7862/v1/audio/speech',instruction:'Clear speech',voice:'aria',runtime:'audio-cpp',responseInstructions:'Kept text.',defaultResponseInstructions:'Built-in.',responseInstructionsOff:true}}));
+ await page.route('**/api/voice',r=>r.fulfill({json:{enabled:true,whisperUrl:'http://localhost:8188/inference',breezeUrl:'http://localhost:7862/v1/audio/speech',instruction:'Clear speech',voice:'design',runtime:'audio-cpp',responseInstructions:'Kept text.',defaultResponseInstructions:'Built-in.',responseInstructionsOff:true}}));
  await page.goto('/tests/voice-addon.html');
  await page.locator('summary').filter({hasText:'Speaking instructions'}).click();
  await expect(page.getByRole('status').filter({hasText:'VOICE_RESPONSE_INSTRUCTIONS=false'})).toBeVisible();
@@ -105,7 +105,7 @@ test('speaking instructions say when the portal is set to send none',async({page
 test('saving other voice settings does not pin the built-in text of an older portal',async({page})=>{
  // The portal is updated, with new built-in text, while this page is open.
  let builtIn='Built-in text before the update.';
- let config:any={enabled:true,whisperUrl:'http://localhost:8188/inference',breezeUrl:'http://localhost:7862/v1/audio/speech',instruction:'Clear speech',voice:'aria',runtime:'audio-cpp',responseInstructions:''};
+ let config:any={enabled:true,whisperUrl:'http://localhost:8188/inference',breezeUrl:'http://localhost:7862/v1/audio/speech',instruction:'Clear speech',voice:'design',runtime:'audio-cpp',responseInstructions:''};
  const puts:any[]=[];
  const shown=()=>({...config,responseInstructions:config.responseInstructions||builtIn,defaultResponseInstructions:builtIn,responseInstructionsOff:false});
  await page.route('**/api/voice/presets',r=>r.fulfill({json:[]}));

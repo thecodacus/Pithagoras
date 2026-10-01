@@ -1379,7 +1379,7 @@ const de: Locale = {
     "Chatterbox speaks your input language and clones the selected reference voice; it has no designed voice.": "Chatterbox spricht deine Eingabesprache und klont die gewählte Referenzstimme; eine gestaltete Stimme hat es nicht.",
     "Numbers are written out before synthesis so they are spoken correctly.": "Zahlen werden vor der Synthese ausgeschrieben, damit sie richtig gesprochen werden.",
     "Numbers stay as digits in this language, which Chatterbox reads unreliably.": "Zahlen bleiben in dieser Sprache Ziffern, die Chatterbox unzuverlässig vorliest.",
-    "Choose Aria or a voice with a recording above: Chatterbox cannot speak with a designed voice.": "Wähle oben Aria oder eine Stimme mit Aufnahme: Chatterbox kann nicht mit einer gestalteten Stimme sprechen.",
+    "Choose a voice with a recording above: Chatterbox cannot speak with a designed voice.": "Wähle oben eine Stimme mit Aufnahme: Chatterbox kann nicht mit einer gestalteten Stimme sprechen.",
     "Speaking instructions": "Sprechanweisungen",
     "What the assistant is told about how to reply in voice mode": "Was dem Assistenten darüber gesagt wird, wie er im Sprachmodus antwortet",
     "Sent with every spoken message, after a fixed note on what the [Audio mode] marker means. Save to apply them from the next spoken message. Empty text uses the built-in instructions.": "Wird mit jeder gesprochenen Nachricht gesendet, nach einem festen Hinweis darauf, was die Markierung [Audio mode] bedeutet. Speichern, damit sie ab der nächsten gesprochenen Nachricht gelten. Bei leerem Text gelten die eingebauten Anweisungen.",

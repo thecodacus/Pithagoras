@@ -10,7 +10,7 @@ import { getPerson } from "../people.js";
  * Reaching the primary user from a conversation that is not theirs.
  *
  * A colleague hits a wall at every action; the agent can only say "that needs
- * Anirban". This turns that into a message he actually receives, and his reply
+ * Sam". This turns that into a message they actually receive, and their reply
  * comes back to the colleague who asked — see readAnswer for the return leg.
  *
  * The destination is the same one routines report to. The agent picks neither
