@@ -178,6 +178,16 @@ test('voice mode speaks with the voice of the agent the chat is with', async () 
   assert.equal(response.status, 200);
   await response.arrayBuffer();
   assert.equal(nativeRequest.reference_text, 'Herald reference.', "the agent's clone, not the designed voice in the settings");
+
+  // A chat in a project speaks as the first agent, with its avatar and its voice.
+  setVoice('home', clone.id);
+  createSession({ id: 'project-chat', title: 'Project', workspace: join(dir, 'ws', 'site'), executor: 'host' });
+  nativeRequest = undefined;
+  const project = await fetch(`${base}/sessions/project-chat/voice/speech`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'Hello.' }) });
+  assert.equal(project.status, 200);
+  await project.arrayBuffer();
+  assert.equal(nativeRequest.reference_text, 'Herald reference.');
+  setVoice('home', '');
 });
 
 test('custom clone sends its saved recording, transcript and description to audio.cpp', async () => {

@@ -11,7 +11,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import express, { type Router } from "express";
 import { getDb, getSession, getStoredSettings } from "../db.js";
-import { agentOf } from "../agents.js";
+import { agentOf, defaultAgent } from "../agents.js";
 
 const DEFAULT_VAD = { positiveSpeechThreshold: 0.65, negativeSpeechThreshold: 0.35, minSpeechMs: 256, preSpeechPadMs: 320, redemptionMs: 1000 };
 export interface VoiceConfig {
@@ -287,8 +287,9 @@ export function voiceRouter(): Router {
     const text = req.body?.text;
     if (typeof text !== "string" || !text.trim() || text.length > 600)
       return res.status(400).json({ error: "Speech text must contain 1–600 characters" });
-    // The voice of the agent the chat is with, where it has one of its own.
-    const own = agentOf(getSession(req.params.id)?.workspace)?.voice;
+    // The voice of the agent the chat is with, where it has one of its own: the
+    // first agent's for a chat in a project, as its avatar is.
+    const own = (agentOf(getSession(req.params.id)?.workspace) ?? defaultAgent()).voice;
     const settings = { ...config(), ...(own ? { voice: own } : {}) };
     const controller = new AbortController();
     res.on("close", () => controller.abort());

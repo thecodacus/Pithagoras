@@ -33,7 +33,8 @@ speaks with in voice mode, saved with **Save avatar**. **As in the voice setting
 voice chosen in Settings; a designed voice or one from the voice library is the
 agent's own. **Add voice** at the end of the menu adds a voice to the library,
 a clone from a recording or one designed from a description, and gives it to
-the agent. A library voice that is deleted is no longer any agent's, and those
+the agent. A chat in a project shows the first agent's avatar and speaks with its voice.
+A library voice that is deleted is no longer any agent's, and those
 that had it speak as the voice settings say again.
 
 ## In the sidebar
