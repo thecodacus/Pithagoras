@@ -144,6 +144,26 @@ export function connectManagedVoice() {
 }
 export function voiceRouter(): Router {
   const router = express.Router();
+  // The stored GPU choice, in place before anything asks the service to start.
+  voiceService.useGpu((getStoredSettings() as Record<string, string>).voice_gpu ?? '');
+  router.get('/voice/gpus', async (_req, res) => {
+    try { res.json({ gpus: await voiceService.gpus(), selected: voiceService.selectedGpu() }); }
+    catch (e) { res.status(503).json({ error: (e as Error).message }); }
+  });
+  /** Choose the GPU by UUID, or "" for any. A running voice moves now; a stopped one on its next start. */
+  router.put('/voice/gpu', async (req, res) => {
+    const id = req.body?.gpu;
+    if (typeof id !== 'string') return res.status(400).json({ error: 'gpu must be a GPU UUID, or empty for any GPU' });
+    try {
+      if (id && !(await voiceService.gpus()).some((g) => g.uuid === id)) return res.status(400).json({ error: 'That GPU is not on this host' });
+      if (id) getDb().prepare("INSERT INTO settings (key, value) VALUES ('voice_gpu', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(id);
+      else getDb().prepare("DELETE FROM settings WHERE key = 'voice_gpu'").run();
+      voiceService.useGpu(id);
+      const restarting = ['running', 'starting'].includes((await voiceService.status()).state);
+      if (restarting) await voiceService.install();
+      res.json({ selected: id, restarting });
+    } catch (e) { res.status(400).json({ error: (e as Error).message }); }
+  });
   router.get('/voice/presets',(_req,res)=>res.json(listVoices()));
   router.post('/voice/presets',(req,res)=>{try{res.json(addVoice(req.body));}catch(e){res.status(400).json({error:(e as Error).message});}});
   router.get('/voice/presets/:id/audio',(req,res)=>{try{const row=readVoice(String(req.params.id));if(!row.audio)return res.sendStatus(404);res.set({'Content-Type':'audio/wav','Cache-Control':'no-store'}).send(row.audio);}catch{res.sendStatus(404);}});

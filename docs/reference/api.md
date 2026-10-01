@@ -264,6 +264,7 @@ See [The agent's browser](/guide/browser).
 | `GET /api/voice` · `PUT /api/voice` | The voice settings |
 | `GET /api/voice/install` · `POST /api/voice/install` · `/start` · `/stop` | The managed voice container and its readiness |
 | `POST /api/voice/connect` | Use the managed services in the settings |
+| `GET /api/voice/gpus` · `PUT /api/voice/gpu` | The GPUs the managed voice can run on, and the one chosen (`{ gpu: uuid }`, or `""` for any); a running service is recreated on a new choice |
 | `GET/POST /api/voice/presets` · `GET …/presets/:id/audio` · `DELETE …/presets/:id` | Saved voices |
 | `POST /api/sessions/:id/voice/connection` | Take or give back a lease on the voice services |
 | `POST /api/sessions/:id/voice/transcribe` | `audio/wav` body (12 MB at most) → `{ text }` |

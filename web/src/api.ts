@@ -248,6 +248,7 @@ export interface VoiceConfig {
 }
 
 export interface VoiceInstallStatus { available: boolean; state: string; busy: boolean; progress: string; error: string; }
+export interface VoiceGpu { index: number; uuid: string; name: string; totalMiB: number; usedMiB: number; }
 export const api = {
   listFiles: (sessionId: string, dir: string) =>
     json<{ path: string; entries: FileEntry[]; truncated: boolean }>(
@@ -304,6 +305,8 @@ export const api = {
   voiceInstallStatus: () => json<VoiceInstallStatus>('/api/voice/install'),
   voiceAction: (action: 'install' | 'start' | 'stop') => json<{ok:boolean}>(`/api/voice/${action}`, {method:'POST'}),
   connectVoice: () => json<VoiceConfig>('/api/voice/connect', {method:'POST'}),
+  voiceGpus: () => json<{ gpus: VoiceGpu[]; selected: string }>('/api/voice/gpus'),
+  setVoiceGpu: (gpu: string) => json<{ selected: string; restarting: boolean }>('/api/voice/gpu', { method: 'PUT', body: JSON.stringify({ gpu }) }),
   voice: () => json<VoiceConfig>("/api/voice"),
   setVoice: (value: VoiceConfig) => json<VoiceConfig>("/api/voice", { method: "PUT", body: JSON.stringify(value) }),
   authStatus: () => json<{ authRequired: boolean; authed: boolean }>("/api/auth/status"),

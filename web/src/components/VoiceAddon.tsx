@@ -1,7 +1,7 @@
 import { VoiceLibrary } from './VoiceLibrary';
 import { Select } from "./Select";
 import { useEffect, useState } from "react";
-import { DEFAULT_VAD, api, type VoiceInstallStatus, type VoiceConfig } from "../api";
+import { DEFAULT_VAD, api, type VoiceGpu, type VoiceInstallStatus, type VoiceConfig } from "../api";
 import { INPUT_LANGUAGES, CHATTERBOX_LANGUAGES } from "../../../server/src/voice-languages";
 import { NUMBER_PACK_LANGUAGES } from "../../../server/src/voice-numbers";
 import { labelOf, languageName, msg, t } from "../i18n";
@@ -24,6 +24,17 @@ export function VoiceAddon({ onError }: { onError: (message: string) => void }) 
     const poll=async()=>{try { const state=await api.voiceInstallStatus(); if(!disposed)setInstall(state); } catch(e) { if(!disposed)setInstall({available:false,state:'unavailable',busy:false,progress:'',error:(e as Error).message}); } finally { if(!disposed)timer=setTimeout(poll,2500); }};
     void poll(); return ()=>{disposed=true;clearTimeout(timer);};
   },[]);
+  // Asked again once the service exists: before the first install the voice
+  // image is not on the host, and the probe answers with nothing.
+  const [gpus, setGpus] = useState<{ gpus: VoiceGpu[]; selected: string } | null>(null);
+  const installed = Boolean(install && install.state !== 'absent' && install.state !== 'unavailable');
+  useEffect(() => { if (installed) void api.voiceGpus().then(setGpus).catch(() => setGpus(null)); }, [installed]);
+  const chooseGpu = async (gpu: string) => {
+    setActionBusy(true);
+    try { await api.setVoiceGpu(gpu); setGpus(await api.voiceGpus()); setInstall(await api.voiceInstallStatus()); }
+    catch (e) { onError((e as Error).message); }
+    finally { setActionBusy(false); }
+  };
   const manage=async(action:'install'|'start'|'stop')=>{setActionBusy(true);try{await api.voiceAction(action);setInstall(await api.voiceInstallStatus());}catch(e){onError((e as Error).message);}finally{setActionBusy(false);}};
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -83,6 +94,13 @@ export function VoiceAddon({ onError }: { onError: (message: string) => void }) 
       {install?.error && <p role="alert" className="text-xs text-red-400">{install.error}</p>}
       {install?.progress && <details open={install.state==='starting'||install.state==='failed'||install.busy}><summary className="text-xs cursor-pointer text-fg-muted">{t("Setup log")}</summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all text-[10px] text-fg-faint" aria-label={t("Voice setup log")}>{install.progress}</pre></details>}
       <p className="text-xs text-fg-faint">{t("Stopping releases GPU memory and keeps your models.")}</p>
+      {gpus && gpus.gpus.length > 1 && <div className="block text-xs text-fg-muted">{t("GPU")}
+        <Select aria-label={t("GPU")} size="sm" className="mt-1.5 w-full" disabled={actionBusy || install?.busy} value={gpus.selected} onChange={chooseGpu}
+          options={[{ value: "", label: t("Any GPU"), hint: t("Docker picks one") },
+            ...gpus.gpus.map((g) => ({ value: g.uuid, label: `GPU ${g.index} · ${g.name}`,
+              hint: t("{used} of {total} GB in use", { used: (g.usedMiB / 1024).toFixed(1), total: (g.totalMiB / 1024).toFixed(1) }) }))]} />
+        <p className="mt-1.5 text-fg-faint">{t("Changing the GPU restarts voice and keeps your models.")}</p>
+      </div>}
     </div>
       <div className="mt-4 border-t border-line pt-4 space-y-2">
     <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={config.lazyLoad!==false} onChange={e=>update({lazyLoad:e.target.checked})}/>{t("Lazy load · release GPU memory when voice is idle")}</label>

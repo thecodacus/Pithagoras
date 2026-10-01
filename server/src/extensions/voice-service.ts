@@ -10,6 +10,55 @@ export const breezeUrl = 'http://127.0.0.1:7862/v1/audio/speech';
 let pending = false;
 let progress = '';
 let error = '';
+
+/**
+ * The GPU voice runs on, by UUID; empty lets Docker give it any one.
+ *
+ * Set by the API from the stored choice. A UUID rather than an index, because
+ * the index order is the driver's and a UUID names the same card after a
+ * reboot or a card added beside it.
+ */
+let gpu = '';
+export function useGpu(id: string): void { gpu = id; }
+export const selectedGpu = (): string => gpu;
+
+export interface Gpu { index: number; uuid: string; name: string; totalMiB: number; usedMiB: number; }
+
+/** `nvidia-smi --query-gpu=index,uuid,name,memory.total,memory.used --format=csv,noheader,nounits`, read. */
+export function parseGpus(text: string): Gpu[] {
+  return text.split(/\r?\n/).flatMap((line) => {
+    const cells = line.split(',').map((c) => c.trim());
+    if (cells.length !== 5 || !/^\d+$/.test(cells[0]) || !cells[1].startsWith('GPU-')) return [];
+    return [{ index: Number(cells[0]), uuid: cells[1], name: cells[2], totalMiB: Number(cells[3]), usedMiB: Number(cells[4]) }];
+  });
+}
+
+/**
+ * The GPUs Docker can give the voice container.
+ *
+ * The portal has no GPU of its own to ask, so a throwaway container from the
+ * voice image is handed every GPU and runs nvidia-smi. Empty until that image
+ * is on the host: pulling gigabytes to answer a dropdown is not worth it, and
+ * the first install pulls it anyway.
+ */
+export async function gpus(): Promise<Gpu[]> {
+  if (!dockerAvailable() || !(await imagePresent(IMAGE))) return [];
+  const created = await checked('POST', '/containers/create', {
+    Image: IMAGE, Tty: true, Labels: { 'pithagoras.addon': 'voice-gpu-probe' },
+    Cmd: ['nvidia-smi', '--query-gpu=index,uuid,name,memory.total,memory.used', '--format=csv,noheader,nounits'],
+    HostConfig: { DeviceRequests: [{ Driver: 'nvidia', Count: -1, Capabilities: [['gpu']] }] },
+  });
+  const id = (created.body as { Id?: string })?.Id;
+  if (!id) throw new Error('Docker did not create the GPU probe');
+  try {
+    await checked('POST', `/containers/${id}/start`);
+    await request('POST', `/containers/${id}/wait`, undefined, 30000);
+    const logs = await request<string>('GET', `/containers/${id}/logs?stdout=1&stderr=1`);
+    return parseGpus(String(logs.body ?? ''));
+  } finally {
+    await request('DELETE', `/containers/${id}?force=1`).catch(() => {});
+  }
+}
 async function checked(method: string, path: string, body?: unknown) {
   const result = await request<{ message?: string }>(method, path, body);
   if (result.status >= 400) throw new Error(result.body?.message || `Docker returned ${result.status}`);
@@ -56,10 +105,12 @@ export async function voiceNetworkMode(): Promise<string> {
   }
   return `container:${detail.body.Id}`;
 }
-export function containerSpec(script: string, networkMode: string) {
-  return { Image: IMAGE, Tty: true, Cmd: ['bash', '-c', script], Labels: { 'pithagoras.addon': 'voice', 'pithagoras.voice-network': 'shared-v1' },
+export function containerSpec(script: string, networkMode: string, onGpu = gpu) {
+  return { Image: IMAGE, Tty: true, Cmd: ['bash', '-c', script], Labels: { 'pithagoras.addon': 'voice', 'pithagoras.voice-network': 'shared-v1', 'pithagoras.voice-gpu': onGpu },
     HostConfig: { Binds: [`${VOLUME}:/voice`], NetworkMode: networkMode,
-      DeviceRequests: [{ Driver: 'nvidia', Count: 1, Capabilities: [['gpu']] }],
+      // Inside the container the chosen card is the only one, so it is CUDA
+      // device 0 and server.json does not change with the choice.
+      DeviceRequests: [onGpu ? { Driver: 'nvidia', DeviceIDs: [onGpu], Capabilities: [['gpu']] } : { Driver: 'nvidia', Count: 1, Capabilities: [['gpu']] }],
       RestartPolicy: { Name: 'no' }, LogConfig: { Type: 'json-file', Config: { 'max-size': '10m', 'max-file': '2' } } } };
 }
 async function ensureContainer(script: string) {
@@ -68,7 +119,8 @@ async function ensureContainer(script: string) {
   if (existing.status !== 404) {
     if (existing.status >= 400) throw new Error(`Cannot inspect voice container: Docker ${existing.status}`);
     if (existing.body.Config?.Labels?.['pithagoras.addon'] !== 'voice') throw new Error('The pithagoras-voice container is not a managed voice add-on. Rename it before installing.');
-    const current = existing.body.Config.Labels['pithagoras.voice-network'] === 'shared-v1' && existing.body.HostConfig?.NetworkMode === networkMode;
+    const current = existing.body.Config.Labels['pithagoras.voice-network'] === 'shared-v1' && existing.body.HostConfig?.NetworkMode === networkMode
+      && (existing.body.Config.Labels['pithagoras.voice-gpu'] ?? '') === gpu;
     if (current) { await checked('POST', `/containers/${CONTAINER}/start`); return; }
     // Container config is immutable. Retain /voice and the cached model/build
     // files while replacing the old published-port container or stale namespace.

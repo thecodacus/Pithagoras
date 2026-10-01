@@ -250,6 +250,7 @@ The service can be healthy while the TTS model is unloaded. GPU memory is alloca
 | **Start voice** | Starts the existing managed container, reusing its models. |
 | **Retry setup** | Restarts a failed container and its setup script; retained downloads/builds are reused where the script can reuse them. |
 | **Stop · release VRAM** | Stops both voice processes in the container, releasing their GPU allocations. Keeps model files. |
+| **GPU** (shown when the host has more than one) | Runs Breeze on the chosen GPU, so the session model can keep the other. A running voice service is recreated on it at once and a stopped one on its next start; model files are kept. **Any GPU** lets Docker pick. |
 | Disable voice controls and save | Hides the session controls; it is not a container-uninstall operation. |
 
 ### When GPU memory is released
