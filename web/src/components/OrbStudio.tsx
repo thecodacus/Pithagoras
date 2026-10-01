@@ -125,7 +125,7 @@ export function OrbStudio() {
         className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-black transition disabled:opacity-40"
       >
         {busy ? <LuRefreshCw className="h-3.5 w-3.5 animate-spin" /> : done ? <LuCheck className="h-3.5 w-3.5" /> : null}
-        {done ? t("Saved") : t("Save orb")}
+        {done ? t("Saved") : t("Save avatar")}
       </button>
     </div>
   );
@@ -138,7 +138,7 @@ export function OrbStudio() {
         </div>
       </div>
       <div className="min-w-0 flex-1">
-        <h3 className="text-sm font-medium">{t("Voice orb")}</h3>
+        <h3 className="text-sm font-medium">{t("Avatar")}</h3>
         <p className="mt-0.5 truncate text-xs text-fg-muted">{summary}</p>
       </div>
       <button
@@ -151,7 +151,7 @@ export function OrbStudio() {
       </button>
 
       {open && (
-      <Modal title={t("Voice orb")} subtitle={t("How the agent looks and moves in voice mode.")} wide onClose={close} footer={footer}>
+      <Modal title={t("Avatar")} subtitle={t("How the agent looks and moves in voice mode.")} wide onClose={close} footer={footer}>
       <div className="grid gap-5 sm:grid-cols-[220px_1fr]">
         {/* Stays in view while the options scroll past, so a change is seen as it is made. */}
         <div className="sm:sticky sm:top-0 sm:self-start">
