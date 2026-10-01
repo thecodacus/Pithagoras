@@ -310,6 +310,7 @@ function AgentView({
           {back}
           <PageHeader
             icon={<LuBot />}
+            media={<OrbStudio />}
             title={
               renaming === "agent" ? (
                 <TitleInput value={agent.name} label={t("Agent name")} className="w-full" onCommit={renameAgent} onCancel={() => setRenaming(null)} />
@@ -376,7 +377,6 @@ function AgentView({
 
           {setup?.initialised && <AgentFiles agent={agent.id} setup={setup} onSaved={setSetup} />}
 
-          <OrbStudio />
 
           {loadError && (
             <div className="mt-4 rounded-lg bg-warn/10 px-3 py-2 text-sm text-warn">

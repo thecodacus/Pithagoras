@@ -10,6 +10,7 @@ import type { ReactNode } from "react";
  */
 export function PageHeader({
   icon,
+  media,
   title,
   description,
   action,
@@ -17,6 +18,8 @@ export function PageHeader({
   className = "",
 }: {
   icon: ReactNode;
+  /** In the icon's place, as it is: the Agent page's avatar. */
+  media?: ReactNode;
   /** A name, or the controls that edit it: the Agent page's rename. */
   title: ReactNode;
   description: ReactNode;
@@ -29,14 +32,17 @@ export function PageHeader({
   return (
     <header className={`page-header rounded-2xl border border-line bg-gradient-to-br from-accent/10 via-transparent to-transparent px-5 py-5 ${className}`}>
       <div className="flex flex-wrap items-start gap-3">
-        <div className="page-header-icon grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-accent/12 text-accent [&>svg]:h-5 [&>svg]:w-5">
-          {icon}
-        </div>
+        {media ?? (
+          <div className="page-header-icon grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-accent/12 text-accent [&>svg]:h-5 [&>svg]:w-5">
+            {icon}
+          </div>
+        )}
         <div className="min-w-0 flex-1 basis-52">
           <h2 className="text-base font-semibold text-fg">{title}</h2>
           <p className="mt-0.5 max-w-xl text-sm text-fg-muted">{description}</p>
         </div>
-        {action && <div className="shrink-0 max-sm:ml-[3.25rem]">{action}</div>}
+        {/* Under the title on a narrow screen, so in line with it past the icon or the media. */}
+        {action && <div className={`shrink-0 ${media ? "max-sm:ml-[4.75rem]" : "max-sm:ml-[3.25rem]"}`}>{action}</div>}
       </div>
       {children}
     </header>

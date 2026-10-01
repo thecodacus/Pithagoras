@@ -18,7 +18,8 @@ first agent's home, named after it (`agents/research-bot` for *Research Bot*),
 and its files are written there.
 
 A card opens that agent (`/agent?agent=research-bot`): its conversations, its
-files to edit, its avatar, and **New conversation** to start one with it. Its
+files to edit, and **New conversation** to start one with it. Its avatar is at
+the top beside its name; the palette on it opens the avatar customizer. Its
 name, with the pencil beside it, renames it; the folder keeps its name.
 **Agents** at the top goes back to the cards.
 

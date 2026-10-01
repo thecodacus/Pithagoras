@@ -59,7 +59,9 @@ const SLIDERS: ["speed" | "reactivity" | "glow", string, number, number, string]
 ];
 
 /**
- * The voice-mode orb's personality and look, with a live preview.
+ * The agent's avatar, as the Agent page's hero shows it, with a button on it
+ * that opens the customizer: the voice-mode orb's personality and look, with
+ * a live preview.
  *
  * The preview speaks with a made-up voice level so the motion can be judged
  * without starting voice mode; saved, the style reaches every open voice stage.
@@ -186,24 +188,24 @@ export function OrbStudio() {
   );
 
   return (
-    <section className="mt-6 flex items-center gap-4 rounded-xl border border-line bg-surface/50 p-4">
-      <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-xl bg-[#0b1220]">
-        <div className="voice-avatar w-[60%]">
-          <VoiceOrb mode="idle" levels={still} look={shown} />
+    <>
+      {/* The avatar itself, with the way to change it on it. */}
+      <div className="relative h-16 w-16 shrink-0" title={summary}>
+        <div className="flex h-full w-full items-center justify-center rounded-2xl bg-[#0b1220] ring-1 ring-inset ring-accent/15">
+          <div className="voice-avatar w-[66%]">
+            <VoiceOrb mode="idle" levels={still} look={shown} />
+          </div>
         </div>
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          title={t("Customize")}
+          aria-label={t("Customize the avatar")}
+          className="absolute -bottom-1.5 -right-1.5 grid h-7 w-7 place-items-center rounded-full border border-line bg-surface text-fg-muted shadow-pop transition hover:border-accent/40 hover:text-accent"
+        >
+          <LuPalette className="h-3.5 w-3.5" />
+        </button>
       </div>
-      <div className="min-w-0 flex-1">
-        <h3 className="text-sm font-medium">{t("Avatar")}</h3>
-        <p className="mt-0.5 truncate text-xs text-fg-muted">{summary}</p>
-      </div>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-accent/12 px-3 py-1.5 text-sm text-accent ring-1 ring-inset ring-accent/25 transition hover:bg-accent/20"
-      >
-        <LuPalette className="h-4 w-4" />
-        {t("Customize")}
-      </button>
 
       {open && (
       <Modal title={t("Avatar")} subtitle={t("How the agent looks and moves in voice mode.")} wide onClose={close} footer={footer}>
@@ -422,6 +424,6 @@ export function OrbStudio() {
       {error && <p role="alert" className="mt-3 text-xs text-danger">{error}</p>}
       </Modal>
       )}
-    </section>
+    </>
   );
 }
