@@ -20,6 +20,16 @@ test("a server's models are read from each server's own shape", () => {
   assert.deepEqual(p.parseModels({ nope: true }), []);
 });
 
+test("a llama-swap alias is known by its own name, not by the name of the model it stands for", () => {
+  // As llama-swap lists them: the router, and each preset behind it as an alias carrying the router's name.
+  const listed = { data: [
+    { id: "llamacpp", name: "llama.cpp router (models.ini presets)", meta: { llamaswap: { type: "model", aliases: ["ornith-35b-128k"] } } },
+    { id: "ornith-35b-128k", name: "llama.cpp router (models.ini presets)", meta: { llamaswap: { type: "alias", modelID: "llamacpp" } } },
+    { id: "strata", name: "Strata — Qwen3.8-Flash-Next (2 GPUs, 64k)", meta: { llamaswap: { type: "model" } } },
+  ] };
+  assert.deepEqual(p.parseModels(listed).map((m) => m.name ?? m.id), ["llama.cpp router (models.ini presets)", "ornith-35b-128k", "Strata — Qwen3.8-Flash-Next (2 GPUs, 64k)"]);
+});
+
 test("an address is made into the base pi wants", () => {
   assert.equal(p.normalizeBaseUrl("localhost:8080", "llama-cpp"), "http://localhost:8080/v1");
   assert.equal(p.normalizeBaseUrl("http://h:11434/", "ollama"), "http://h:11434/v1");

@@ -339,7 +339,10 @@ export function parseModels(json: unknown): ModelEntry[] {
     seen.add(id);
     const entry: ModelEntry = { id };
     if (typeof item === "object") {
-      if (typeof item.name === "string" && item.name !== id) entry.name = item.name;
+      // llama-swap lists each alias as a model of its own, with the name of the model it stands for: every preset
+      // behind one llama.cpp router was "llama.cpp router (models.ini presets)". An alias is known by its own name.
+      const alias = item.meta?.llamaswap?.type === "alias";
+      if (!alias && typeof item.name === "string" && item.name !== id) entry.name = item.name;
       const ctx = num(item.context_length) ?? num(item.max_model_len) ?? num(item.context_window) ?? num(item.meta?.n_ctx) ?? num(item.meta?.n_ctx_train);
       if (ctx) entry.contextWindow = ctx;
       const modalities = item.architecture?.input_modalities;

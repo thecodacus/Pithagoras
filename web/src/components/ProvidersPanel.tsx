@@ -362,8 +362,9 @@ export function ProviderEditor({ view, provider, taken, onCancel, onSaved, onErr
         const merged: Row[] = r.models.map((m) => {
           const had = known.get(m.id);
           known.delete(m.id);
-          // What is already chosen keeps what was set for it; a new server has everything ticked.
-          return had ? { ...had, found: true } : toRow(m, !editing || before.length === 0, true);
+          // What is already chosen keeps what was set for it, but its name is the server's, as it is now: no one
+          // sets it here, and one saved wrong would otherwise stay wrong. A new server has everything ticked.
+          return had ? { ...had, name: m.name, found: true } : toRow(m, !editing || before.length === 0, true);
         });
         // What this server does not list: one saved or named stays, marked as
         // not listed; one only found at an address asked before goes with it.
