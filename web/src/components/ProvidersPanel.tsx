@@ -15,6 +15,7 @@ import { formatTokens } from "../transcript";
 import { Select } from "./Select";
 import { Empty, Field, Section, btnCls, ghostCls, inputCls, primaryCls } from "./SettingsUi";
 import { t, tp } from "../i18n";
+import { forgetModels } from "../model-catalogue";
 
 const KIND_ICONS: Record<ProviderKind, IconType> = {
   "llama-cpp": LuCpu, "llama-swap": LuShuffle, ollama: LuHardDrive, openrouter: LuRoute, hosted: LuCloud, custom: LuServer,
@@ -67,6 +68,7 @@ export function ProvidersPanel({ onError, onSetup }: { onError: (e: string) => v
     setBusy(p.id);
     try {
       const r = await api.removeProvider(p.id);
+      forgetModels();
       setNotice(r.note ?? null);
       await load();
     } catch (e) {
@@ -415,6 +417,7 @@ export function ProviderEditor({ view, provider, taken, onCancel, onSaved, onErr
         } : {}),
         ...(key.trim() ? { apiKey: key.trim() } : {}),
       });
+      forgetModels();
       onSaved(r.note);
     } catch (e) {
       onError((e as Error).message);

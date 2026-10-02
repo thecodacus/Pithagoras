@@ -277,6 +277,8 @@ test('a stored model no one offers any more is not kept: the assistant offers on
 test('a new provider keeps only the models its current address lists', async ({ page }) => {
   const api = await portal(page, { probe: (url) => (url.includes('9090') ? ['B'] : url.includes('8080') ? ['A'] : undefined) });
   await page.addInitScript(() => localStorage.setItem('pithagoras.setup', 'done'));
+  // A model list cached by the chat's model menu, from before this provider.
+  await page.addInitScript(() => { if (!sessionStorage.getItem('seeded')) { localStorage.setItem('modelCatalogue.v2', JSON.stringify({ at: Date.now(), models: [{ id: 'A', name: 'A', provider: 'x' }] })); sessionStorage.setItem('seeded', '1'); } });
   await page.goto('/settings/models');
   const dialog = page.getByRole('dialog', { name: 'Settings' });
   await dialog.getByRole('button', { name: 'Add a provider' }).click();
@@ -293,6 +295,8 @@ test('a new provider keeps only the models its current address lists', async ({ 
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await expect.poll(() => api.providerSaves.length).toBe(1);
   expect((api.providerSaves[0].body as { models: { id: string }[] }).models.map((m) => m.id)).toEqual(['B', 'Mine']);
+  // Saved: the cached list goes, so the next model menu opened fetches the new one.
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('modelCatalogue.v2'))).toBeNull();
 });
 
 test("a package's link that is not a web page is not made a link", async ({ page }) => {

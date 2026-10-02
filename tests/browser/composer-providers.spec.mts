@@ -54,3 +54,41 @@ test("the subagents' row is asked for with the chat, so the model menu opens wit
   // There in the first frame: nothing arrives after the menu to push it about.
   await expect(page.getByRole('combobox', { name: 'Subagents in this chat run on' })).toContainText('llama-swap/Qwen3.8-27b', { timeout: 150 });
 });
+
+const catalogue = (ids: string[]) => ({
+  live: true, stats: null, thinking: { levels: ['off', 'low', 'medium', 'high'] },
+  state: { model: { id: 'Qwen3.6 35B', name: 'Qwen3.6 35B', provider: 'llama-server' }, thinkingLevel: 'medium' },
+  models: { models: ids.map((id) => ({ id, name: id, provider: 'llama-swap' })) },
+});
+const cached = (ago: number) => ({ at: Date.now() - ago, models: [{ id: 'Old model', name: 'Old model', provider: 'llama-swap' }] });
+
+test('the model list cached in the browser is fetched again once it has expired, and the refresh icon fetches it at once', async ({ page }) => {
+  let fetched = 0;
+  await page.route('**/api/sessions/preview/models', (route) => { fetched++; return route.fulfill({ json: catalogue(['New model']) }); });
+  // Cached two hours ago: older than its expiry.
+  await page.addInitScript((value) => { if (!sessionStorage.getItem('seeded')) { localStorage.setItem('modelCatalogue.v2', JSON.stringify(value)); sessionStorage.setItem('seeded', '1'); } }, cached(2 * 60 * 60 * 1000));
+  await page.goto('/tests/chat.html?phase=model');
+  const pill = page.getByTitle('Qwen3.6 35B', { exact: true });
+  await pill.click();
+  await expect.poll(() => fetched).toBe(1);
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('modelCatalogue.v2')!).models.map((m: { id: string }) => m.id))).toEqual(['New model']);
+  // Fresh now: opening the menu again asks for nothing.
+  await page.keyboard.press('Escape');
+  await pill.click();
+  await page.waitForTimeout(300);
+  expect(fetched).toBe(1);
+  // The icon fetches it at once, fresh or not.
+  await page.getByRole('button', { name: 'Refresh models' }).click();
+  await expect.poll(() => fetched).toBe(2);
+});
+
+test('a model list cached within its expiry is used as it is', async ({ page }) => {
+  let fetched = 0;
+  await page.route('**/api/sessions/preview/models', (route) => { fetched++; return route.fulfill({ json: catalogue(['New model']) }); });
+  await page.addInitScript((value) => localStorage.setItem('modelCatalogue.v2', JSON.stringify(value)), cached(60 * 1000));
+  await page.goto('/tests/chat.html?phase=model');
+  await page.getByTitle('Qwen3.6 35B', { exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Refresh models' })).toBeVisible();
+  await page.waitForTimeout(300);
+  expect(fetched).toBe(0);
+});

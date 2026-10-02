@@ -1,4 +1,4 @@
-import { LuBlocks } from "react-icons/lu";
+import { LuBlocks, LuRefreshCw } from "react-icons/lu";
 import { StatusDot } from "./StatusDot";
 import { ToolSwitches } from "./ToolSwitches";
 import { SubagentModelPicker, useSubagentChoice } from "./SubagentModelPicker";
@@ -8,6 +8,7 @@ import { useNavigate } from "react-router-dom";
 import { MENU_WIDTH, anchorLeft } from "../menu-anchor";
 import { api, type PiConfig, type PiModel, type Session } from "../api";
 import { serialSaver } from "../serial-saver";
+import { cacheModels, cachedModels, catalogueFresh, forgetModels } from "../model-catalogue";
 import { ContextPill } from "./ContextPill";
 import { t } from "../i18n";
 import { EFFORT_LEVELS, effortLabel } from "../effort";
@@ -20,33 +21,6 @@ import { EFFORT_LEVELS, effortLabel } from "../effort";
  * Replaced by whatever pi actually reports once that arrives.
  */
 const DEFAULT_LEVELS = EFFORT_LEVELS;
-
-/**
- * The model catalogue, kept between sessions and reloads.
- *
- * Fetching it starts pi and enumerates a few hundred models, which is slow
- * enough that opening the picker sat on "Loading models…" every time. The
- * providers are portal-wide, so one cache serves every session, and it is only
- * refetched when somebody asks — a model list does not change on its own.
- */
-const CATALOGUE_KEY = "modelCatalogue.v1";
-
-function cachedModels(): PiModel[] {
-  try {
-    const raw = localStorage.getItem(CATALOGUE_KEY);
-    return raw ? (JSON.parse(raw) as PiModel[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-const cacheModels = (models: PiModel[]) => {
-  try {
-    if (models.length) localStorage.setItem(CATALOGUE_KEY, JSON.stringify(models));
-  } catch {
-    // A full quota is not worth failing a dropdown over.
-  }
-};
 
 /**
  * What pi last reported for each model.
@@ -309,10 +283,12 @@ export function ComposerBar({
       .finally(() => setLoadingCatalogue(false));
   };
 
-  // Only when there is nothing cached at all. After that the list is what you
-  // last saw until you ask for a new one — this call starts pi.
+  // When there is nothing cached, or what is cached has expired or was dropped
+  // because a provider changed (see model-catalogue.ts). Otherwise the list is
+  // what you last saw until you ask for a new one — this call starts pi. The
+  // list drawn meanwhile stays, so the menu is not empty while it loads.
   useEffect(() => {
-    if (open === "model" && !cfg.models.models.length && !loadingCatalogue) refreshCatalogue();
+    if (open === "model" && (!cfg.models.models.length || !catalogueFresh()) && !loadingCatalogue) refreshCatalogue();
   }, [open]);
 
   // Refresh once a run ends so token and cost figures stay current.
@@ -551,14 +527,16 @@ export function ComposerBar({
         <div ref={menu} style={{ left: menuLeft }} className="composer-menu float-in absolute bottom-full left-0 z-20 mb-2 w-72 max-w-full overflow-hidden rounded-xl border border-line bg-surface py-1 shadow-pop">
           <div className="flex items-center gap-2 px-3 py-1">
             <p className="text-[11px] text-fg-subtle">{t("Models")}</p>
+            {/* The cached copy goes first: a fetch that fails leaves nothing old behind for the next menu. */}
             <button
               type="button"
-              onClick={refreshCatalogue}
+              onClick={() => { forgetModels(); refreshCatalogue(); }}
               disabled={loadingCatalogue}
+              aria-label={t("Refresh models")}
               title={t("Re-read the list from pi — needed after starting a local server")}
-              className="ml-auto rounded px-1 text-[11px] text-fg-faint transition hover:text-fg disabled:opacity-50"
+              className="ml-auto rounded p-1 text-fg-faint transition hover:bg-fg/5 hover:text-fg disabled:opacity-50"
             >
-              {loadingCatalogue ? t("refreshing…") : t("refresh")}
+              <LuRefreshCw className={`h-3.5 w-3.5 ${loadingCatalogue ? "animate-spin" : ""}`} aria-hidden />
             </button>
           </div>
           {!showAll ? (
