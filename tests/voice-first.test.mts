@@ -14,8 +14,10 @@ test('audio requests carry a persistent marker and a stable conditional system r
  assert.match(AUDIO_SYSTEM_RULE, /typed requests/);
  assert.match(AUDIO_SYSTEM_RULE, /normal chat formatting/);
  assert.match(AUDIO_SYSTEM_RULE, /plain conversational text/);
- assert.match(AUDIO_SYSTEM_RULE, /Before every tool call or group of tool calls/);
- assert.match(AUDIO_SYSTEM_RULE, /including subsequent actions after earlier tool results/);
+ assert.match(AUDIO_SYSTEM_RULE, /tell the user once/);
+ assert.match(AUDIO_SYSTEM_RULE, /without announcing each one/);
+ assert.doesNotMatch(AUDIO_SYSTEM_RULE, /Before every tool call/);
+ assert.match(AUDIO_SYSTEM_RULE, /Speak again during the work only when/);
  // Not to be read as saying the message in hand has the marker: issue #26.
  assert.match(AUDIO_SYSTEM_RULE, /does not mean any request has it/);
 });

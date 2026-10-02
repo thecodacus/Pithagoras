@@ -3,6 +3,8 @@ import { inlineBrowserScreenshot } from "./browser-screenshot.js";
 import { cleanBrowserSnapshot, isBrowserSnapshot } from "./browser-snapshot-format.js";
 import { listToolRules, recordAudit, useGrant, type ToolRule } from "../db.js";
 import { PORTAL_BROWSER_TOOLS } from "../tool-policy.js";
+// Only the name: a heartbeat's note is registered for heartbeats alone, and is how one says what it read.
+import { NOTE_TOOL } from "./heartbeat-names.js";
 
 /**
  * A blast-radius limiter for prompt injection.
@@ -162,7 +164,7 @@ const envelope = (id: string) => ({
  * group conversation changes sender between messages and a launch-time list
  * would freeze capability to whoever happened to speak first.
  */
-const READ_ONLY = new Set(["read", "grep", "find", "ls", "ask_primary"]);
+const READ_ONLY = new Set(["read", "grep", "find", "ls", "ask_primary", NOTE_TOOL]);
 
 /**
  * Driving the agent's browser, in either of the two shapes the MCP adapter

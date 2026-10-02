@@ -7,6 +7,7 @@ import type { PersonRow, Role } from "./people.js";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { agentHome } from "./agent-home.js";
 import { agentAt } from "./agents.js";
+import { HEARTBEAT_ROLE } from "./pi/heartbeat-names.js";
 import path from "node:path";
 import type { Draft, PiClient, PiTool, PromptTaken } from "./pi/types.js";
 import { effectiveOff, exceptionsFor, toolEnabled, toolSource } from "./tool-policy.js";
@@ -60,6 +61,7 @@ import {
   updateSession,
   type EventRow,
   sessionSubagentModel,
+  anySessionRunning,
 } from "./db.js";
 
 /**
@@ -929,7 +931,11 @@ class SessionManager extends EventEmitter {
       role: session.role,
       toolsOff: this.offFor(sessionId),
       subagentModel: () => sessionSubagentModel(sessionId) ?? undefined,
-      whoNow: () => ({ role: this.speakerRole(sessionId), key: this.speakerKey(sessionId) }),
+      // A heartbeat is the agent looking around on its own: its own context,
+      // but held to reading by a role of its own. See heartbeat.ts.
+      ...(session.kind === "heartbeat"
+        ? { heartbeatAgent: agentAt(session.workspace)?.id, whoNow: () => ({ role: HEARTBEAT_ROLE }) }
+        : { whoNow: () => ({ role: this.speakerRole(sessionId), key: this.speakerKey(sessionId) }) }),
     });
 
     // pi writes the file lazily, so it usually does not exist yet at launch.
@@ -2070,6 +2076,12 @@ class SessionManager extends EventEmitter {
   /** Whether a subagent is working in the background here: its chat looks idle, and stopping it would end the subagent. */
   backgroundWork(sessionId: string): boolean {
     return (this.live.get(sessionId)?.client.subagentsRunning?.() ?? 0) > 0;
+  }
+
+  /** Whether anything at all is using the model: a turn running, or a message waiting for one. */
+  anyBusy(): boolean {
+    if (this.asking.size) return true;
+    return anySessionRunning();
   }
 
   isBusy(sessionId: string): boolean {

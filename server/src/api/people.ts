@@ -91,8 +91,9 @@ export function peopleRouter(): Router {
 
   router.post("/tool-rules", (req, res) => {
     const { role, tool, pattern, note } = req.body ?? {};
-    if (!["colleague", "guest", "all"].includes(role)) {
-      return res.status(400).json({ error: "Role must be colleague, guest or all" });
+    // "heartbeat" is an agent looking around on its own: see heartbeat.ts.
+    if (!["colleague", "guest", "heartbeat", "all"].includes(role)) {
+      return res.status(400).json({ error: "Role must be colleague, guest, heartbeat or all" });
     }
     if (typeof tool !== "string" || !/^[a-z_][a-z0-9_]*$/i.test(tool)) {
       return res.status(400).json({ error: "Tool must be a tool name, e.g. bash" });

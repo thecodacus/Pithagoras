@@ -17,8 +17,10 @@ setup: who it is, and who it works for. Its home is made in `agents/` beside the
 first agent's home, named after it (`agents/research-bot` for *Research Bot*),
 and its files are written there.
 
-A card opens that agent (`/agents?agent=research-bot`): its conversations, its
-files to edit, and **New conversation** to start one with it. Its avatar is at
+A card opens that agent (`/agents?agent=research-bot`), with **New
+conversation** to start one with it and four tabs: **Conversations**,
+**Activity** (what its heartbeat noticed, with the number unread),
+**Heartbeat**, and **Files** to edit. The tab is kept in the link (`&tab=files`). Its avatar is at
 the top beside its name; the palette on it opens the avatar customizer. Each
 agent's avatar is its own, and voice mode shows the avatar of the agent the
 chat is with (the first agent's for a chat in a project). Its
@@ -36,6 +38,36 @@ a clone from a recording or one designed from a description, and gives it to
 the agent. A chat in a project shows the first agent's avatar and speaks with its voice.
 A library voice that is deleted is no longer any agent's, and those
 that had it speak as the voice settings say again.
+
+## Its heartbeat
+
+An agent can look around on its own. It is off until you choose how often, on
+the **Heartbeat** tab: every 30 minutes up to once a day. The same tab has the
+hours it keeps quiet and **Look now**.
+
+What it looks at is its `WATCH.md`, the fourth file under **Files**: what to keep
+an eye on, and what counts as worth telling you. It is not context for its
+chats; only a look reads it. An agent with an empty one has nothing to watch.
+
+A look is held to reading. It runs as the role `heartbeat`, which may read
+files and leave notes, and nothing else: no commands, no edits, no messages,
+and no browser. To let it run a command, add it under **Commands it may run**,
+for example `gh pr list*`. A command runs only as written there, with `*` where
+it varies, and a pipe, a redirect or a second command makes it something else.
+Those commands are for every agent's heartbeat, and show in **People** as
+rules for every agent's heartbeat. A rule for all roles applies to it too.
+
+What it notices lands in **Activity** as notes; the tab and the agent's card
+show how many are unread. A note marked urgent also goes to the
+channel routines report to, when there is one. Most looks find nothing, and say
+nothing.
+
+A look never gets in the way: it waits while any chat or routine is working,
+and **Look now** is refused until they are done,
+since a home lab has one model to share, and one agent looks at a time. Each
+agent looks in one conversation of its own, so it remembers what it already
+told you. Looks need the host executor; under the container executor nothing
+would hold them to reading, so they do not run.
 
 ## In the sidebar
 

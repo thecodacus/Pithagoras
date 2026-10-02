@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { OrbStudio } from "./OrbStudio";
+import { ActivityFeed, HeartbeatSettings } from "./AgentHeartbeat";
 import { VoiceOrb, type VoiceLevels } from "./VoiceOrb";
 import {
   LuBot,
@@ -25,7 +26,7 @@ import { Modal } from "./Modal";
 import { StatusDot } from "./StatusDot";
 import { TitleInput } from "./TitleInput";
 import { pollWhileVisible } from "../poll";
-import { t, tp } from "../i18n";
+import { msg, t, tp } from "../i18n";
 import { when } from "../time";
 
 /**
@@ -124,7 +125,7 @@ function AgentCards({ agents, onOpen, onNew }: { agents: Agent[]; onOpen: (id: s
             <li key={a.id}>
               <button
                 onClick={() => onOpen(a.id)}
-                className="group flex w-full flex-col items-center rounded-2xl border border-line bg-raised/40 px-3 pb-4 pt-5 text-center transition hover:border-accent/40 hover:bg-raised/70"
+                className="group relative flex w-full flex-col items-center rounded-2xl border border-line bg-raised/40 px-3 pb-4 pt-5 text-center transition hover:border-accent/40 hover:bg-raised/70"
               >
                 {/* Room around the orb for its glow, and for a hat or a prop. */}
                 <div className="flex h-28 w-28 items-center justify-center rounded-2xl bg-[#0b1220]">
@@ -132,6 +133,11 @@ function AgentCards({ agents, onOpen, onNew }: { agents: Agent[]; onOpen: (id: s
                     <VoiceOrb mode="idle" levels={still} look={a.orb} />
                   </div>
                 </div>
+                {a.unread > 0 && (
+                  <span className="absolute right-2.5 top-2.5 rounded-full bg-accent/15 px-1.5 text-[11px] text-accent" title={tp(a.unread, "{n} new note", "{n} new notes")}>
+                    {a.unread}
+                  </span>
+                )}
                 <p className="mt-3 w-full truncate text-sm font-medium text-fg">{a.name}</p>
                 <p className="mt-0.5 text-[11px] text-fg-faint">
                   {a.initialised ? tp(a.chats, "{n} chat", "{n} chats") : t("Not set up yet")}
@@ -191,6 +197,18 @@ function AgentView({
   // The conversation whose name is open for editing, if any; the agent's own as "agent".
   const [renaming, setRenaming] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  // The tab shown, kept in the link beside the agent: Conversations without one.
+  const [params, setParams] = useSearchParams();
+  const tab: AgentTab = AGENT_TABS.find(([id]) => id === params.get("tab"))?.[0] ?? "conversations";
+  const setTab = (id: AgentTab) =>
+    setParams((p) => {
+      const next = new URLSearchParams(p);
+      if (id === "conversations") next.delete("tab");
+      else next.set("tab", id);
+      return next;
+    });
+  // What the agent's heartbeat is doing, and how many notes are unread, change on their own.
+  useEffect(() => pollWhileVisible(() => void onChanged(), 15_000), [onChanged]);
 
   const load = () =>
     api
@@ -375,18 +393,23 @@ function AgentView({
             </div>
           </PageHeader>
 
-          {setup?.initialised && <AgentFiles agent={agent.id} setup={setup} onSaved={setSetup} />}
+          <AgentTabs tab={tab} onTab={setTab} unread={agent.unread} />
 
+          {error && (
+            <div className="mt-4 rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>
+          )}
 
+          {tab === "activity" && <ActivityFeed agent={agent} onChanged={onChanged} onSelect={onSelect} />}
+          {tab === "heartbeat" && <HeartbeatSettings agent={agent} onChanged={onChanged} />}
+          {tab === "files" && setup?.initialised && <AgentFiles agent={agent.id} setup={setup} onSaved={setSetup} />}
+
+          {tab === "conversations" && (
+          <>
           {loadError && (
             <div className="mt-4 rounded-lg bg-warn/10 px-3 py-2 text-sm text-warn">
               {t("Could not refresh the conversations — what is shown may be out of date.")} {loadError}
             </div>
           )}
-          {error && (
-            <div className="mt-4 rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>
-          )}
-
           {loading ? (
             <RowsSkeleton />
           ) : sessions.length === 0 ? (
@@ -483,9 +506,42 @@ function AgentView({
               ))}
             </div>
           )}
+          </>
+          )}
         </div>
       </div>
       {deleting && <DeleteAgent agent={agent} onClose={() => setDeleting(false)} onDeleted={onDeleted} />}
+    </div>
+  );
+}
+
+const AGENT_TABS = [
+  ["conversations", msg("Conversations")],
+  ["activity", msg("Activity")],
+  ["heartbeat", msg("Heartbeat")],
+  ["files", msg("Files")],
+] as const;
+type AgentTab = (typeof AGENT_TABS)[number][0];
+
+/** The tabs under an agent's header; Activity counts what is unread. */
+function AgentTabs({ tab, onTab, unread }: { tab: AgentTab; onTab: (id: AgentTab) => void; unread: number }) {
+  return (
+    <div role="tablist" aria-label={t("Agent sections")} className="mt-5 flex gap-1 overflow-x-auto border-b border-line">
+      {AGENT_TABS.map(([id, label]) => (
+        <button
+          key={id}
+          role="tab"
+          type="button"
+          aria-selected={tab === id}
+          onClick={() => onTab(id)}
+          className={`-mb-px inline-flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition ${
+            tab === id ? "border-accent text-fg" : "border-transparent text-fg-muted hover:text-fg"
+          }`}
+        >
+          {t(label)}
+          {id === "activity" && unread > 0 && <span className="rounded-full bg-accent/15 px-1.5 text-[11px] text-accent">{unread}</span>}
+        </button>
+      ))}
     </div>
   );
 }
@@ -587,6 +643,16 @@ function RowBody({ s, title }: { s: AgentSession; title: ReactNode }) {
   );
 }
 
+/** What a WATCH.md might say, shown in an empty one. */
+const WATCH_EXAMPLE = [
+  "# What to keep an eye on",
+  "",
+  "- The open pull requests on the project: tell me about one waiting more than three days.",
+  "- The notes in ~/inbox: anything that needs an answer this week.",
+  "",
+  "Only tell me what needs me. Stay quiet otherwise.",
+].join("\n");
+
 /** The files that define the agent, editable in place. */
 function AgentFiles({ agent, setup, onSaved }: { agent: string; setup: Setup; onSaved: (s: Setup) => void }) {
   const [open, setOpen] = useState<string | null>(null);
@@ -637,6 +703,11 @@ function AgentFiles({ agent, setup, onSaved }: { agent: string; setup: Setup; on
 
       {file && (
         <div className="mt-2">
+          {file.name === "WATCH.md" && (
+            <p role="note" className="mb-2 text-xs text-fg-muted">
+              {t("Not context: what its heartbeat keeps an eye on. Say what to look at and what counts as worth telling you.")}
+            </p>
+          )}
           {unread(file.name) && (
             <p role="note" className="mb-2 text-xs text-fg-muted">
               {t("Not read while Understory is the agent's memory (Settings → Add-ons → Memory). It is kept, and read again once Understory is switched off.")}
@@ -647,6 +718,7 @@ function AgentFiles({ agent, setup, onSaved }: { agent: string; setup: Setup; on
             onChange={(e) => setDraft(e.target.value)}
             rows={14}
             spellCheck={false}
+            placeholder={file.name === "WATCH.md" ? WATCH_EXAMPLE : undefined}
             className="w-full resize-y rounded-lg border border-line bg-raised/60 px-3 py-2 font-mono text-xs leading-relaxed outline-none focus:border-accent/60"
           />
           <button
