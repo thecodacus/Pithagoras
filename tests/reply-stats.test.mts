@@ -9,7 +9,12 @@ const reply = (extra: object = {}) => ({ seq: 12, type: 'message_end', at: 10_00
 
 test('a reply from llama.cpp says both its speeds as llama.cpp measured them, and the whole prompt it read', () => {
   const item = buildTranscript([reply({ timings })])[0] as any;
-  assert.deepEqual(item.stats, { input: 55, cached: 40, output: 20, outputPerSecond: 35.9, outputMs: 556.9, promptPerSecond: 59.9, promptMs: 250.5, draft: { tokens: 19, accepted: 11 } });
+  assert.deepEqual(item.stats, { input: 55, cached: 40, output: 20, outputPerSecond: 35.9, outputMs: 556.9, read: 15, promptPerSecond: 59.9, promptMs: 250.5, draft: { tokens: 19, accepted: 11 } });
+});
+
+test('llama.cpp\'s cache count is used where pi\'s usage has none', () => {
+  const stats = replyStats({ ...reply({ timings }).payload, message: { role: 'assistant', content: [], usage: { input: 15, output: 20 } } })!;
+  assert.equal(stats.cached, 40);
 });
 
 test('another provider has the tokens from its usage, and its answer speed from when its first and last tokens came', () => {

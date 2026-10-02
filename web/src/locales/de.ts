@@ -420,7 +420,7 @@ const de: Locale = {
     "prefill {speed} t/s": "Prefill {speed} t/s",
     "{count} in": "{count} rein",
     "{count} out": "{count} raus",
-    "Prompt: {count} tokens, read in {seconds} s": "Prompt: {count} Tokens, gelesen in {seconds} s",
+    "{count} read in {seconds} s": "{count} gelesen in {seconds} s",
     "Prompt: {count} tokens": "Prompt: {count} Tokens",
     "{count} of them from the cache": "{count} davon aus dem Cache",
     "Answer: {count} tokens, written in {seconds} s": "Antwort: {count} Tokens, geschrieben in {seconds} s",

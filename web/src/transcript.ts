@@ -44,7 +44,8 @@ export interface ReplyStats {
   /** Tokens written per second. */
   outputPerSecond?: number;
   outputMs?: number;
-  /** Prompt tokens read per second (prefill), the cached ones not counted. */
+  /** Of `input`, what was read (prefilled), and how fast and in how long: the cached part is not read. */
+  read?: number;
   promptPerSecond?: number;
   promptMs?: number;
   /** Speculative decoding: tokens drafted and how many were kept. */
@@ -67,12 +68,14 @@ export function replyStats(payload: any, endedAt?: number): ReplyStats | undefin
     stats.outputMs = count(timings.outputMs);
     // Prefill is only a speed when something was read: an answer from a prompt wholly cached read nothing.
     if (count(timings.promptTokens) && count(timings.promptPerSecond)) {
+      stats.read = timings.promptTokens;
       stats.promptPerSecond = timings.promptPerSecond;
       stats.promptMs = count(timings.promptMs);
     }
     if (count(timings.draftTokens)) stats.draft = { tokens: timings.draftTokens, accepted: count(timings.draftAccepted) ?? 0 };
     // llama.cpp's own counts where pi's usage has none.
     stats.input ??= (count(timings.promptTokens) ?? 0) + (count(timings.cachedTokens) ?? 0) || undefined;
+    if (!stats.cached && count(timings.cachedTokens)) stats.cached = timings.cachedTokens;
     stats.output ??= count(timings.outputTokens);
   } else if (stats.output && typeof payload?.firstTokenAt === "number" && endedAt !== undefined && endedAt > payload.firstTokenAt) {
     stats.outputMs = endedAt - payload.firstTokenAt;

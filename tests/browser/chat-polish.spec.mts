@@ -284,7 +284,8 @@ test('a finished reply says how fast it was written and read, and the tokens in 
   const line = page.getByText('35.9 t/s · prefill 544 t/s · 12,467 in · 41 out');
   await expect(line).toBeVisible();
   const details = await line.getAttribute('title');
-  expect(details).toContain('Prompt: 12,467 tokens, read in 2.21 s');
+  expect(details).toContain('Prompt: 12,467 tokens');
+  expect(details).toContain('1,203 read in 2.21 s');
   expect(details).toContain('11,264 of them from the cache');
   expect(details).toContain('Answer: 41 tokens, written in 1.14 s');
   expect(details).toContain('Draft: 22 of 30 tokens kept');

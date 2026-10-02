@@ -17,18 +17,20 @@ export function ReplyStatsLine({ stats }: { stats: ReplyStats }) {
   if (stats.output !== undefined) parts.push(t("{count} out", { count: formatNumber(stats.output) }));
   if (!parts.length) return null;
   const details = [
-    stats.input !== undefined && (stats.promptMs !== undefined
-      ? t("Prompt: {count} tokens, read in {seconds} s", { count: formatNumber(stats.input), seconds: seconds(stats.promptMs) })
-      : t("Prompt: {count} tokens", { count: formatNumber(stats.input) })),
+    stats.input !== undefined && t("Prompt: {count} tokens", { count: formatNumber(stats.input) }),
     stats.cached ? t("{count} of them from the cache", { count: formatNumber(stats.cached) }) : "",
+    // The time is the read part's alone: what came from the cache took none.
+    stats.read !== undefined && stats.promptMs !== undefined ? t("{count} read in {seconds} s", { count: formatNumber(stats.read), seconds: seconds(stats.promptMs) }) : "",
     stats.output !== undefined && (stats.outputMs !== undefined
       ? t("Answer: {count} tokens, written in {seconds} s", { count: formatNumber(stats.output), seconds: seconds(stats.outputMs) })
       : t("Answer: {count} tokens", { count: formatNumber(stats.output) })),
     stats.draft ? t("Draft: {accepted} of {tokens} tokens kept", { accepted: formatNumber(stats.draft.accepted), tokens: formatNumber(stats.draft.tokens) }) : "",
   ].filter(Boolean).join("\n");
+  // The details are in the tooltip for a pointer, and read out with the line for a screen reader, which has no hover.
   return (
     <span className="ml-1.5 select-none text-[11px] tabular-nums text-fg-faint" title={details}>
       {parts.join(" · ")}
+      <span className="sr-only">{`. ${details.replace(/\n/g, ". ")}`}</span>
     </span>
   );
 }
