@@ -13,6 +13,7 @@
     "cookie-parser": "^1.4.7",
     "express": "^5.0.1",
     "nanoid": "^5.0.9",
+    "playwright-core": "1.63.0",
     "typebox": "^1.1.38"
   },
   "devDependencies": {

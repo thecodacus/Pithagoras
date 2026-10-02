@@ -24,6 +24,24 @@
 export const BROWSER_MCP = "browser";
 
 /**
+ * The portal's own browser tools (browser/tools.ts): browser tools by name,
+ * whatever MCP servers there are, since they come from no server.
+ */
+export const PORTAL_BROWSER_TOOLS = [
+  "browser_navigate",
+  "browser_back",
+  "browser_snapshot",
+  "browser_click",
+  "browser_type",
+  "browser_select",
+  "browser_key",
+  "browser_scroll",
+  "browser_find",
+  "browser_get_text",
+  "browser_screenshot",
+] as const;
+
+/**
  * Which MCP server a tool came through, if any.
  *
  * Everything behind the adapter registers itself as one package, so a machine
@@ -61,6 +79,7 @@ export function browserTool(
   servers: Iterable<string>,
   browsers: string[] = [BROWSER_MCP]
 ): boolean {
+  if ((PORTAL_BROWSER_TOOLS as readonly string[]).includes(name)) return true;
   const server = mcpServerOf(name, servers);
   return server !== undefined && browsers.includes(server);
 }

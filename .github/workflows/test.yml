@@ -22,5 +22,7 @@ jobs:
         with:
           node-version: 22
       - run: npm install
+      # A Chromium for the browser tools' test (test/browser-tools), which drives one over its debugging port.
+      - run: npx playwright install --with-deps chromium
       - run: npm run build -w server
       - run: npm test -w server

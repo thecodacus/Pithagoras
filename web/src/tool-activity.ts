@@ -73,8 +73,11 @@ function browser(action: string, input: Record<string, any>): ToolCall {
   const url = text(input.url);
   if (/navigate|open|goto/.test(action)) return { label: t("Opening a page"), detail: url ? hostOf(url) : "", target: "browser" };
   if (/screenshot/.test(action)) return { label: t("Taking a screenshot"), detail: "", target: "browser" };
+  if (/scroll|wheel/.test(action)) return { label: t("Scrolling the page"), detail: "", target: "browser" };
+  if (/find/.test(action)) return { label: t("Searching the page"), detail: text(input.query), target: "browser" };
+  if (/get_text/.test(action)) return { label: t("Reading the page"), detail: "", target: "browser" };
   if (/click|hover|drag/.test(action)) return { label: t("Clicking in the browser"), detail: text(input.element), target: "browser" };
-  if (/type|fill|press|select/.test(action)) return { label: t("Typing in the browser"), detail: text(input.element), target: "browser" };
+  if (/type|fill|press|select|key/.test(action)) return { label: t("Typing in the browser"), detail: text(input.element), target: "browser" };
   if (/snapshot|evaluate|console|network/.test(action)) return { label: t("Reading the page"), detail: "", target: "browser" };
   if (/tab|close|back|forward|resize|wait/.test(action)) return { label: t("Using the browser"), detail: "", target: "browser" };
   return { label: t("Using the browser"), detail: url ? hostOf(url) : "", target: "browser" };

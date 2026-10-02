@@ -143,7 +143,7 @@ export function BrowserPage({ onOpenSession }: { onOpenSession: (id: string) => 
           <div className="mb-5 flex items-start gap-2 rounded-xl border border-warn/30 bg-warn/10 p-3 text-xs text-fg-muted">
             <LuCircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-warn" />
             <span className="flex-1">
-              {t("The browser is running but the agent has no way to reach it. Connecting adds an MCP server pointed at it — you can see and edit it afterwards in Settings → MCP.")}
+              {t("The browser is running but the agent has no way to reach it. Connecting gives the agent the portal's browser tools, which read only what is on screen and answer each action with what it changed.")}
             </span>
             <button
               onClick={() => act(() => api.connectBrowser())}

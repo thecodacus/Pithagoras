@@ -1649,7 +1649,28 @@ function seenBrowserTools(): string[] {
 function browserColumnDecides(): boolean {
   if ((process.env.EXECUTOR || "host") === "container") return true;
   if (browserAdoptionPending()) return true;
-  return browserServers().length === 0;
+  return !browserConfigured();
+}
+
+/**
+ * Whether the portal's own browser tools are connected: "1" on, "0" switched
+ * off, and unset where nobody has decided — an install from before them, which
+ * adoptPortalBrowser moves over once.
+ */
+export function portalBrowserState(): "on" | "off" | "unset" {
+  const value = (getStoredSettings() as Record<string, string>).browser_tools;
+  return value === "1" ? "on" : value === "0" ? "off" : "unset";
+}
+
+export const portalBrowserOn = () => portalBrowserState() === "on";
+
+export function setPortalBrowser(on: boolean): void {
+  putSetting("browser_tools", on ? "1" : "0");
+}
+
+/** Whether the agent has a browser at all: the portal's tools, or an MCP server pointed at it. */
+export function browserConfigured(): boolean {
+  return portalBrowserOn() || browserServers().length > 0;
 }
 
 /**

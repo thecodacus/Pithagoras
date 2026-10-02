@@ -35,13 +35,6 @@ finds the logins still there.
 
 ## Logging in
 
-Browser tool responses use on-demand snapshots to keep model context small.
-Actions return status without repeating the entire page. The agent uses
-`browser_find` for matching text and element references. An explicit
-`browser_snapshot({})` returns the full accessibility tree without an imposed
-depth limit. Targeted snapshots and optional depth limits are available when
-the agent only needs a particular section.
-
 **Browser → Open browser** in the portal, or `https://<host>:3011` directly.
 That is a full Chromium in a web page: sign into whatever the agent should have,
 then close the tab. The profile lives on its own volume and survives restarts.
@@ -86,26 +79,71 @@ reaching your personal mail.
 
 ## Letting the agent drive it
 
-The browser reaches the agent as MCP tools. Add one server in
-[Settings → MCP](/guide/mcp):
+**Browser → Connect the agent** gives every chat the portal's browser tools,
+which drive this browser over its debugging port. Disconnecting takes them away
+again.
+
+A local model reads every token a tool returns before it can answer, so the
+tools never hand it a whole page. A page is what is **on screen**: the viewport
+and a margin around it, as text with a ref for each element, and how much more
+there is above and below. A long Wikipedia article is about 130,000 tokens as a
+whole page and 1,000 to 2,000 as a view.
+
+| Tool | What it does | What it answers with |
+| --- | --- | --- |
+| `browser_navigate` | Opens a URL | The view |
+| `browser_snapshot` | Looks at the page; `mode: "index"` lists only what can be clicked or typed into | The view |
+| `browser_click`, `browser_type`, `browser_select`, `browser_key` | Act on an element by its ref | What changed on screen, as lines: `~ button "Save" → "Saved" disabled`, `+ alert: Saved` |
+| `browser_scroll` | The next screen down or up, or an element by its ref | The new view, without what stayed pinned (a sticky sidebar) |
+| `browser_find` | Finds elements anywhere on the page by their words | Their refs, and how far above or below the screen they are |
+| `browser_get_text` | Reads a section's full text by its ref | Its text in pages of about 2,000 characters, with where to continue |
+| `browser_back` | Goes back a page | The view |
+| `browser_screenshot` | A picture of the screen or of one element | An image |
+
+What a view shows:
+
+- Links inside a sentence are read in place, `retrieval-augmented generation[e1462]`,
+  and footnote markers are left out.
+- Text longer than about 200 characters is cut, with where to read the rest:
+  `… (+821 chars: get_text e1438)`.
+- Wrappers that mean nothing (`generic`, nameless cells) are left out, and a
+  link's address is shown only when it has no name.
+- A view is capped at about 3,000 tokens; past that it says how much more is
+  in view and how to reach it.
+
+An action that moves to a new page, opens a new tab, or changes too much to be
+told as a diff answers with a view instead. A ref whose element has gone is
+refused, with a request to look again, rather than clicked on whatever is there
+now. Page content is someone else's words: every browser result is marked as
+such, and the session is limited as for mail (see
+[Prompt injection](/guide/security)).
+
+### Upgrading from the Playwright MCP
+
+Before these tools, the portal attached the browser as a Playwright MCP server.
+The first start after the update replaces the entry it wrote with these tools,
+once, and carries every switch on it — the default, each project's, each chat's
+— so the same chats have the browser. Other MCP servers are not touched.
+
+### With a Playwright MCP instead
+
+A Playwright MCP server added by hand in [Settings → MCP](/guide/mcp) still
+works, and the portal leaves it alone; disconnect the built-in tools first, or
+the agent holds two sets:
 
 ```json
 {
   "browser": {
     "command": "npx",
-    "args": ["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://127.0.0.1:9222"]
+    "args": ["-y", "@playwright/mcp@0.0.79", "--cdp-endpoint", "http://127.0.0.1:9222"]
   }
 }
 ```
 
 `--cdp-endpoint` is the whole trick: it **attaches to the running browser**
 instead of launching one. A Playwright MCP server without it starts its own
-throwaway Chromium, which is signed into nothing.
-
-::: warning Do not run both
-A second, headless Playwright server is a way around everything on this page —
-its own browser, no profile, no allowlist. If you have one, remove it.
-:::
+throwaway Chromium, which is signed into nothing — a way around everything on
+this page, its own browser, no profile, no allowlist.
 
 ## Who may drive it
 
@@ -177,15 +215,15 @@ reaches it owns every account the browser is signed into.
 Host networking is what keeps it to the box. Never publish it, never put it
 behind a reverse proxy, and treat the profile volume as the secret it is.
 
-### Screenshot images
+### Playwright MCP screenshots
 
-The portal requests inline image data for browser screenshots. In the pinned
+With a Playwright MCP attached, the portal requests inline image data for its screenshots. In the pinned
 Playwright version, providing `filename` suppresses the image block, leaving
 only a file link. The portal removes that argument from screenshot calls;
 Playwright still saves the screenshot under an automatic filename. Capture
 options such as target, full-page, scale, and format remain available.
 
-Snapshot output uses compact notation: `[eN]` or `[fNeN]` is the exact element
+Its snapshot output uses compact notation: `[eN]` or `[fNeN]` is the exact element
 reference, an omitted role means `generic`, and `[pointer]` means a pointer
 cursor. The tree retains its nodes, text, URLs and state; this formatting does
 not impose a depth limit or truncate content.
