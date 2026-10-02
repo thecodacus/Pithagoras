@@ -189,11 +189,11 @@ test('where the GPU cannot be told, the choice is installed unchecked and Docker
   assert.deepEqual([early.checked, early.cpuOnly], [false, false]);
 });
 
-test('no GPU for Docker is "no GPU", not an error, however Docker or the driver says so: recognition alone is installed on the CPU', async () => {
+test('no GPU for Docker is "no GPU", not an error, however Docker or the driver says so: Kokoro and recognition are installed on the CPU', async () => {
   const cpuOnly = async (why: string) => {
     const found = await voice.hardware();
     assert.deepEqual([found.gpus, found.checked, found.cpuOnly, found.selected], [[], true, true, null], why);
-    assert.deepEqual(found.suggestion, { tts: 'none', asr: 'qwen3-asr', asrModel: '0.6b' }, why);
+    assert.deepEqual(found.suggestion, { tts: 'kokoro', ttsDevice: 'cpu', asr: 'qwen3-asr', asrModel: '0.6b' }, why);
     assert.deepEqual(found.host, { totalMiB: 16384, freeMiB: 12000, threads: 8 }, why);
     assert.doesNotMatch(JSON.stringify(found), /could not select device driver|nvidia-container|ECONN/, why);
     // Left to the check, an install is recognition alone: no error, no GPU asked for, and no CUDA image.
@@ -205,9 +205,10 @@ test('no GPU for Docker is "no GPU", not an error, however Docker or the driver 
     const spec = created()[0].body;
     assert.equal(spec.Image, BASE, why);
     assert.equal('DeviceRequests' in spec.HostConfig, false, why);
-    assert.equal(spec.Labels['pithagoras.voice-recipe'], 'none+qwen3-asr:0.6b', why);
-    assert.match(env(spec).VOICE_PLAN, /^No GPU detected: installing Qwen3-ASR 0\.6B \(speech recognition only\) needing about 1\.6 GiB of memory on the CPU, which fits\. Replies are not spoken: speech synthesis needs a GPU\.$/, why);
-    assert.deepEqual([state.state, state.choice], ['running', { tts: 'none', asr: 'qwen3-asr', asrModel: '0.6b' }], why);
+    assert.equal(spec.Labels['pithagoras.voice-recipe'], 'kokoro@cpu+qwen3-asr:0.6b', why);
+    assert.match(env(spec).VOICE_PLAN, /^No GPU detected: installing Kokoro speech on the CPU with Qwen3-ASR 0\.6B needing about 2\.8 GiB of memory on the CPU, which fits\.$/, why);
+    assert.deepEqual([env(spec).VOICE_TTS_DEVICE, JSON.parse(env(spec).VOICE_CPU_CONFIG).models.map((m: any) => m.id)], ['cpu', ['kokoro', 'qwen3-asr']], why);
+    assert.deepEqual([state.state, state.choice], ['running', { tts: 'kokoro', ttsDevice: 'cpu', asr: 'qwen3-asr', asrModel: '0.6b' }], why);
     assert.ok(!calls.some(c => c.url.startsWith('/images/create') && c.url.includes('nvidia')), `${why}: the CUDA image is never downloaded`);
     if (why === 'refused at start') assert.ok(calls.some(c => c.method === 'DELETE' && c.url.startsWith('/containers/probe-1')), `${why}: the probe is removed again`);
   };
@@ -224,7 +225,7 @@ test('no GPU for Docker is "no GPU", not an error, however Docker or the driver 
   await cpuOnly('no devices');
 });
 
-test('on a host without a GPU the speech engine is refused, and recognition is the host\'s to carry', async () => {
+test('on a host without a GPU a speech engine on the GPU is refused, Kokoro on the CPU is not, and what runs there is the host\'s to carry', async () => {
   reset(); hostGpus(null); dockerGpus = null; images.delete(CUDA);
   // A request for speech synthesis is told what is missing, and nothing is made.
   await voice.install({ tts: 'breeze', asr: 'whisper', asrModel: 'base' });
@@ -233,9 +234,26 @@ test('on a host without a GPU the speech engine is refused, and recognition is t
   assert.equal(state.error, NO_GPU_FOR_SPEECH);
   assert.equal(state.state, 'absent');
   assert.equal(created().length, 0);
-  // Few threads: a model that would fall behind the speaker is not suggested, and the cheap one is.
+  // Few threads: a model that would fall behind the speaker is not suggested, and the cheap one is; with one thread, not Kokoro either.
   host({ threads: 2 });
+  assert.deepEqual((await voice.hardware()).suggestion, { tts: 'kokoro', ttsDevice: 'cpu', asr: 'whisper', asrModel: 'base' });
+  host({ threads: 1 });
   assert.deepEqual((await voice.hardware()).suggestion, { tts: 'none', asr: 'whisper', asrModel: 'base' });
+  // Kokoro asked for on the CPU is installed there, in the small image, with no GPU asked for.
+  host({ threads: 8 });
+  await voice.install({ tts: 'kokoro', ttsDevice: 'cpu', asr: 'whisper', asrModel: 'base' });
+  await settle();
+  const kokoro = created()[0].body;
+  assert.equal(kokoro.Image, BASE);
+  assert.equal('DeviceRequests' in kokoro.HostConfig, false);
+  assert.equal(kokoro.Labels['pithagoras.voice-recipe'], 'kokoro@cpu+whisper:base');
+  assert.deepEqual([env(kokoro).VOICE_TTS_DEVICE, env(kokoro).VOICE_THREADS, 'VOICE_SERVER_CONFIG' in env(kokoro)], ['cpu', '8', false]);
+  assert.deepEqual(JSON.parse(env(kokoro).VOICE_CPU_CONFIG).models.map((m: any) => m.id), ['kokoro']);
+  // On the GPU it is refused like any other.
+  reset(); hostGpus(null); dockerGpus = null; images.delete(CUDA);
+  await voice.install({ tts: 'kokoro', asr: 'whisper', asrModel: 'base' });
+  await settle();
+  assert.equal((await voice.status()).error, NO_GPU_FOR_SPEECH);
   // Little memory: what does not fit is refused, with what would.
   host({ totalMiB: 2048, freeMiB: 1800, threads: 8 });
   await voice.install({ tts: 'none', asr: 'qwen3-asr', asrModel: '1.7b' });
@@ -249,7 +267,7 @@ test('on a host without a GPU the speech engine is refused, and recognition is t
   const spec = created()[0].body;
   assert.equal(spec.Image, BASE);
   assert.deepEqual([env(spec).VOICE_TTS, env(spec).VOICE_ASR, env(spec).VOICE_ASR_DEVICE, env(spec).VOICE_THREADS], ['none', 'whisper', 'cpu', '6']);
-  assert.equal('VOICE_SERVER_CONFIG' in env(spec) || 'VOICE_ASR_CPU_CONFIG' in env(spec), false, 'Whisper alone needs no audio.cpp');
+  assert.equal('VOICE_SERVER_CONFIG' in env(spec) || 'VOICE_CPU_CONFIG' in env(spec), false, 'Whisper alone needs no audio.cpp');
 });
 
 test('a CPU-only container is ready when its own services answer, and keeps its engines through start', async () => {
@@ -259,7 +277,7 @@ test('a CPU-only container is ready when its own services answer, and keeps its 
   const spec = created()[0].body;
   assert.deepEqual([env(spec).VOICE_ASR_DEVICE, env(spec).VOICE_THREADS], ['cpu', '8']);
   assert.equal('VOICE_SERVER_CONFIG' in env(spec), false, 'there is no GPU process');
-  const cpuConfig = JSON.parse(env(spec).VOICE_ASR_CPU_CONFIG);
+  const cpuConfig = JSON.parse(env(spec).VOICE_CPU_CONFIG);
   assert.deepEqual([cpuConfig.backend, cpuConfig.port, cpuConfig.threads, cpuConfig.models.map((m: any) => m.id)], ['cpu', 7863, 8, ['qwen3-asr']]);
   // Neither Whisper's port nor the speech port is waited for.
   unhealthy = [':8188', ':7862'];
@@ -288,7 +306,7 @@ test('a GPU host can put recognition on the CPU, to keep its memory: one image, 
   assert.deepEqual(spec.HostConfig.DeviceRequests, [{ Driver: 'nvidia', Count: 1, Capabilities: [['gpu']] }]);
   assert.equal(spec.Labels['pithagoras.voice-recipe'], 'breeze+qwen3-asr:1.7b@cpu');
   assert.deepEqual(JSON.parse(env(spec).VOICE_SERVER_CONFIG).models.map((m: any) => m.id), ['breeze']);
-  assert.deepEqual(JSON.parse(env(spec).VOICE_ASR_CPU_CONFIG).models.map((m: any) => m.id), ['qwen3-asr']);
+  assert.deepEqual(JSON.parse(env(spec).VOICE_CPU_CONFIG).models.map((m: any) => m.id), ['qwen3-asr']);
   assert.match(env(spec).VOICE_PLAN, /^Detected Test GPU 0 \(6\.0 GiB, 5\.9 GiB free\): Breeze speech with Qwen3-ASR 1\.7B on the CPU needs about 4\.5 GiB, which fits, and about 2\.9 GiB of memory on the CPU, which fits\.$/);
   assert.equal((await voice.status()).choice?.asrDevice, 'cpu');
   // The same choice on the GPU is refused: it does not fit the card.
@@ -345,14 +363,14 @@ test('a driver too old for the CUDA image is told as that, and the toolkit\'s ot
   }
 });
 
-test('a host with the driver but without the toolkit has no GPU for voice: the card is said to be unusable, and recognition alone is installed', async () => {
+test('a host with the driver but without the toolkit has no GPU for voice: the card is said to be unusable, and Kokoro and recognition are installed on the CPU', async () => {
   // nvidia-smi on the host lists a card; Docker, asked to hand it to a container, has no runtime for it.
   reset(); hostGpus(GPU(0, 12288, 11000, 'Test GPU 0')); dockerGpus = null; images.delete(CUDA);
   const found = await voice.hardware();
   assert.deepEqual([found.gpus, found.checked, found.cpuOnly, found.selected, found.unusable], [[], true, true, null, ['Test GPU 0']]);
-  assert.deepEqual(found.suggestion, { tts: 'none', asr: 'qwen3-asr', asrModel: '0.6b' });
+  assert.deepEqual(found.suggestion, { tts: 'kokoro', ttsDevice: 'cpu', asr: 'qwen3-asr', asrModel: '0.6b' });
   assert.doesNotMatch(JSON.stringify(found), /could not select device driver/);
-  // Left to the check, the install does not pick Breeze to fail on it: it is recognition alone, in the small image.
+  // Left to the check, the install does not pick Breeze to fail on it: it is Kokoro and recognition on the CPU, in the small image.
   await voice.install();
   await settle();
   const state = await voice.status();
@@ -360,10 +378,10 @@ test('a host with the driver but without the toolkit has no GPU for voice: the c
   assert.equal(created().length, 1);
   assert.equal(created()[0].body.Image, BASE);
   assert.equal('DeviceRequests' in created()[0].body.HostConfig, false);
-  assert.deepEqual(state.choice, { tts: 'none', asr: 'qwen3-asr', asrModel: '0.6b' });
+  assert.deepEqual(state.choice, { tts: 'kokoro', ttsDevice: 'cpu', asr: 'qwen3-asr', asrModel: '0.6b' });
   assert.ok(!calls.some(c => c.url.startsWith('/images/create') && c.url.includes('nvidia')), 'no CUDA image');
   // The log says what the page says: the card is there, and it is Docker that cannot use it.
-  assert.match(env(created()[0].body).VOICE_PLAN, /^GPU detected: Test GPU 0, but Docker cannot use it: installing Qwen3-ASR 0\.6B \(speech recognition only\) needing about 1\.6 GiB of memory on the CPU, which fits\. Replies are not spoken: speech synthesis needs a GPU that Docker can use\.$/);
+  assert.match(env(created()[0].body).VOICE_PLAN, /^GPU detected: Test GPU 0, but Docker cannot use it: installing Kokoro speech on the CPU with Qwen3-ASR 0\.6B needing about 2\.8 GiB of memory on the CPU, which fits\.$/);
   // A request for speech is told what is missing: the toolkit, not a card, since the card is there.
   reset(); hostGpus(GPU(0, 12288, 11000)); dockerGpus = null;
   await voice.install({ tts: 'breeze', asr: 'whisper', asrModel: 'base' });

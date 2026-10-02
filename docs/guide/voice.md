@@ -671,12 +671,14 @@ engines later recreates the container and builds or downloads only what is new;
 an installation made before the choice existed is the default combination, and
 keeps working unchanged.
 
-**Without a GPU** the installer sets up speech recognition alone, on the CPU: Whisper, or
-Qwen3-ASR in a CPU-only audio.cpp build, in the small base image rather than the CUDA one. Dictation
-works; the voice-conversation control is not offered, because it speaks its replies, and speech
-synthesis needs a GPU (Breeze and Chatterbox take several seconds of CPU time per second of speech).
-Qwen3-ASR on a GPU host can be put on the CPU too, to spare the card. See
-[Docker add-ons](/guide/add-ons#no-gpu-recognition-only).
+**Without a GPU** the installer puts everything on the CPU, in the small base image rather than the
+CUDA one: Kokoro for speech, which takes about a quarter of a second for each second of speech on 8
+threads, and Whisper, or Qwen3-ASR in a CPU-only audio.cpp build, for recognition. A host with too
+little memory or too few threads for Kokoro gets recognition alone: dictation works, and the
+voice-conversation control is not offered, because it speaks its replies. Breeze and Chatterbox
+take several seconds of CPU time per second of speech and need a GPU. On a GPU host Kokoro and
+Qwen3-ASR can be put on the CPU too, to spare the card. See
+[Docker add-ons](/guide/add-ons#no-gpu).
 
 Once the health checks of what was installed pass, Settings connects the installed services automatically.
 Existing voice choices and saved voices are preserved. A reference clone

@@ -6,11 +6,12 @@
  * offers all read this table, so an engine or a model size is added here once.
  * It has no node imports: the page uses it too.
  *
- * Speech synthesis needs a GPU. Speech recognition does not: Whisper always runs
- * on the CPU, and Qwen3-ASR runs on either, in an audio.cpp process of its own on
- * the CPU or next to the speech engine on the GPU. A host without a GPU can
- * therefore install recognition alone (`tts: "none"`), which is dictation but
- * no spoken replies. A model of another kind, such as an LLM that runs in the
+ * Speech synthesis needs a GPU, except Kokoro, which is small enough to run on the
+ * CPU too. Speech recognition does not: Whisper always runs on the CPU, and
+ * Qwen3-ASR runs on either. Whatever runs on the CPU in audio.cpp (Kokoro,
+ * Qwen3-ASR) shares one process of its own; what runs on the GPU shares another.
+ * A host without a GPU can therefore install Kokoro on the CPU, or recognition
+ * alone (`tts: "none"`), which is dictation but no spoken replies. A model of another kind, such as an LLM that runs in the
  * same container later, is one more entry in `serverConfig` and one more
  * `vramMiB` in the sum; `reserveMiB` below keeps room for it in the meantime.
  */
@@ -19,13 +20,15 @@ export type TtsEngine = "breeze" | "chatterbox" | "kokoro";
 export type TtsChoice = TtsEngine | "none";
 export type AsrEngine = "whisper" | "qwen3-asr";
 export type AsrDevice = "cpu" | "gpu";
+export type Device = AsrDevice;
 /**
  * What the managed container is built for: one speech engine and one recognition model.
  * `asrDevice` is only ever `cpu`, and only where the other device is possible (Qwen3-ASR
- * next to a speech engine on the GPU): everything else has one device, and a choice made
- * before the device could be chosen has none written.
+ * next to a speech engine on the GPU); `ttsDevice` likewise, for a speech engine that runs
+ * on the CPU too (Kokoro). Everything else has one device, and a choice made before the
+ * device could be chosen has none written.
  */
-export interface VoiceChoice { tts: TtsChoice; asr: AsrEngine; asrModel: string; asrDevice?: AsrDevice }
+export interface VoiceChoice { tts: TtsChoice; asr: AsrEngine; asrModel: string; asrDevice?: AsrDevice; ttsDevice?: Device }
 
 /**
  * GPU memory in MiB, with the CUDA context included. These are estimates: Breeze is
@@ -38,11 +41,13 @@ export interface VoiceChoice { tts: TtsChoice; asr: AsrEngine; asrModel: string;
  * desktop CPU with the model already loaded: seconds of computing for each second of
  * speech. Far above 1 is no conversation, which is why speech synthesis is a GPU matter.
  * Kokoro is the exception, measured at about a quarter of a second, on audio.cpp v0.9.0.
+ * An engine with `ramMiB` can be put on the CPU: that is the memory its process grows
+ * to there, measured for Kokoro on a phrase as long as one of its text chunks.
  */
-export const TTS_ENGINES: Record<TtsEngine, { label: string; vramMiB: number; cpuSecondsPerSecond: number }> = {
+export const TTS_ENGINES: Record<TtsEngine, { label: string; vramMiB: number; cpuSecondsPerSecond: number; ramMiB?: number }> = {
   breeze: { label: "Breeze", vramMiB: 4600, cpuSecondsPerSecond: 3.5 },
   chatterbox: { label: "Chatterbox", vramMiB: 3000, cpuSecondsPerSecond: 7 },
-  kokoro: { label: "Kokoro", vramMiB: 1000, cpuSecondsPerSecond: 0.24 },
+  kokoro: { label: "Kokoro", vramMiB: 1000, cpuSecondsPerSecond: 0.24, ramMiB: 1300 },
 };
 
 /**
@@ -68,30 +73,41 @@ export const DEFAULT_CHOICE: VoiceChoice = { tts: "breeze", asr: "whisper", asrM
 
 export const SPEECH_PORT = 7862;
 export const WHISPER_PORT = 8188;
-/** Qwen3-ASR on the CPU is an audio.cpp process of its own, so that the GPU one stays the speech engine's. */
-export const ASR_CPU_PORT = 7863;
+/** What runs on the CPU in audio.cpp is a process of its own, so that the GPU one stays what runs on the GPU. */
+export const CPU_PORT = 7863;
 export const speechUrl = `http://127.0.0.1:${SPEECH_PORT}/v1/audio/speech`;
+/** Speech from the CPU process: Kokoro put on the CPU. */
+export const cpuSpeechUrl = `http://127.0.0.1:${CPU_PORT}/v1/audio/speech`;
 export const whisperUrl = `http://127.0.0.1:${WHISPER_PORT}/inference`;
 
 export const asrOption = (choice: Pick<VoiceChoice, "asr" | "asrModel">) =>
   ASR_MODELS.find((o) => o.asr === choice.asr && o.model === choice.asrModel);
 
-/** Does the choice need a GPU: a speech engine, or recognition that is put on it. */
-export const usesGpu = (c: VoiceChoice) => c.tts !== "none" || asrDevice(c) === "gpu";
+/** The devices a speech engine runs on: the GPU, and the CPU too for one with the memory it takes there. */
+export const ttsDevices = (tts: TtsChoice): readonly Device[] => tts === "none" ? [] : TTS_ENGINES[tts].ramMiB ? ["cpu", "gpu"] : ["gpu"];
+/** Where speech runs: on the GPU unless the choice puts an engine that runs there too on the CPU. None without speech. */
+export function ttsDevice(c: Pick<VoiceChoice, "tts" | "ttsDevice">): Device | undefined {
+  if (c.tts === "none") return undefined;
+  return c.ttsDevice === "cpu" && ttsDevices(c.tts).includes("cpu") ? "cpu" : "gpu";
+}
+const speechOnGpu = (c: Pick<VoiceChoice, "tts" | "ttsDevice">) => ttsDevice(c) === "gpu";
+/** Does the choice need a GPU: a speech engine on it, or recognition that is put on it. */
+export const usesGpu = (c: VoiceChoice) => speechOnGpu(c) || asrDevice(c) === "gpu";
 /**
- * Where recognition runs. Whisper and anything without a GPU runs on the CPU; Qwen3-ASR
- * next to a speech engine runs on the GPU unless the choice says it is put on the CPU.
+ * Where recognition runs. Whisper and anything without speech on the GPU runs on the CPU; Qwen3-ASR
+ * next to a speech engine on the GPU runs there too unless the choice says it is put on the CPU.
  */
 export function asrDevice(c: VoiceChoice): AsrDevice {
-  return c.asr === "whisper" || c.tts === "none" || c.asrDevice === "cpu" ? "cpu" : "gpu";
+  return c.asr === "whisper" || !speechOnGpu(c) || c.asrDevice === "cpu" ? "cpu" : "gpu";
 }
 /** The devices the page may offer for the recognition of a choice. */
-export const asrDevices = (c: Pick<VoiceChoice, "tts" | "asr">): readonly AsrDevice[] => c.asr === "qwen3-asr" && c.tts !== "none" ? ["cpu", "gpu"] : ["cpu"];
+export const asrDevices = (c: Pick<VoiceChoice, "tts" | "asr" | "ttsDevice">): readonly AsrDevice[] => c.asr === "qwen3-asr" && speechOnGpu(c) ? ["cpu", "gpu"] : ["cpu"];
 
-/** The canonical form of a choice: `asrDevice` written only where it says something. */
+/** The canonical form of a choice: `asrDevice` and `ttsDevice` written only where they say something. */
 export function canonicalChoice(c: VoiceChoice): VoiceChoice {
   const out: VoiceChoice = { tts: c.tts, asr: c.asr, asrModel: c.asrModel };
   if (asrDevices(c).length > 1 && asrDevice(c) === "cpu") out.asrDevice = "cpu";
+  if (ttsDevice(c) === "cpu") out.ttsDevice = "cpu";
   return out;
 }
 
@@ -103,30 +119,35 @@ export function parseChoice(value: unknown): VoiceChoice {
   if (typeof v.asr !== "string" || typeof v.asrModel !== "string" || !asrOption(v as VoiceChoice))
     throw new Error("Choose a supported speech recognition model");
   if (v.asrDevice !== undefined && v.asrDevice !== "cpu" && v.asrDevice !== "gpu") throw new Error("Choose the CPU or the GPU for speech recognition");
+  if (v.ttsDevice !== undefined && v.ttsDevice !== "cpu" && v.ttsDevice !== "gpu") throw new Error("Choose the CPU or the GPU for speech synthesis");
+  if (v.ttsDevice === "cpu" && !ttsDevices(v.tts as TtsChoice).includes("cpu"))
+    throw new Error(v.tts === "none" ? "There is no speech synthesis to put on the CPU" : `${TTS_ENGINES[v.tts as TtsEngine].label} runs on the GPU`);
   if (v.asrDevice === "gpu" && !asrDevices(v as VoiceChoice).includes("gpu"))
-    throw new Error(v.asr === "whisper" ? "Whisper runs on the CPU" : "Speech recognition without speech synthesis runs on the CPU");
+    throw new Error(v.asr === "whisper" ? "Whisper runs on the CPU" : "Speech recognition without speech synthesis on the GPU runs on the CPU");
   return canonicalChoice(v as VoiceChoice);
 }
 
-/** The choice as a container label carries it, e.g. `breeze+whisper:base`, or `breeze+qwen3-asr:0.6b@cpu`. */
-export const choiceKey = (c: VoiceChoice) => `${c.tts}+${c.asr}:${c.asrModel}${c.asrDevice === "cpu" ? "@cpu" : ""}`;
+/** The choice as a container label carries it, e.g. `breeze+whisper:base`, `breeze+qwen3-asr:0.6b@cpu`, or `kokoro@cpu+whisper:base`. */
+export const choiceKey = (c: VoiceChoice) => `${c.tts}${c.ttsDevice === "cpu" ? "@cpu" : ""}+${c.asr}:${c.asrModel}${c.asrDevice === "cpu" ? "@cpu" : ""}`;
 export const sameChoice = (a: VoiceChoice, b: VoiceChoice) => choiceKey(canonicalChoice(a)) === choiceKey(canonicalChoice(b));
 /** The choice a label names; one that is missing or is not a combination known now reads as the original one. */
 export function choiceFromKey(key: string | undefined): VoiceChoice {
-  const m = /^(\w+)\+([\w-]+):([\w.]+?)(?:@(cpu|gpu))?$/.exec(key ?? "");
-  try { return m ? parseChoice({ tts: m[1], asr: m[2], asrModel: m[3], asrDevice: m[4] }) : DEFAULT_CHOICE; } catch { return DEFAULT_CHOICE; }
+  const m = /^(\w+)(?:@(cpu))?\+([\w-]+):([\w.]+?)(?:@(cpu|gpu))?$/.exec(key ?? "");
+  try { return m ? parseChoice({ tts: m[1], ttsDevice: m[2], asr: m[3], asrModel: m[4], asrDevice: m[5] }) : DEFAULT_CHOICE; } catch { return DEFAULT_CHOICE; }
 }
 
 export function choiceLabel(c: VoiceChoice): string {
   const asr = asrOption(c)?.label ?? c.asr;
   if (c.tts === "none") return `${asr} (speech recognition only)`;
+  // Beside speech on the CPU, recognition is there too, and is not said twice.
+  if (ttsDevice(c) === "cpu") return `${TTS_ENGINES[c.tts].label} speech on the CPU with ${asr}`;
   return `${TTS_ENGINES[c.tts].label} speech with ${asr}${c.asr === "qwen3-asr" && asrDevice(c) === "cpu" ? " on the CPU" : ""}`;
 }
 
 /** GPU memory the choice holds while it is in use. */
-export const vramNeeded = (c: VoiceChoice) => (c.tts === "none" ? 0 : TTS_ENGINES[c.tts].vramMiB) + (asrDevice(c) === "gpu" ? asrOption(c)?.vramMiB ?? 0 : 0);
-/** Memory of the host the choice holds while it is in use: what recognition takes on the CPU. */
-export const ramNeeded = (c: VoiceChoice) => (asrDevice(c) === "cpu" ? asrOption(c)?.ramMiB ?? 0 : 0);
+export const vramNeeded = (c: VoiceChoice) => (c.tts !== "none" && speechOnGpu(c) ? TTS_ENGINES[c.tts].vramMiB : 0) + (asrDevice(c) === "gpu" ? asrOption(c)?.vramMiB ?? 0 : 0);
+/** Memory of the host the choice holds while it is in use: what recognition, and speech put there, take on the CPU. */
+export const ramNeeded = (c: VoiceChoice) => (asrDevice(c) === "cpu" ? asrOption(c)?.ramMiB ?? 0 : 0) + (c.tts !== "none" && ttsDevice(c) === "cpu" ? TTS_ENGINES[c.tts].ramMiB ?? 0 : 0);
 
 /** `uuid` names the card for good: the index is the driver's order, which a reboot or a card added beside it changes. A reading without one has the index only. */
 export interface Gpu { index: number; uuid?: string; name: string; totalMiB: number | null; freeMiB: number | null }
@@ -164,6 +185,17 @@ export function cpuRealtime(c: VoiceChoice, threads: number): number | undefined
 }
 /** Recognition on the CPU that is expected to fall behind the speaker. */
 export const cpuSlow = (c: VoiceChoice, threads: number) => (cpuRealtime(c, threads) ?? Infinity) < 1;
+/**
+ * Seconds of computing for each second of speech that speech put on the CPU is expected to take on this many threads;
+ * undefined where speech is not on the CPU. Scaled by the threads against the ones it was measured on, which overstates
+ * it for fewer: 4 threads were measured at 0.35 where this says 0.48.
+ */
+export function speechCpuSeconds(c: VoiceChoice, threads: number): number | undefined {
+  if (c.tts === "none" || ttsDevice(c) !== "cpu") return undefined;
+  return TTS_ENGINES[c.tts].cpuSecondsPerSecond * MEASURED_THREADS / Math.min(Math.max(threads, 1), MEASURED_THREADS);
+}
+/** Speech on the CPU that is expected to take longer to make than to say. */
+export const speechSlow = (c: VoiceChoice, threads: number) => (speechCpuSeconds(c, threads) ?? 0) >= 1;
 
 /** The GPU the container will use: the one asked for, else the one with the most memory free. */
 export function pickGpu(gpus: readonly Gpu[], preferred?: number): Gpu | undefined {
@@ -195,15 +227,27 @@ export function suggestChoice(gpu: Gpu | undefined, reserveMiB = 0): VoiceChoice
 }
 
 /**
- * For a host without a GPU: recognition alone, on the CPU. The largest recommended model that fits the memory
- * with room to spare and keeps well ahead of the speaker on this many threads, else Whisper base.
+ * For a host without a GPU: Kokoro on the CPU with the largest recommended recognition model that fits the memory
+ * beside it with room to spare and keeps well ahead of the speaker on this many threads, where Kokoro itself keeps
+ * ahead of its speech there. Else recognition alone, chosen the same way, else Whisper base.
  */
 export function suggestCpuChoice(host: Host | undefined): VoiceChoice {
+  const kokoro = { tts: "kokoro" as const, ttsDevice: "cpu" as const };
+  const speaking = cpuRecognition(kokoro, host);
+  if (speaking && !speechSlow(speaking, host?.threads ?? MEASURED_THREADS)) return speaking;
+  return cpuRecognition({ tts: "none" }, host) ?? { tts: "none", asr: ASR_MODELS[0].asr, asrModel: ASR_MODELS[0].model };
+}
+/**
+ * The speech given with the largest recommended recognition model on the CPU beside it that fits the memory with room to spare
+ * and keeps well ahead of the speaker on the host's threads. None where not even the smallest does.
+ */
+export function cpuRecognition(speech: Pick<VoiceChoice, "tts" | "ttsDevice">, host: Host | undefined): VoiceChoice | undefined {
+  const threads = host?.threads ?? MEASURED_THREADS;
   const best = ASR_MODELS.filter((o) => {
-    const c: VoiceChoice = { tts: "none", asr: o.asr, asrModel: o.model };
-    return o.recommended && fitRam(c, host) === "fits" && (cpuRealtime(c, host?.threads ?? MEASURED_THREADS) ?? Infinity) >= COMFORTABLE;
-  }).at(-1) ?? ASR_MODELS[0];
-  return { tts: "none", asr: best.asr, asrModel: best.model };
+    const c: VoiceChoice = { ...speech, asr: o.asr, asrModel: o.model };
+    return o.recommended && fitRam(c, host) === "fits" && (cpuRealtime(c, threads) ?? Infinity) >= COMFORTABLE;
+  }).at(-1);
+  return best && canonicalChoice({ ...speech, asr: best.asr, asrModel: best.model });
 }
 
 const MODELS = {
@@ -223,15 +267,19 @@ const asrModel = (model: string) => ({ id: "qwen3-asr", family: "qwen3_asr", pat
  */
 export function serverConfig(c: VoiceChoice) {
   if (!usesGpu(c)) return undefined;
-  const models = [...(c.tts === "none" ? [] : [ttsModel(c.tts)]), ...(c.asr === "qwen3-asr" && asrDevice(c) === "gpu" ? [asrModel(c.asrModel)] : [])];
+  const models = [...(c.tts !== "none" && speechOnGpu(c) ? [ttsModel(c.tts)] : []), ...(c.asr === "qwen3-asr" && asrDevice(c) === "gpu" ? [asrModel(c.asrModel)] : [])];
   // Speech and recognition are loaded together, or each request would swap the other out.
   return { host: "127.0.0.1", port: SPEECH_PORT, backend: "cuda", device: 0, threads: 4, lazy_load: true, idle_unload_ms: 90000, ui_management: true, max_loaded_models: models.length, models };
 }
 
-/** The config of the audio.cpp process that runs Qwen3-ASR on the CPU. None where recognition is somewhere else. */
+/**
+ * The config of the audio.cpp process on the CPU: Kokoro where it is put there, and Qwen3-ASR where recognition is.
+ * None where neither is.
+ */
 export function cpuServerConfig(c: VoiceChoice, threads = 4) {
-  if (c.asr !== "qwen3-asr" || asrDevice(c) !== "cpu") return undefined;
-  return { host: "127.0.0.1", port: ASR_CPU_PORT, backend: "cpu", device: 0, threads, lazy_load: true, idle_unload_ms: 90000, max_loaded_models: 1, models: [asrModel(c.asrModel)] };
+  const models = [...(c.tts !== "none" && ttsDevice(c) === "cpu" ? [ttsModel(c.tts)] : []), ...(c.asr === "qwen3-asr" && asrDevice(c) === "cpu" ? [asrModel(c.asrModel)] : [])];
+  if (!models.length) return undefined;
+  return { host: "127.0.0.1", port: CPU_PORT, backend: "cpu", device: 0, threads, lazy_load: true, idle_unload_ms: 90000, max_loaded_models: models.length, models };
 }
 /** Threads for what runs on the CPU: all the host has, up to the ones the speeds above were measured on, and not fewer than two. */
 export const cpuThreads = (cores: number) => Math.min(Math.max(Math.floor(cores) || 1, 2), MEASURED_THREADS);
@@ -242,8 +290,8 @@ export function endpoints(c: VoiceChoice) {
   return {
     runtime: c.tts === "none" ? "none" as const : c.tts === "breeze" ? "audio-cpp" as const : c.tts,
     // Without speech synthesis there is no address to speak to.
-    breezeUrl: c.tts === "none" ? "" : speechUrl,
-    whisperUrl: whisper ? whisperUrl : `http://127.0.0.1:${asrDevice(c) === "cpu" ? ASR_CPU_PORT : SPEECH_PORT}/v1/audio/transcriptions`,
+    breezeUrl: c.tts === "none" ? "" : ttsDevice(c) === "cpu" ? cpuSpeechUrl : speechUrl,
+    whisperUrl: whisper ? whisperUrl : `http://127.0.0.1:${asrDevice(c) === "cpu" ? CPU_PORT : SPEECH_PORT}/v1/audio/transcriptions`,
     // Whisper.cpp serves one model and is sent no model field; audio.cpp names the one it loaded.
     sttModel: whisper ? "" : "qwen3-asr",
   };
@@ -253,5 +301,5 @@ export function endpoints(c: VoiceChoice) {
 export const healthUrls = (c: VoiceChoice) => [
   ...(c.asr === "whisper" ? [`http://127.0.0.1:${WHISPER_PORT}/health`] : []),
   ...(usesGpu(c) ? [`http://127.0.0.1:${SPEECH_PORT}/health`] : []),
-  ...(cpuServerConfig(c) ? [`http://127.0.0.1:${ASR_CPU_PORT}/health`] : []),
+  ...(cpuServerConfig(c) ? [`http://127.0.0.1:${CPU_PORT}/health`] : []),
 ];

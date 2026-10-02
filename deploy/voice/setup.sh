@@ -5,6 +5,7 @@ export DEBIAN_FRONTEND=noninteractive
 # What to install. The portal sets these from the engines chosen in Settings.
 # Without them this is the original combination: Breeze speech and Whisper base.
 tts="${VOICE_TTS:-breeze}"
+tts_device="${VOICE_TTS_DEVICE:-gpu}"
 asr="${VOICE_ASR:-whisper}"
 asr_model="${VOICE_ASR_MODEL:-base}"
 threads="${VOICE_THREADS:-4}"
@@ -12,23 +13,30 @@ case "$tts" in
   breeze|chatterbox|kokoro|none) ;;
   *) echo "VOICE_SETUP_ERROR: unknown speech engine '$tts'" >&2; exit 2 ;;
 esac
+# Kokoro is the one speech engine small enough for the CPU.
+case "$tts:$tts_device" in
+  *:gpu|kokoro:cpu|none:*) ;;
+  *:cpu) echo "VOICE_SETUP_ERROR: speech engine '$tts' runs on the GPU" >&2; exit 2 ;;
+  *) echo "VOICE_SETUP_ERROR: unknown speech device '$tts_device'" >&2; exit 2 ;;
+esac
+speech_gpu=0; if [ "$tts" != none ] && [ "$tts_device" = gpu ]; then speech_gpu=1; fi
 case "$asr:$asr_model" in
   whisper:base|whisper:small|qwen3-asr:0.6b|qwen3-asr:1.7b) ;;
   *) echo "VOICE_SETUP_ERROR: unknown speech recognition model '$asr:$asr_model'" >&2; exit 2 ;;
 esac
-# Where recognition runs. Whisper is always on the CPU. Qwen3-ASR is on the GPU next to a speech engine
-# unless it is put on the CPU, and without speech synthesis there is no GPU to put it on.
+# Where recognition runs. Whisper is always on the CPU. Qwen3-ASR is on the GPU next to a speech engine there
+# unless it is put on the CPU, and without speech synthesis on the GPU there is no GPU to put it on.
 if [ -n "${VOICE_ASR_DEVICE:-}" ]; then asr_device="$VOICE_ASR_DEVICE"
-elif [ "$asr" = qwen3-asr ] && [ "$tts" != none ]; then asr_device=gpu
+elif [ "$asr" = qwen3-asr ] && [ "$speech_gpu" = 1 ]; then asr_device=gpu
 else asr_device=cpu; fi
 case "$asr_device" in
   cpu) ;;
-  gpu) if [ "$asr" = whisper ] || [ "$tts" = none ]; then echo "VOICE_SETUP_ERROR: recognition with '$asr' or without speech synthesis runs on the CPU" >&2; exit 2; fi ;;
+  gpu) if [ "$asr" = whisper ] || [ "$speech_gpu" = 0 ]; then echo "VOICE_SETUP_ERROR: recognition with '$asr' or without speech synthesis on the GPU runs on the CPU" >&2; exit 2; fi ;;
   *) echo "VOICE_SETUP_ERROR: unknown recognition device '$asr_device'" >&2; exit 2 ;;
 esac
-# Does anything of this choice need the GPU, and is Qwen3-ASR to run on the CPU.
-gpu=0; if [ "$tts" != none ] || [ "$asr_device" = gpu ]; then gpu=1; fi
-qwen_cpu=0; if [ "$asr" = qwen3-asr ] && [ "$asr_device" = cpu ]; then qwen_cpu=1; fi
+# Does anything of this choice need the GPU, and does anything run in audio.cpp on the CPU: Kokoro or Qwen3-ASR put there.
+gpu=0; if [ "$speech_gpu" = 1 ] || [ "$asr_device" = gpu ]; then gpu=1; fi
+cpu_server=0; if { [ "$asr" = qwen3-asr ] && [ "$asr_device" = cpu ]; } || { [ "$tts" != none ] && [ "$tts_device" = cpu ]; }; then cpu_server=1; fi
 cd /voice
 if [ -n "${VOICE_PLAN:-}" ]; then echo "VOICE_STAGE: $VOICE_PLAN"; fi
 if [ ! -f /usr/local/share/pithagoras-voice-deps ]; then
@@ -53,9 +61,9 @@ checkout() {
   # A submodule may be named by an SSH address; the container has no SSH, and GitHub serves the same over HTTPS.
   git -C "$directory" -c url.https://github.com/.insteadOf=git@github.com: submodule update --init --recursive
 }
-# The audio.cpp model families this choice needs. Speech comes from audio.cpp for both engines; recognition
+# The audio.cpp model families this choice needs. Speech comes from audio.cpp for every engine; recognition
 # does only for Qwen3-ASR, Whisper is a process of its own. Qwen3-ASR on the CPU runs from the GPU build too,
-# so its family is in that build whichever device it is on.
+# so its family is in that build whichever device it is on. Kokoro on the CPU has nothing on the GPU beside it.
 families=()
 if [ "$tts" = breeze ]; then families+=(breeze_tts); fi
 if [ "$tts" = chatterbox ]; then families+=(chatterbox); fi
@@ -88,7 +96,7 @@ build_audio() {
       (cd audio && bash scripts/build_linux.sh --native-model-manager --system-openssl --cuda on --cuda-arch "$architecture" --build-dir "/voice/$dir" --build-type Release --model-set custom --models "$models" --target audiocpp_server --target audiocpp_gguf --jobs 4) 2>&1 | tr '\r' '\n'
       echo "$architecture" > "$dir/pithagoras-architecture"
     else
-      echo "VOICE_STAGE: Building CPU speech recognition runtime ($models)"
+      echo "VOICE_STAGE: Building CPU audio runtime ($models)"
       (cd audio && bash scripts/build_linux.sh --native-model-manager --system-openssl --cuda off --build-dir "/voice/$dir" --build-type Release --model-set custom --models "$models" --target audiocpp_server --jobs 4) 2>&1 | tr '\r' '\n'
     fi
     echo "$models" > "$built"
@@ -98,7 +106,7 @@ build_audio() {
 # No audio.cpp at all for Whisper alone. Without a GPU it is a CPU build of its own, with no CUDA toolchain.
 audio_gpu=audio/build/portal
 audio_cpu=$audio_gpu
-if [ "$gpu" = 1 ] || [ "$qwen_cpu" = 1 ]; then
+if [ "$gpu" = 1 ] || [ "$cpu_server" = 1 ]; then
   echo 'VOICE_STAGE: Preparing pinned audio runtime'
   checkout audio https://github.com/0xShug0/audio.cpp.git "$audio_revision"
   if [ "$gpu" = 1 ]; then build_audio "$audio_gpu" on "${families[@]}"
@@ -165,9 +173,9 @@ JSON
     exit 2
   fi
 fi
-if [ "$qwen_cpu" = 1 ]; then
-  if [ -z "${VOICE_ASR_CPU_CONFIG:-}" ]; then echo 'VOICE_SETUP_ERROR: VOICE_ASR_CPU_CONFIG is missing' >&2; exit 2; fi
-  printf '%s\n' "$VOICE_ASR_CPU_CONFIG" > server-cpu.json
+if [ "$cpu_server" = 1 ]; then
+  if [ -z "${VOICE_CPU_CONFIG:-}" ]; then echo 'VOICE_SETUP_ERROR: VOICE_CPU_CONFIG is missing' >&2; exit 2; fi
+  printf '%s\n' "$VOICE_CPU_CONFIG" > server-cpu.json
 fi
 echo 'VOICE_STAGE: Starting speech services'
 pids=()
@@ -179,7 +187,7 @@ if [ "$gpu" = 1 ]; then
   "$audio_gpu/bin/audiocpp_server" --config /voice/server.json &
   pids+=($!)
 fi
-if [ "$qwen_cpu" = 1 ]; then
+if [ "$cpu_server" = 1 ]; then
   # Beside a speech engine on the GPU this process is for the CPU alone: it must not take a CUDA context of its own.
   CUDA_VISIBLE_DEVICES= "$audio_cpu/bin/audiocpp_server" --config /voice/server-cpu.json &
   pids+=($!)

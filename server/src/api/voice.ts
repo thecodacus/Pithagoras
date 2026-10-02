@@ -1,7 +1,7 @@
 import { addVoice, listVoices, readVoice, updateVoice, deleteVoice, VoiceNotFound } from '../voice-presets.js';
 import { spokenNumbers } from '../voice-numbers.js';
 import { INPUT_LANGUAGES, CHATTERBOX_LANGUAGES } from '../voice-languages.js';
-import { DEFAULT_CHOICE, endpoints, parseChoice, type VoiceChoice } from '../voice-engines.js';
+import { DEFAULT_CHOICE, cpuSpeechUrl, endpoints, parseChoice, type VoiceChoice } from '../voice-engines.js';
 import { DEFAULT_KOKORO_VOICE, KOKORO_SPEEDS, isKokoroVoice } from '../kokoro-voices.js';
 import { VoiceLeases } from '../extensions/voice-leases.js';
 import { DEFAULT_VOICE_INSTRUCTIONS, voiceInstructions, voiceRulesOn } from '../pi/voice-first.js';
@@ -150,10 +150,12 @@ export function pcmWav(pcm: Buffer): Buffer {
   header.write("data", 36); header.writeUInt32LE(pcm.length, 40);
   return Buffer.concat([header, pcm]);
 }
-const managedVoice = () => ['audio-cpp', 'chatterbox', 'kokoro'].includes(config().runtime ?? '') && config().breezeUrl === voiceService.breezeUrl;
+// Speech is in the GPU process, or in the CPU one where Kokoro is put on the CPU.
+const managedVoice = () => ['audio-cpp', 'chatterbox', 'kokoro'].includes(config().runtime ?? '') && [voiceService.breezeUrl, cpuSpeechUrl].includes(config().breezeUrl);
+const managedPort = () => Number(new URL(config().breezeUrl).port);
 // The lease loads the speech model the saved runtime speaks with. Recognition loads itself on its first request.
 const managedEngine = () => { const runtime = config().runtime; return runtime === 'chatterbox' || runtime === 'kokoro' ? runtime : 'breeze'; };
-const leases = new VoiceLeases(()=>voiceService.modelAction('load', managedEngine()),()=>voiceService.modelAction('unload', managedEngine()));
+const leases = new VoiceLeases(()=>voiceService.modelAction('load', managedEngine(), managedPort()),()=>voiceService.modelAction('unload', managedEngine(), managedPort()));
 async function maintainManagedVoice() {
   // Also reconciles running legacy containers after portal updates, without
   // requiring the settings modal to be opened. Stopped add-ons stay stopped.

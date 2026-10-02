@@ -138,7 +138,7 @@ test('saving other voice settings does not pin the built-in text of an older por
 const host = { totalMiB: 16384, freeMiB: 12000, threads: 8 };
 const hardware = (gpus: any[], checked = gpus.length > 0) => ({ gpus, source: 'host', error: '', checked, cpuOnly: false, host, selected: gpus.length ? 0 : null, chosen: '', reserveMiB: 0, suggestion: { tts: 'breeze', asr: 'qwen3-asr', asrModel: '0.6b' } });
 // A host that was found to have no GPU: what is suggested is recognition alone, on the CPU.
-const noGpu = (patch: any = {}) => ({ gpus: [], source: 'none', error: '', checked: true, cpuOnly: true, host, selected: null, reserveMiB: 0, suggestion: { tts: 'none', asr: 'qwen3-asr', asrModel: '0.6b' }, ...patch });
+const noGpu = (patch: any = {}) => ({ gpus: [], source: 'none', error: '', checked: true, cpuOnly: true, host, selected: null, reserveMiB: 0, suggestion: { tts: 'kokoro', ttsDevice: 'cpu', asr: 'qwen3-asr', asrModel: '0.6b' }, ...patch });
 const card = { index: 0, name: 'Test GPU', totalMiB: 6144, freeMiB: 5000 };
 const config = { enabled: false, whisperUrl: 'http://127.0.0.1:8178/inference', breezeUrl: 'http://127.0.0.1:7860/v1/audio/speech', instruction: 'Clear speech', voice: 'design', runtime: 'breeze', language: 'auto', cfgScale: 4 };
 
@@ -347,7 +347,7 @@ test('engine choice: a GPU host also picks where recognition runs, and the CPU s
  expect(posts[0]).toEqual({tts:'breeze',asr:'qwen3-asr',asrModel:'1.7b',asrDevice:'cpu'});
 });
 
-test('engine choice: with no GPU only recognition works, which is said, and the speech engine is off with its reason',async({page})=>{
+test('engine choice: with no GPU everything runs on the CPU, which is said: Kokoro speaks there, and the other engines are not offered, with their reason',async({page})=>{
  const posts:any[]=[];let state='absent',choice:any;
  await page.route('**/api/voice/presets',r=>r.fulfill({json:[]}));
  await page.route('**/api/voice/hardware',r=>r.fulfill({json:noGpu()}));
@@ -359,32 +359,46 @@ test('engine choice: with no GPU only recognition works, which is said, and the 
  await page.goto('/tests/voice-addon.html');
  await page.locator('summary').filter({hasText:'Voice service'}).click();
  // The warning, and nothing that looks like a failure.
- await expect(page.getByRole('alert').filter({hasText:'No GPU detected. Only speech recognition works: you can dictate, but replies are not spoken.'})).toBeVisible();
+ await expect(page.getByRole('alert').filter({hasText:'No GPU detected. Everything runs on the CPU: Kokoro can speak, the other speech engines need a GPU.'})).toBeVisible();
  await expect(page.getByText('could not select device driver')).toHaveCount(0);
  await expect(page.getByText('GPU not checked yet.')).toHaveCount(0);
- // The speech engine is greyed out with the reason, whatever the toggle says.
- const synthesis=page.getByRole('combobox',{name:'Speech synthesis engine'}),recognition=page.getByRole('combobox',{name:'Speech recognition engine'}),device=page.getByRole('combobox',{name:'Speech recognition runs on'});
+ const synthesis=page.getByRole('combobox',{name:'Speech synthesis engine'}),speechDevice=page.getByRole('combobox',{name:'Speech synthesis runs on'}),recognition=page.getByRole('combobox',{name:'Speech recognition engine'}),device=page.getByRole('combobox',{name:'Speech recognition runs on'});
  await expect(synthesis).toBeDisabled();
- await expect(synthesis).toContainText('No speech synthesis');
- await expect(page.getByText('Speech synthesis needs a GPU. On a CPU, Breeze takes about 3.5 seconds to compute each second of speech and Chatterbox about 7, measured on 8 threads of a desktop CPU: too slow for conversation.')).toBeVisible();
- await expect(page.getByText('Suggested for this host: no speech synthesis with Qwen3-ASR 0.6B on the CPU.')).toBeVisible();
+ await expect(synthesis).toContainText('Kokoro');
+ await expect(page.getByText('Breeze and Chatterbox need a GPU: on a CPU, Breeze takes about 3.5 seconds to compute each second of speech and Chatterbox about 7, too slow for conversation. Kokoro takes about 0.24, measured on 8 threads of a desktop CPU like the others.')).toBeVisible();
+ await expect(page.getByText('Suggested for this host: Kokoro on the CPU with Qwen3-ASR 0.6B.')).toBeVisible();
  await expect(page.getByText('This host: 8 CPU threads, 16 GiB of memory, 11.7 GiB free')).toBeVisible();
  await page.getByRole('checkbox',{name:'Choose for me, based on my GPU'}).uncheck();
- await expect(synthesis).toBeDisabled();
- // Recognition is the choice: every engine and size, on the CPU only.
+ // The speech engines that run on the CPU, and none: Kokoro, on the CPU only.
+ await expect(synthesis).toBeEnabled();
+ await synthesis.click();
+ await expect(page.getByRole('option',{name:/Kokoro/})).toBeVisible();
+ await expect(page.getByRole('option',{name:/No speech synthesis/})).toBeVisible();
+ await expect(page.getByRole('option',{name:/Breeze|Chatterbox/})).toHaveCount(0);
+ await page.keyboard.press('Escape');
+ await expect(speechDevice).toBeDisabled();
+ await expect(speechDevice).toContainText('CPU');
+ await expect(page.getByText("On this host's 8 CPU threads, each second of speech takes about 0.24 seconds to make.")).toBeVisible();
+ // Recognition: every engine and size, on the CPU only.
  await expect(recognition).toBeEnabled();
  await expect(device).toBeDisabled();
  await expect(device).toContainText('CPU');
  await recognition.click();
  for(const name of [/Whisper base/,/Whisper small/,/Qwen3-ASR 0\.6B/,/Qwen3-ASR 1\.7B/])await expect(page.getByRole('option',{name})).toBeVisible();
  await page.getByRole('option',{name:/Whisper small/}).click();
- await expect(page.getByText('Needs about 0.9 GiB of memory on the CPU. Fits.')).toBeVisible();
+ // Kokoro's memory and Whisper's, both on the CPU, and nothing on a GPU.
+ await expect(page.getByText('Needs about 2.1 GiB of memory on the CPU. Fits.')).toBeVisible();
  await expect(page.getByText('Needs about',{exact:false}).filter({hasText:'GPU memory'})).toHaveCount(0);
  await page.screenshot({path:'/tmp/pithagoras-voice-engines-no-gpu.png'});
  await page.getByRole('button',{name:'Install voice',exact:true}).click();
  await expect.poll(()=>posts.length).toBe(1);
- expect(posts[0]).toEqual({tts:'none',asr:'whisper',asrModel:'small'});
- await expect(synthesis).toContainText('No speech synthesis');
+ expect(posts[0]).toEqual({tts:'kokoro',ttsDevice:'cpu',asr:'whisper',asrModel:'small'});
+ await expect(synthesis).toContainText('Kokoro');
+ // Recognition alone is still a choice, and has nothing to put on a device.
+ await synthesis.click();
+ await page.getByRole('option',{name:/No speech synthesis/}).click();
+ await expect(speechDevice).toHaveCount(0);
+ await expect(page.getByText('Needs about 0.9 GiB of memory on the CPU. Fits.')).toBeVisible();
 });
 
 test('engine choice: on a host without a GPU the install is left to the check, and nothing is refused',async({page})=>{
@@ -424,7 +438,12 @@ test('engine choice: an installed recognition-only service shows its engines, an
  await page.locator('summary').filter({hasText:'Voice service'}).click();
  const synthesis=page.getByRole('combobox',{name:'Speech synthesis engine'});
  await expect(page.getByRole('combobox',{name:'Speech recognition engine'})).toContainText('Qwen3-ASR 0.6B');
- await expect(synthesis).toBeDisabled();
+ // Kokoro can be added on the CPU; the engines that need a GPU are not offered.
+ await expect(synthesis).toBeEnabled();
+ await synthesis.click();
+ await expect(page.getByRole('option',{name:/Kokoro/})).toBeVisible();
+ await expect(page.getByRole('option',{name:/Breeze|Chatterbox/})).toHaveCount(0);
+ await page.keyboard.press('Escape');
  // No verdict on what runs: its own memory is what the host shows as taken.
  await expect(page.getByText('Needs about',{exact:false})).toHaveCount(0);
  // A GPU turns up: the installation is still shown as what it is, recognition alone, and speech can be added.
@@ -451,6 +470,41 @@ test('engine choice: an installed recognition-only service shows its engines, an
  await page.getByRole('button',{name:'Rebuild with these engines'}).click();
  await expect.poll(()=>posts.length).toBe(1);
  expect(posts[0]).toEqual({tts:'breeze',asr:'qwen3-asr',asrModel:'0.6b'});
+});
+
+test('engine choice: on a GPU host Kokoro can be put on the CPU, which spares the card, and recognition goes there with it',async({page})=>{
+ const posts:any[]=[];
+ await page.route('**/api/voice/presets',r=>r.fulfill({json:[]}));
+ await page.route('**/api/voice/hardware',r=>r.fulfill({json:hardware([card])}));
+ await page.route('**/api/voice',r=>r.fulfill({json:config}));
+ await page.route('**/api/voice/install',r=>{
+  if(r.request().method()==='POST'){posts.push(r.request().postDataJSON());return r.fulfill({json:{ok:true}});}
+  return r.fulfill({json:{available:true,state:'absent',busy:false,progress:'',error:''}});
+ });
+ await page.goto('/tests/voice-addon.html');
+ await page.locator('summary').filter({hasText:'Voice service'}).click();
+ await page.getByRole('checkbox',{name:'Choose for me, based on my GPU'}).uncheck();
+ const synthesis=page.getByRole('combobox',{name:'Speech synthesis engine'}),speechDevice=page.getByRole('combobox',{name:'Speech synthesis runs on'}),recognition=page.getByRole('combobox',{name:'Speech recognition engine'}),device=page.getByRole('combobox',{name:'Speech recognition runs on'});
+ // Breeze has the GPU only.
+ await expect(speechDevice).toBeDisabled();
+ await expect(speechDevice).toContainText('GPU');
+ await synthesis.click();
+ await page.getByRole('option',{name:/Kokoro/}).click();
+ await recognition.click();
+ await page.getByRole('option',{name:/Qwen3-ASR 0\.6B/}).click();
+ await expect(device).toBeEnabled();
+ await expect(device).toContainText('GPU');
+ // On the CPU: nothing is left on the GPU, so recognition is on the CPU too, and the memory is the host's.
+ await expect(speechDevice).toBeEnabled();
+ await speechDevice.click();
+ await page.getByRole('option',{name:/^CPU/}).click();
+ await expect(device).toBeDisabled();
+ await expect(device).toContainText('CPU');
+ await expect(page.getByText('Needs about',{exact:false}).filter({hasText:'GPU memory'})).toHaveCount(0);
+ await expect(page.getByText('Needs about 2.8 GiB of memory on the CPU. Fits.')).toBeVisible();
+ await page.getByRole('button',{name:'Install voice',exact:true}).click();
+ await expect.poll(()=>posts.length).toBe(1);
+ expect(posts[0]).toEqual({tts:'kokoro',ttsDevice:'cpu',asr:'qwen3-asr',asrModel:'0.6b'});
 });
 
 test('a service without speech synthesis is a listening one: the settings say so and offer nothing to speak with',async({page})=>{
@@ -551,14 +605,15 @@ test('engine choice: a speech engine installed on a host that has lost its GPU c
  expect(posts[0]).toEqual({tts:'none',asr:'whisper',asrModel:'base'});
 });
 
-test('engine choice: a card that Docker cannot use is named, with what to install, and only recognition is offered',async({page})=>{
+test('engine choice: a card that Docker cannot use is named, with what to install, and only what runs on the CPU is offered',async({page})=>{
  await page.route('**/api/voice/presets',r=>r.fulfill({json:[]}));
  await page.route('**/api/voice/hardware',r=>r.fulfill({json:noGpu({unusable:['Test GPU']})}));
  await page.route('**/api/voice',r=>r.fulfill({json:config}));
  await page.route('**/api/voice/install',r=>r.fulfill({json:{available:true,state:'absent',busy:false,progress:'',error:''}}));
  await page.goto('/tests/voice-addon.html');
  await page.locator('summary').filter({hasText:'Voice service'}).click();
- await expect(page.getByRole('alert').filter({hasText:'GPU detected: Test GPU, but Docker cannot use it. Install the NVIDIA Container Toolkit and restart Docker. Until then only speech recognition works: you can dictate, but replies are not spoken.'})).toBeVisible();
+ await expect(page.getByRole('alert').filter({hasText:'GPU detected: Test GPU, but Docker cannot use it. Install the NVIDIA Container Toolkit and restart Docker. Until then everything runs on the CPU: Kokoro can speak, the other speech engines need the GPU.'})).toBeVisible();
  await expect(page.getByRole('combobox',{name:'Speech synthesis engine'})).toBeDisabled();
- await expect(page.getByRole('combobox',{name:'Speech synthesis engine'})).toContainText('No speech synthesis');
+ await expect(page.getByRole('combobox',{name:'Speech synthesis engine'})).toContainText('Kokoro');
+ await expect(page.getByRole('combobox',{name:'Speech synthesis runs on'})).toContainText('CPU');
 });

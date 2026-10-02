@@ -120,7 +120,7 @@ export function VoiceAddon({ onError }: { onError: (message: string) => void }) 
     <details className="group rounded-xl border border-line p-4">
       <summary className="cursor-pointer text-sm font-medium">{t("Voice service")} <span className="ml-2 rounded-full bg-accent/10 px-2 py-0.5 text-xs font-normal text-accent">{install?.state === 'absent' ? t("Not installed") : install?.state === 'running' ? t("Ready") : install?.state ? labelOf(INSTALL_STATE, install.state) : t("Checking…")}</span><span className="mt-1 block text-xs font-normal text-fg-muted">{t("Installation, GPU memory and service controls")}</span></summary>
     <div className="mt-4 space-y-3">
-      <p className="text-xs text-fg-faint">{t("Install once on your Docker host. Setup builds and downloads the engines you choose: speech synthesis needs an NVIDIA GPU, speech recognition does not. Allow 30 GB of disk space during setup.")}</p>
+      <p className="text-xs text-fg-faint">{t("Install once on your Docker host. Setup builds and downloads the engines you choose: speech synthesis needs an NVIDIA GPU except Kokoro, which also runs on the CPU, and speech recognition does not. Allow 30 GB of disk space during setup.")}</p>
       {install?.available && <VoiceEngines installed={install.choice} fresh={install.state==='absent'} busy={actionBusy||install.busy} hardware={hardware} picked={picked} onPick={setPicked} onGpu={chooseGpu} />}
       <div className="flex gap-2 flex-wrap">
         {install?.available && rebuild && <button disabled={actionBusy || install.busy} className="rounded-lg bg-accent/12 px-3 py-1.5 text-xs text-accent disabled:opacity-40" onClick={()=>manage('install',picked)}>{t("Rebuild with these engines")}</button>}

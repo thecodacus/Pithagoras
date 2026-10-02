@@ -363,6 +363,10 @@ test('connecting the managed voice points the settings at the engines it was bui
   const kokoro = connectManagedVoice({ tts: 'kokoro', asr: 'whisper', asrModel: 'base' });
   assert.deepEqual([kokoro.runtime, kokoro.language, kokoro.breezeUrl], ['kokoro', 'de', 'http://127.0.0.1:7862/v1/audio/speech']);
   assert.equal((await (await fetch(`${base}/voice`)).json()).managed, true);
+  // Put on the CPU it is spoken to in the CPU process, which is managed just the same.
+  const onCpu = connectManagedVoice({ tts: 'kokoro', ttsDevice: 'cpu', asr: 'qwen3-asr', asrModel: '0.6b' });
+  assert.deepEqual([onCpu.runtime, onCpu.breezeUrl, onCpu.whisperUrl], ['kokoro', 'http://127.0.0.1:7863/v1/audio/speech', 'http://127.0.0.1:7863/v1/audio/transcriptions']);
+  assert.equal((await (await fetch(`${base}/voice`)).json()).managed, true);
 });
 
 test('recognition alone: nothing is spoken, and dictation still has its transcription', async () => {
@@ -430,11 +434,11 @@ test('the hardware check reports the GPUs and what it would suggest, and degrade
   const none = await fetch(`${base}/voice/hardware`);
   assert.equal(none.status, 200);
   const empty = await none.json();
-  // No tool and no Docker is no GPU, said plainly: what is suggested is recognition alone on the CPU, sized to the host.
+  // No tool and no Docker is no GPU, said plainly: what is suggested is Kokoro and recognition on the CPU, sized to the host.
   assert.deepEqual([empty.gpus, empty.source, empty.selected, empty.checked, empty.cpuOnly], [[], 'none', null, true, true]);
   assert.equal(empty.error, 'host: nvidia-smi was not found; docker: no GPU available');
   assert.deepEqual(empty.host, { totalMiB: 16384, freeMiB: 8192, threads: 8 });
-  assert.deepEqual(empty.suggestion, { tts: 'none', asr: 'qwen3-asr', asrModel: '0.6b' });
+  assert.deepEqual(empty.suggestion, { tts: 'kokoro', ttsDevice: 'cpu', asr: 'qwen3-asr', asrModel: '0.6b' });
   delete process.env.NVIDIA_SMI;
 });
 

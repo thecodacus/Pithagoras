@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import os from "node:os";
-import { LEAN_CHOICE, asrDevice, choiceLabel, cpuSlow, fitOn, fitRam, pickGpu, ramNeeded, sameChoice, suggestChoice, suggestCpuChoice, usesGpu, vramNeeded, type Gpu, type Host, type VoiceChoice } from "./voice-engines.js";
+import { LEAN_CHOICE, asrDevice, choiceLabel, cpuRecognition, cpuSlow, fitOn, speechSlow, ttsDevice, fitRam, pickGpu, ramNeeded, sameChoice, suggestChoice, suggestCpuChoice, usesGpu, vramNeeded, type Gpu, type Host, type VoiceChoice } from "./voice-engines.js";
 
 /** The query every probe runs. Not `compute_cap`: older drivers refuse the whole query over it. */
 export const SMI_ARGS = ["--query-gpu=index,uuid,name,memory.total,memory.free", "--format=csv,noheader,nounits"];
@@ -52,13 +52,13 @@ export interface Probe { name: string; run(): Promise<string> }
  * driver says so: no NVIDIA runtime, no driver loaded, no device. It is what the person reads.
  * The card may well be there (the portal can see it), so it does not say that none was found.
  */
-export const NO_GPU_MESSAGE = "Docker cannot give the voice container a GPU: its NVIDIA runtime is missing or has no device to hand out. Install the NVIDIA Container Toolkit and restart Docker, or install speech recognition only, which needs no GPU.";
+export const NO_GPU_MESSAGE = "Docker cannot give the voice container a GPU: its NVIDIA runtime is missing or has no device to hand out. Install the NVIDIA Container Toolkit and restart Docker, or put Kokoro on the CPU or install speech recognition only, which need no GPU.";
 /** The toolkit refusing a container whose image needs a newer driver than the host has. */
 export const DRIVER_TOO_OLD_MESSAGE = "The NVIDIA driver on this host is too old for the CUDA image the voice container runs in: update the driver, then try again.";
-/** What a choice with speech synthesis is told on a host that was found to have no GPU. */
-export const NO_GPU_FOR_SPEECH = "Speech synthesis needs a GPU, and none was found: install speech recognition only, or add an NVIDIA GPU that Docker can use.";
+/** What a choice with something on the GPU is told on a host that was found to have no GPU. */
+export const NO_GPU_FOR_SPEECH = "This choice needs a GPU, and none was found: put Kokoro on the CPU, install speech recognition only, or add an NVIDIA GPU that Docker can use.";
 /** The same where the host lists a card that Docker cannot hand to a container: the card is there, so the fix is Docker's. */
-export const NO_GPU_FOR_SPEECH_UNUSABLE = "Speech synthesis needs a GPU that Docker can use: install the NVIDIA Container Toolkit and restart Docker, or install speech recognition only, which needs no GPU.";
+export const NO_GPU_FOR_SPEECH_UNUSABLE = "This choice needs a GPU that Docker can use: install the NVIDIA Container Toolkit and restart Docker, or put Kokoro on the CPU or install speech recognition only, which need no GPU.";
 /**
  * Docker's, nvidia-container-cli's and nvidia-smi's own words for there being no GPU to use. Only those: the toolkit
  * has other errors (a driver that is too old, a failed mount) that are not this, and their words say what to do.
@@ -132,23 +132,25 @@ function ramVerdict(choice: VoiceChoice, host: Host | undefined, alone: boolean)
   const fit = fitRam(choice, host);
   const need = gib(ramNeeded(choice));
   if (fit === "too-large") {
-    const lighter = suggestCpuChoice(host);
-    const hint = sameChoice({ ...lighter, tts: choice.tts }, choice) ? "" : ` ${choiceLabel({ ...lighter, tts: choice.tts })} would fit.`;
+    // The same speech, with the recognition that fits beside it.
+    const lighter = cpuRecognition(choice, host);
+    const hint = !lighter || sameChoice(lighter, choice) ? "" : ` ${choiceLabel(lighter)} would fit.`;
     throw new Error(`${choiceLabel(choice)} needs about ${need} of memory on the CPU, but this host has ${gib(host!.totalMiB)}.${hint}`);
   }
-  const slow = host && cpuSlow(choice, host.threads) ? ` and may be slower than the speaker on this host's ${host.threads} CPU threads` : "";
+  const slow = host && cpuSlow(choice, host.threads) ? ` and may be slower than the speaker on this host's ${host.threads} CPU threads`
+    : host && speechSlow(choice, host.threads) ? `, and on this host's ${host.threads} CPU threads speech may take longer to make than to say` : "";
   if (fit === "tight") return `about ${need} of memory on the CPU, of which the host has less free now${slow}`;
   if (fit === "unknown") return alone ? `about ${need} of memory on the CPU` : "";
-  // Whisper's few hundred MiB are not worth a clause next to a GPU; recognition alone, or on the CPU by choice, is the whole story.
-  if (alone || (choice.asr === "qwen3-asr" && asrDevice(choice) === "cpu")) return `about ${need} of memory on the CPU, which fits${slow}`;
+  // Whisper's few hundred MiB are not worth a clause next to a GPU; recognition alone, or speech or recognition on the CPU by choice, is the whole story.
+  if (alone || (choice.asr === "qwen3-asr" && asrDevice(choice) === "cpu") || ttsDevice(choice) === "cpu") return `about ${need} of memory on the CPU, which fits${slow}`;
   return slow ? `recognition on the CPU${slow}` : "";
 }
 
 /**
  * What to install on what was found. Without a request the suggestion is taken; a request is kept.
  * Either is refused, with what would fit, when the card or the host's memory cannot hold it at all.
- * On a host that was found to have no GPU (`noGpu`) the suggestion is speech recognition alone on the
- * CPU, and a request for speech synthesis is refused.
+ * On a host that was found to have no GPU (`noGpu`) the suggestion is Kokoro and recognition on the CPU,
+ * or recognition alone, and a request for anything on the GPU is refused.
  */
 export function decide(requested: VoiceChoice | undefined, gpus: readonly Gpu[], options: DecideOptions = {}): Decision {
   const reserve = options.reserveMiB ?? 0;
@@ -159,7 +161,8 @@ export function decide(requested: VoiceChoice | undefined, gpus: readonly Gpu[],
     if (usesGpu(choice)) throw new Error(unusable ? NO_GPU_FOR_SPEECH_UNUSABLE : NO_GPU_FOR_SPEECH);
     // A card that is there but cannot be used is not "no GPU detected": the page says so, and so does the log.
     const detected = unusable ? `GPU detected: ${unusable}, but Docker cannot use it` : "No GPU detected";
-    return { choice, gpu: undefined, summary: `${detected}: installing ${choiceLabel(choice)} needing ${ramVerdict(choice, host, true)}. Replies are not spoken: speech synthesis needs a GPU${unusable ? " that Docker can use" : ""}.` };
+    const silent = choice.tts === "none" ? ` Replies are not spoken: choose Kokoro on the CPU to hear them${unusable ? ", or make the GPU usable by Docker" : ""}.` : "";
+    return { choice, gpu: undefined, summary: `${detected}: installing ${choiceLabel(choice)} needing ${ramVerdict(choice, host, true)}.${silent}` };
   }
   const gpu = pickGpu(gpus, options.preferredGpu);
   const choice = requested ?? suggestChoice(gpu, reserve);
