@@ -437,7 +437,7 @@ test('engine choice: an installed recognition-only service shows its engines, an
  await expect(synthesis).toContainText('No speech synthesis');
  await expect(synthesis).not.toContainText('Choose');
  await synthesis.click();
- for(const name of [/Breeze/,/Chatterbox/,/No speech synthesis/])await expect(page.getByRole('option',{name})).toBeVisible();
+ for(const name of [/Breeze/,/Chatterbox/,/Kokoro/,/No speech synthesis/])await expect(page.getByRole('option',{name})).toBeVisible();
  await page.getByRole('option',{name:/Breeze/}).click();
  await expect(page.getByRole('button',{name:'Rebuild with these engines'})).toBeVisible();
  // And back to what is installed is no change: nothing is left pending.
@@ -471,6 +471,34 @@ test('a service without speech synthesis is a listening one: the settings say so
  await expect(page.getByLabel('Speech recognition URL')).toBeVisible();
  await expect(page.getByLabel('Speech synthesis URL')).toHaveCount(0);
  await expect(page.getByRole('combobox',{name:'Speech runtime'})).toContainText('No speech synthesis');
+});
+
+test('with Kokoro the voice list is its own voices, and its speed replaces the generation setting',async({page})=>{
+ const puts:any[]=[];
+ let saved:any={...config,enabled:true,runtime:'kokoro',breezeUrl:'http://127.0.0.1:7862/v1/audio/speech',voice:'voice-1',kokoroVoice:'af_heart',speed:1,managed:true};
+ await page.route('**/api/voice/presets',r=>r.fulfill({json:[{id:'voice-1',name:'Library clone',kind:'clone',instruction:'Warm.',transcript:'Hello.'}]}));
+ await page.route('**/api/voice',async r=>{if(r.request().method()==='PUT'){saved=r.request().postDataJSON();puts.push(saved);}await r.fulfill({json:saved});});
+ await page.route('**/api/voice/install',r=>r.fulfill({json:{available:true,state:'running',busy:false,progress:'',error:'',choice:{tts:'kokoro',asr:'whisper',asrModel:'base'}}}));
+ await page.goto('/tests/voice-addon.html');
+ const voice=page.getByRole('combobox',{name:'Speaking voice'});
+ await expect(voice).toContainText('Heart');
+ await voice.click();
+ await expect(page.getByRole('option',{name:/Emma.*British English · female/})).toBeVisible();
+ await expect(page.getByRole('option',{name:/Library clone|Designed voice/})).toHaveCount(0);
+ await expect(page.getByRole('option',{name:/Japanese/})).toHaveCount(0);
+ await page.getByRole('option',{name:/Emma/}).click();
+ await expect(page.getByText('Speech generation')).toHaveCount(0);
+ await page.getByRole('combobox',{name:'Speaking speed'}).click();
+ await page.getByRole('option',{name:'Faster'}).click();
+ await page.getByRole('button',{name:'Save voice settings'}).click();
+ await expect.poll(()=>puts.length).toBe(1);
+ // The library voice is kept for the other engines.
+ expect([puts[0].kokoroVoice,puts[0].speed,puts[0].voice]).toEqual(['bf_emma',1.15,'voice-1']);
+ // Another engine has the library again.
+ await page.locator('summary').filter({hasText:'Advanced connection'}).click();
+ await page.getByRole('combobox',{name:'Speech runtime'}).click();
+ await page.getByRole('option',{name:/Breeze audio\.cpp/}).click();
+ await expect(voice).toContainText('Library clone');
 });
 
 test('engine choice: a pick made before the GPU check answers is recognition alone once it says there is no GPU',async({page})=>{

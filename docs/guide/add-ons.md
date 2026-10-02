@@ -188,7 +188,7 @@ Once the services are healthy, the installer enables voice and saves the endpoin
 
 | | Choices | Runs on |
 | --- | --- | --- |
-| **Speech synthesis** | **Breeze** (English and Chinese, streams while it speaks) · **Chatterbox** (nineteen languages, clones a reference voice) | The GPU |
+| **Speech synthesis** | **Breeze** (English and Chinese, streams while it speaks) · **Chatterbox** (nineteen languages, clones a reference voice) · **Kokoro** (eight languages, 49 voices of its own, the least GPU memory) | The GPU |
 | **Speech recognition** | **Whisper** base or small · **Qwen3-ASR** 0.6B or 1.7B | Whisper always on the CPU; Qwen3-ASR on the CPU or the GPU, as you choose |
 
 The default, and what every earlier installation has, is Breeze with Whisper base. Qwen3-ASR recognises more languages and is more accurate than Whisper. Beside a speech engine it is on the GPU unless you set **Speech recognition runs on** to **CPU**, which spares the card the model at the cost of CPU threads and memory. Whisper takes no GPU memory at all.
@@ -201,6 +201,7 @@ The page and the installer estimate what each combination needs: the GPU memory 
 | --- | --- | --- |
 | Breeze | 4.5 GiB | not on the CPU |
 | Chatterbox | 2.9 GiB | not on the CPU |
+| Kokoro | 1.0 GiB | not on the CPU |
 | Whisper base / small | none | 0.4 / 0.9 GiB |
 | Qwen3-ASR 0.6B | 1.4 GiB | 1.6 GiB |
 | Qwen3-ASR 1.7B | 2.5 GiB | 2.9 GiB |
@@ -209,7 +210,7 @@ These are estimates, not guarantees. A combination **fits** when the GPU, or the
 
 Before installing, Pithagoras reads the GPU with `nvidia-smi`. A portal in a container has no `nvidia-smi` of its own, so it asks a throwaway container of the small `ubuntu:22.04` base image, to which the NVIDIA Container Toolkit gives `nvidia-smi` as it does to any image; the multi-gigabyte CUDA image is not needed for that. The **Speech engines** block then says **GPU detected** with its name and memory, or warns **No GPU detected**; before anything could be asked it says **GPU not checked yet**. A host without `nvidia-smi`, without an NVIDIA runtime for Docker, with a driver that finds no device, or with a Docker that does not answer, has no GPU for voice: that is an answer, not an error. So does a host whose `nvidia-smi` lists a card but whose Docker has no runtime to hand it to a container (the driver without the NVIDIA Container Toolkit): Docker is asked even when `nvidia-smi` answers, and the block then names the card and says that Docker cannot use it and what to install. At install time it checks again:
 
-- With **Choose for me**, it picks the best combination that fits: Breeze, and the largest of Whisper base, Qwen3-ASR 0.6B and 1.7B that fits next to it on the GPU; Chatterbox only when Breeze does not fit. Without a GPU it picks recognition alone (see below). It writes what it found as the first line of the setup log.
+- With **Choose for me**, it picks the best combination that fits: Breeze, and the largest of Whisper base, Qwen3-ASR 0.6B and 1.7B that fits next to it on the GPU; Chatterbox only when Breeze does not fit, and Kokoro only on a card too small for either of them (it cannot clone or design a voice, so a card that is merely busy right now keeps the others). Without a GPU it picks recognition alone (see below). It writes what it found as the first line of the setup log.
 - With your own pick, it keeps it, and refuses one that the card or the host's memory cannot hold at all, naming the combination that would fit. A tight pick installs, with that noted in the log.
 - If the check finds there is no GPU, a pick with speech synthesis is refused in one sentence (install recognition only, or add a GPU; where the host lists a card that Docker cannot use, install the NVIDIA Container Toolkit), and a recognition-only pick installs. A Docker that fails to start a container that asks for a GPU is told in one plain sentence about the NVIDIA Container Toolkit, not in its own words; a driver that is too old for the CUDA image the voice container runs in is told as that. Any other error of the toolkit is shown as Docker words it.
 - If it cannot tell at all (for instance the check itself failed for another reason), it installs your pick unchecked and Docker has the last word.
@@ -251,8 +252,8 @@ Use **Add voice** for your own designed or reference-cloned voice. Installing th
 The managed installer:
 
 - Creates `pithagoras-voice` and the named volume `pithagoras_voice-models`, mounted at `/voice`.
-- Builds pinned audio.cpp with CUDA, with the families of the engines you chose (Breeze, Chatterbox, Qwen3-ASR), and Whisper.cpp without CUDA when Whisper is chosen. Without any GPU use it builds audio.cpp for the CPU alone instead, in a directory of its own, or none for Whisper alone. A build keeps every family it has been given, so switching engines back and forth compiles once.
-- Downloads what the choice needs: multilingual Whisper `base` or `small`; Breeze-TTS-2 BF16 GGUF, quantized to **Q8_0** on CPU, verified, and the BF16 source removed after successful conversion; the Chatterbox Multilingual and Qwen3-ASR Q8_0 GGUF files from a pinned revision of the audio.cpp repository, checked against their SHA-256.
+- Builds audio.cpp release v0.9.0 with CUDA, with the families of the engines you chose (Breeze, Chatterbox, Kokoro, Qwen3-ASR), and Whisper.cpp without CUDA when Whisper is chosen. Without any GPU use it builds audio.cpp for the CPU alone instead, in a directory of its own, or none for Whisper alone. A build keeps every family it has been given, so switching engines back and forth compiles once. A build from an earlier pinned revision is built again once, on the first start after an update; the models are not downloaded again.
+- Downloads what the choice needs: multilingual Whisper `base` or `small`; Breeze-TTS-2 BF16 GGUF, quantized to **Q8_0** on CPU, verified, and the BF16 source removed after successful conversion; the Chatterbox Multilingual and Qwen3-ASR Q8_0 GGUF files from a pinned revision of the audio.cpp repository, and Kokoro 82M Q8_0 from a later one, checked against their SHA-256. For Kokoro it also installs eSpeak NG (`libespeak-ng1` and `espeak-ng-data` from Ubuntu), which turns the text into phonemes.
 - Retains source trees, compiled binaries and model files in the named volume.
 - Starts the services on the portal’s loopback interface by sharing its Docker network namespace. No voice ports are published on the host.
 :::
@@ -261,7 +262,7 @@ The managed installer:
 
 | Setting | Managed value |
 | --- | --- |
-| Speech runtime | **Breeze audio.cpp · streaming**, **Chatterbox audio.cpp · multilingual**, or **No speech synthesis** (recognition only) |
+| Speech runtime | **Breeze audio.cpp · streaming**, **Chatterbox audio.cpp · multilingual**, **Kokoro audio.cpp · built-in voices**, or **No speech synthesis** (recognition only) |
 | Speech synthesis URL | `http://127.0.0.1:7862/v1/audio/speech`; none without speech synthesis |
 | Speech recognition URL | Whisper: `http://127.0.0.1:8188/inference`. Qwen3-ASR: `http://127.0.0.1:7862/v1/audio/transcriptions` on the GPU, `http://127.0.0.1:7863/v1/audio/transcriptions` on the CPU |
 | Speech recognition model | Whisper: empty. Qwen3-ASR: `qwen3-asr` |

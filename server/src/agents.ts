@@ -5,6 +5,7 @@ import { agentHomePath } from "./agent-home.js";
 import { isWithinText } from "./within.js";
 import { normalizeOrb, type OrbStyle } from "./orb-style.js";
 import { readVoice } from "./voice-presets.js";
+import { isKokoroVoice } from "./kokoro-voices.js";
 
 /**
  * The agents, each a home folder of its own with its own SOUL.md,
@@ -136,7 +137,8 @@ export function setOrb(id: string, style: unknown): OrbStyle {
 export function setVoice(id: string, voice: unknown): Agent {
   if (!getAgent(id)) throw new AgentError("No such agent", 404);
   if (typeof voice !== "string") throw new AgentError("Choose a voice", 400);
-  if (voice && voice !== "design") {
+  // One of Kokoro's own voices names no library entry.
+  if (voice && voice !== "design" && !isKokoroVoice(voice)) {
     try {
       readVoice(voice);
     } catch {

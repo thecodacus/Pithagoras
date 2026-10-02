@@ -103,12 +103,14 @@ test('the suggestion is the best combination that fits, and the original one whe
   assert.deepEqual(at(TTS_ENGINES.breeze.vramMiB), DEFAULT_CHOICE);
   // Breeze does not fit, Chatterbox does.
   assert.deepEqual(at(TTS_ENGINES.chatterbox.vramMiB), { tts: 'chatterbox', asr: 'whisper', asrModel: 'base' });
+  // Neither does, Kokoro does.
+  assert.deepEqual(at(TTS_ENGINES.kokoro.vramMiB), { tts: 'kokoro', asr: 'whisper', asrModel: 'base' });
   // Room is kept for a model that comes later.
   assert.deepEqual(at(24576, 24576 - vramNeeded(DEFAULT_CHOICE)), DEFAULT_CHOICE);
   // Free memory is busy now but the card holds the original combination: do not change it for that.
   assert.deepEqual(suggestChoice(card(12288, 1000)), DEFAULT_CHOICE);
   // Not even the leanest fits: nothing better to name.
-  assert.deepEqual(at(1024), DEFAULT_CHOICE);
+  assert.deepEqual(at(512), DEFAULT_CHOICE);
   assert.deepEqual(suggestChoice(undefined), DEFAULT_CHOICE);
   assert.deepEqual(suggestChoice(card(null)), DEFAULT_CHOICE);
 });
@@ -132,13 +134,13 @@ test('a choice is checked and keyed so a container label names it exactly', () =
     assert.deepEqual(parseChoice(c), c);
     assert.deepEqual(choiceFromKey(choiceKey(c)), c);
   }
-  assert.equal(combos.length, 8);
+  assert.equal(combos.length, 12);
   assert.equal(choiceKey(DEFAULT_CHOICE), 'breeze+whisper:base');
   // A container from before engines could be chosen has no label.
   assert.deepEqual(choiceFromKey(undefined), DEFAULT_CHOICE);
   assert.deepEqual(choiceFromKey('nonsense'), DEFAULT_CHOICE);
   assert.deepEqual(choiceFromKey('breeze+whisper:gigantic'), DEFAULT_CHOICE);
-  assert.throws(() => parseChoice({ tts: 'kokoro', asr: 'whisper', asrModel: 'base' }), /speech synthesis engine/);
+  assert.throws(() => parseChoice({ tts: 'piper', asr: 'whisper', asrModel: 'base' }), /speech synthesis engine/);
   assert.throws(() => parseChoice({ tts: 'breeze', asr: 'whisper', asrModel: '1.7b' }), /speech recognition model/);
   assert.throws(() => parseChoice({ tts: 'breeze', asr: 'qwen3-asr' }), /speech recognition model/);
   assert.throws(() => parseChoice({ tts: 'toString', asr: 'whisper', asrModel: 'base' }), /speech synthesis engine/);
@@ -171,6 +173,17 @@ test('Chatterbox and Qwen3-ASR run in the one audio.cpp process, loaded together
   assert.deepEqual(ttsModel('chatterbox'), config.models[0]);
 });
 
+test('Kokoro is a speech model of its own, spoken to at its own runtime, and the leanest one there is', () => {
+  const config = serverConfig({ tts: 'kokoro', asr: 'qwen3-asr', asrModel: '0.6b' })!;
+  assert.deepEqual(config.models[0], { id: 'kokoro', family: 'kokoro_tts', path: '/voice/models/kokoro-82m-q8_0.gguf', task: 'tts', mode: 'offline' });
+  assert.deepEqual(ttsModel('kokoro'), config.models[0]);
+  assert.deepEqual(endpoints({ tts: 'kokoro', asr: 'whisper', asrModel: 'base' }), {
+    runtime: 'kokoro', breezeUrl: 'http://127.0.0.1:7862/v1/audio/speech', whisperUrl: 'http://127.0.0.1:8188/inference', sttModel: '',
+  });
+  assert.equal(choiceKey({ tts: 'kokoro', asr: 'whisper', asrModel: 'base' }), 'kokoro+whisper:base');
+  assert.deepEqual(LEAN_CHOICE, { tts: 'kokoro', asr: 'whisper', asrModel: 'base' });
+});
+
 test('what the install decides tells the person what fits and what does not', () => {
   const twelve = [card(12288, 11000)];
   const auto = decide(undefined, twelve);
@@ -182,9 +195,9 @@ test('what the install decides tells the person what fits and what does not', ()
   assert.throws(() => decide({ tts: 'breeze', asr: 'qwen3-asr', asrModel: '1.7b' }, [card(6144)]),
     /Breeze speech with Qwen3-ASR 1\.7B needs about 7\.0 GiB of GPU memory, but Test GPU 0 \(6\.0 GiB, 6\.0 GiB free\) has less\. Breeze speech with Qwen3-ASR 0\.6B would fit\./);
   // The smallest is named as what it is, not as the original combination.
-  assert.throws(() => decide(undefined, [{ index: 0, name: 'Small GPU', totalMiB: 2048, freeMiB: 2000 }]),
-    /^Error: Even the smallest voice setup \(Chatterbox speech with Whisper base\) needs about 2\.9 GiB of GPU memory, but Small GPU \(2\.0 GiB, 2\.0 GiB free\) has less\.$/);
-  assert.throws(() => decide(undefined, [card(2048)], { reserveMiB: 1000 }), /smallest voice setup \(Chatterbox speech with Whisper base\) needs about 2\.9 GiB of GPU memory, plus 1\.0 GiB kept free/);
+  assert.throws(() => decide(undefined, [{ index: 0, name: 'Small GPU', totalMiB: 512, freeMiB: 500 }]),
+    /^Error: Even the smallest voice setup \(Kokoro speech with Whisper base\) needs about 1\.0 GiB of GPU memory, but Small GPU \(0\.5 GiB, 0\.5 GiB free\) has less\.$/);
+  assert.throws(() => decide(undefined, [card(1536)], { reserveMiB: 1000 }), /smallest voice setup \(Kokoro speech with Whisper base\) needs about 1\.0 GiB of GPU memory, plus 1\.0 GiB kept free/);
   assert.throws(() => decide(DEFAULT_CHOICE, [card(20000)], { reserveMiB: 16000 }), /plus 15\.6 GiB kept free/);
   // No GPU read at all: the choice is kept, unchecked, and Docker has the last word.
   const blind = decide({ tts: 'chatterbox', asr: 'whisper', asrModel: 'base' }, []);

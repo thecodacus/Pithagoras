@@ -9,7 +9,7 @@ asr="${VOICE_ASR:-whisper}"
 asr_model="${VOICE_ASR_MODEL:-base}"
 threads="${VOICE_THREADS:-4}"
 case "$tts" in
-  breeze|chatterbox|none) ;;
+  breeze|chatterbox|kokoro|none) ;;
   *) echo "VOICE_SETUP_ERROR: unknown speech engine '$tts'" >&2; exit 2 ;;
 esac
 case "$asr:$asr_model" in
@@ -38,11 +38,20 @@ if [ ! -f /usr/local/share/pithagoras-voice-deps ]; then
   apt-get install -y --no-install-recommends git cmake ninja-build build-essential curl ca-certificates python3 libssl-dev aria2
   touch /usr/local/share/pithagoras-voice-deps
 fi
+# Kokoro turns text into phonemes with eSpeak NG, which audio.cpp loads from the system library and its data.
+if [ "$tts" = kokoro ] && ! dpkg -s libespeak-ng1 espeak-ng-data >/dev/null 2>&1; then
+  echo 'VOICE_STAGE: Installing eSpeak NG for Kokoro'
+  apt-get update
+  apt-get install -y --no-install-recommends libespeak-ng1 espeak-ng-data
+fi
 checkout() {
   local directory="$1" repository="$2" revision="$3"
   if [ ! -d "$directory/.git" ]; then git clone "$repository" "$directory"; fi
+  # A clone from an earlier pin has not seen this revision yet.
+  if ! git -C "$directory" cat-file -e "$revision^{commit}" 2>/dev/null; then git -C "$directory" fetch origin; fi
   git -C "$directory" checkout "$revision"
-  git -C "$directory" submodule update --init --recursive
+  # A submodule may be named by an SSH address; the container has no SSH, and GitHub serves the same over HTTPS.
+  git -C "$directory" -c url.https://github.com/.insteadOf=git@github.com: submodule update --init --recursive
 }
 # The audio.cpp model families this choice needs. Speech comes from audio.cpp for both engines; recognition
 # does only for Qwen3-ASR, Whisper is a process of its own. Qwen3-ASR on the CPU runs from the GPU build too,
@@ -50,15 +59,21 @@ checkout() {
 families=()
 if [ "$tts" = breeze ]; then families+=(breeze_tts); fi
 if [ "$tts" = chatterbox ]; then families+=(chatterbox); fi
+if [ "$tts" = kokoro ]; then families+=(kokoro_tts); fi
 if [ "$asr" = qwen3-asr ]; then families+=(qwen3_asr); fi
+# The audio.cpp release everything is built from: v0.9.0, the first with Kokoro.
+audio_revision=795c45fbde0a7d29c93b22199728ff5caaec02e5
 # Builds audio.cpp into $1 (CUDA on or off in $2) for the families after them, unless a build there already
 # holds them. A build keeps every family it was given, so switching engines back and forth compiles once. The
 # kernels of a CUDA build are compiled for this card's architecture alone, and the card the container gets can
-# change between installs.
+# change between installs. A build from another revision is built again.
 build_audio() {
   local dir="$1" cuda="$2" have models architecture='' built_architecture=''
   shift 2
   local built="$dir/pithagoras-families"
+  # A build from before this was written down is from the earlier pin.
+  local built_revision
+  built_revision=$(cat "$dir/pithagoras-revision" 2>/dev/null || true)
   # A volume from before engines could be chosen was built for Breeze alone.
   if [ -f "$built" ]; then have=$(cat "$built"); elif [ "$cuda" = on ] && [ -x "$dir/bin/audiocpp_server" ]; then have=breeze_tts; else have=; fi
   models=$(printf '%s,' "$have" "$@" | tr ',' '\n' | sed '/^$/d' | sort -u | paste -sd, -)
@@ -67,7 +82,7 @@ build_audio() {
     # A volume from before this was written down has it in the CMake cache.
     built_architecture=$(cat "$dir/pithagoras-architecture" 2>/dev/null || sed -n 's/^CMAKE_CUDA_ARCHITECTURES:[A-Z]*=//p' "$dir/CMakeCache.txt" 2>/dev/null || true)
   fi
-  if [ "$models" != "$have" ] || { [ -n "$built_architecture" ] && [ "$built_architecture" != "$architecture" ]; } || [ ! -x "$dir/bin/audiocpp_server" ] || { [ "$cuda" = on ] && [ ! -x "$dir/bin/audiocpp_gguf" ]; } || ! grep -q 'AUDIOCPP_BUILD_NATIVE_MODEL_MANAGER:BOOL=ON' "$dir/CMakeCache.txt" 2>/dev/null; then
+  if [ "$models" != "$have" ] || [ "$built_revision" != "$audio_revision" ] || { [ -n "$built_architecture" ] && [ "$built_architecture" != "$architecture" ]; } || [ ! -x "$dir/bin/audiocpp_server" ] || { [ "$cuda" = on ] && [ ! -x "$dir/bin/audiocpp_gguf" ]; } || ! grep -q 'AUDIOCPP_BUILD_NATIVE_MODEL_MANAGER:BOOL=ON' "$dir/CMakeCache.txt" 2>/dev/null; then
     if [ "$cuda" = on ]; then
       echo "VOICE_STAGE: Building CUDA speech runtime and quantizer ($models, sm_$architecture)"
       (cd audio && bash scripts/build_linux.sh --native-model-manager --system-openssl --cuda on --cuda-arch "$architecture" --build-dir "/voice/$dir" --build-type Release --model-set custom --models "$models" --target audiocpp_server --target audiocpp_gguf --jobs 4) 2>&1 | tr '\r' '\n'
@@ -77,6 +92,7 @@ build_audio() {
       (cd audio && bash scripts/build_linux.sh --native-model-manager --system-openssl --cuda off --build-dir "/voice/$dir" --build-type Release --model-set custom --models "$models" --target audiocpp_server --jobs 4) 2>&1 | tr '\r' '\n'
     fi
     echo "$models" > "$built"
+    echo "$audio_revision" > "$dir/pithagoras-revision"
   fi
 }
 # No audio.cpp at all for Whisper alone. Without a GPU it is a CPU build of its own, with no CUDA toolchain.
@@ -84,7 +100,7 @@ audio_gpu=audio/build/portal
 audio_cpu=$audio_gpu
 if [ "$gpu" = 1 ] || [ "$qwen_cpu" = 1 ]; then
   echo 'VOICE_STAGE: Preparing pinned audio runtime'
-  checkout audio https://github.com/0xShug0/audio.cpp.git efb04233dab73aeee4b2912042a90e7b36329061
+  checkout audio https://github.com/0xShug0/audio.cpp.git "$audio_revision"
   if [ "$gpu" = 1 ]; then build_audio "$audio_gpu" on "${families[@]}"
   else audio_cpu=audio/build/portal-cpu; build_audio "$audio_cpu" off "${families[@]}"; fi
 fi
@@ -108,7 +124,8 @@ if [ "$asr" = whisper ]; then
   echo "VOICE_STAGE: Downloading multilingual Whisper $asr_model"
   bash whisper/models/download-ggml-model.sh "$asr_model" /voice/models 2>&1 | tr '\r' '\n'
 fi
-# Chatterbox and Qwen3-ASR come from one pinned revision of the audio.cpp GGUF repository, checked against their SHA-256.
+# Chatterbox and Qwen3-ASR come from one pinned revision of the audio.cpp GGUF repository, Kokoro from a later one,
+# each checked against its SHA-256.
 gguf=https://huggingface.co/audio-cpp/audio.cpp-gguf/resolve/6d5436fc85f7a20c2e9f4e472b7f3a532f686444
 if [ "$asr" = qwen3-asr ]; then
   case "$asr_model" in
@@ -121,6 +138,10 @@ fi
 if [ "$tts" = chatterbox ]; then
   echo 'VOICE_STAGE: Downloading Chatterbox Multilingual'
   download "$gguf/Chatterbox-GGUF/chatterbox-q8_0.gguf" models/chatterbox-q8_0.gguf d586dd1aa59613cab8046176fb7ca5ba191c02a9b10ffa5b0d892ed22b470656
+fi
+if [ "$tts" = kokoro ]; then
+  echo 'VOICE_STAGE: Downloading Kokoro 82M'
+  download "https://huggingface.co/audio-cpp/audio.cpp-gguf/resolve/351dbab8d8534675ee29440bb402e348b09e55e2/Kokoro-82M-GGUF/kokoro-82m-q8_0.gguf" models/kokoro-82m-q8_0.gguf 5d800fd204029302c10313daeafdb31c875c7c29ae31974d0d156cc7f512d1d0
 fi
 if [ "$tts" = breeze ] && [ ! -s models/breeze-q8_0.gguf ]; then
   echo 'VOICE_STAGE: Downloading full-precision Breeze-TTS-2'

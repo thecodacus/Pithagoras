@@ -56,6 +56,7 @@ export function VoiceEngines({ installed, fresh, busy, hardware, picked: pickedN
     : [
       { value: "breeze", label: TTS_ENGINES.breeze.label, hint: t("English and Chinese, streams while it speaks") },
       { value: "chatterbox", label: TTS_ENGINES.chatterbox.label, hint: t("Nineteen languages, clones a reference voice") },
+      { value: "kokoro", label: TTS_ENGINES.kokoro.label, hint: t("Built-in voices in eight languages, the least GPU memory") },
       ...(cpuOnly || installed?.tts === "none" ? [noSpeech] : []),
     ];
   const suggest = suggestion && !sameChoice(suggestion, shown) && <> <button type="button" className={btnCls} onClick={() => onPick(installed && sameChoice(suggestion, installed) ? null : suggestion)}>{t("Use the suggestion")}</button></>;

@@ -582,7 +582,7 @@ test('another choice recreates the container, keeps the volume and is not mistak
 
 test('a request for an engine the installer does not make is refused before anything happens', async () => {
   reset(); hostGpus(GPU(0, 12288, 11000));
-  await assert.rejects(voice.install({ tts: 'kokoro', asr: 'whisper', asrModel: 'base' } as any), /speech synthesis engine/);
+  await assert.rejects(voice.install({ tts: 'piper', asr: 'whisper', asrModel: 'base' } as any), /speech synthesis engine/);
   await assert.rejects(voice.install({ tts: 'breeze', asr: 'whisper', asrModel: '1.7b' }), /speech recognition model/);
   assert.equal((await voice.status()).busy, false, 'the refusal does not leave a setup running');
   assert.equal(calls.some(c => c.url.startsWith('/containers/create')), false);
@@ -607,11 +607,13 @@ test('the model the lease loads is the one the saved engine speaks with', async 
   await voice.modelAction('unload');
   await voice.modelAction('load', 'chatterbox');
   await voice.modelAction('unload', 'chatterbox');
-  assert.deepEqual(sent.map(s => s.url), Array(4).fill('http://127.0.0.1:7862/v1/models/load').map((u, i) => u.replace('load', i % 2 ? 'unload' : 'load')));
+  await voice.modelAction('load', 'kokoro');
+  assert.deepEqual(sent.map(s => s.url).slice(0, 4), Array(4).fill('http://127.0.0.1:7862/v1/models/load').map((u, i) => u.replace('load', i % 2 ? 'unload' : 'load')));
   // The load request Breeze has always had, byte for byte.
   assert.deepEqual(sent[0].body, { id: 'breeze', family: 'breeze_tts', path: '/voice/models/breeze-q8_0.gguf', task: 'tts', mode: 'streaming', session_options: { 'breeze_tts.reference_cache_slots': '1' } });
   assert.deepEqual(sent[1].body, { id: 'breeze' });
   assert.equal(sent[2].body.id, 'chatterbox');
   assert.equal(sent[2].body.path, '/voice/models/chatterbox-q8_0.gguf');
   assert.deepEqual(sent[3].body, { id: 'chatterbox' });
+  assert.deepEqual(sent[4].body, { id: 'kokoro', family: 'kokoro_tts', path: '/voice/models/kokoro-82m-q8_0.gguf', task: 'tts', mode: 'offline' });
 });

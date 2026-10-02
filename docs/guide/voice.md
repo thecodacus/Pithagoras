@@ -490,6 +490,7 @@ each runtime has its own address:
 | `breeze` | A Python Breeze-TTS-2 service | Designed or cloned voices |
 | `audio-cpp` | Breeze on audio.cpp, streaming — what the managed container runs | Whisper on CPU |
 | `chatterbox` | Speech in another language, on audio.cpp | Needs an input language (not auto-detect) and a reference clone — a voice with a recording; see above |
+| `kokoro` | Kokoro 82M on audio.cpp: small, fast, eight languages | Speaks with one of its own voices, chosen in **Speaking voice**; see [Kokoro's voices](#kokoro-s-voices) |
 
 Recognition is Whisper by default. **Speech recognition model** takes another
 model id (letters, digits, `.`, `:`, `-`, `_`), such as `qwen3-asr` behind
@@ -645,7 +646,7 @@ prefill; subsequent turns can reuse it. No custom chat template is needed.
 On a Linux NVIDIA host with Docker and NVIDIA Container Toolkit, open
 **Settings → Add-ons → Voice → Install voice**. Pithagoras creates a separate
 `pithagoras-voice` container and displays the setup log. Under **Speech engines**
-you choose the speech synthesis engine (Breeze or Chatterbox) and the speech
+you choose the speech synthesis engine (Breeze, Chatterbox or Kokoro) and the speech
 recognition model (Whisper base or small, Qwen3-ASR 0.6B or 1.7B), or leave the
 choice to the installer, which reads the GPU and its free memory and picks the
 best combination that fits; [Docker add-ons](/guide/add-ons#engines-and-gpu-memory)
@@ -732,6 +733,26 @@ without saving the other settings, if the description cannot be saved. Breeze is
 the engine that reads the description. Chatterbox takes no description: it speaks
 from the recording alone, so editing the description of a voice used with
 Chatterbox changes nothing you can hear.
+
+### Kokoro's voices
+
+Kokoro cannot clone a recording or follow a description: it speaks with one of
+the voices that come with it. With **Kokoro audio.cpp** as the speech runtime,
+**Speaking voice** lists those voices instead of your library, each with its
+language: American and British English, Spanish, French, Hindi, Italian,
+Brazilian Portuguese and Mandarin Chinese. Kokoro reads the text in the language
+of the voice, whatever the input language is set to. Its Japanese voices are
+not offered: they need a dictionary the packaged model does not carry.
+**Speaking speed** (slower, normal, faster) takes the place of **Speech
+generation**.
+
+Your library voice stays selected for the other engines, so switching the
+runtime back brings it back. An agent can have a Kokoro voice of its own, from
+the voice menu under its avatar; with another engine it speaks as in the voice
+settings, and a library voice given to an agent is not used while Kokoro speaks.
+
+Kokoro has no streaming mode in audio.cpp: each phrase comes back as one WAV, as
+with Chatterbox, which Kokoro's size makes quick.
 
 Delete voice removes the preset and falls back
 to the default designed voice if it was active. Presets and recordings persist in

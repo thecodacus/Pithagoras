@@ -1,4 +1,4 @@
-import { VoiceLibrary } from './VoiceLibrary';
+import { VoiceLibrary, kokoroVoiceOptions } from './VoiceLibrary';
 import { VoiceEngines } from './VoiceEngines';
 import { Select } from "./Select";
 import { useEffect, useRef, useState } from "react";
@@ -6,6 +6,7 @@ import { DEFAULT_VAD, api, type VoiceInstallStatus, type VoiceConfig, type Voice
 import { INPUT_LANGUAGES, CHATTERBOX_LANGUAGES } from "../../../server/src/voice-languages";
 import { sameChoice, type VoiceChoice } from "../../../server/src/voice-engines";
 import { NUMBER_PACK_LANGUAGES } from "../../../server/src/voice-numbers";
+import { DEFAULT_KOKORO_VOICE } from "../../../server/src/kokoro-voices";
 import { labelOf, languageName, msg, t } from "../i18n";
 import { btnCls, inputCls } from "./SettingsUi";
 
@@ -59,6 +60,8 @@ export function VoiceAddon({ onError }: { onError: (message: string) => void }) 
   // No speech synthesis: the page can listen (dictation), and replies are not spoken.
   const listening = config.runtime === "none";
   const chatterbox = config.runtime === "chatterbox";
+  // Kokoro speaks with voices of its own, not the library's.
+  const kokoro = config.runtime === "kokoro";
   const languages = chatterbox ? INPUT_LANGUAGES.filter(([code]) => CHATTERBOX_LANGUAGES.includes(code)) : INPUT_LANGUAGES;
   // Switching runtime must not leave a language the runtime will refuse on save.
   const setRuntime = (runtime: VoiceConfig["runtime"]) => update(runtime === "chatterbox" && !CHATTERBOX_LANGUAGES.includes(config.language ?? "auto")
@@ -69,14 +72,19 @@ export function VoiceAddon({ onError }: { onError: (message: string) => void }) 
     {listening && <p role="status" className="rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-warn">{t("This installation has no speech synthesis: replies are not spoken and voice mode is off. Dictation, which only listens, works.")}</p>}
     {!listening && <section className="rounded-xl border border-line bg-surface/50 p-4 space-y-4">
       <div><h3 className="text-sm font-medium">{t("Your voice")}</h3><p className="mt-1 text-xs text-fg-muted">{t("Choose how your assistant sounds.")}</p></div>
-    <VoiceLibrary value={config.voice || "design"} onChange={voice=>update({voice})} onError={onError} onPending={save=>{pendingDescriptions.current=save;if(save)setSaved(false);}}/>
-      {(config.voice||"design") === "design" && <label className="block text-xs text-fg-muted">{t("Describe the speaking voice")}<input className="mt-1.5 w-full rounded-lg border border-line bg-surface px-3 py-2 text-xs" value={config.instruction} onChange={e=>update({instruction:e.target.value})}/></label>}
+    {kokoro
+      ? <><div className="block text-xs text-fg-muted">{t("Speaking voice")}<Select aria-label={t("Speaking voice")} className="mt-1.5 w-full" value={config.kokoroVoice ?? DEFAULT_KOKORO_VOICE} onChange={kokoroVoice => update({ kokoroVoice })} options={kokoroVoiceOptions()} /></div>
+        <p className="text-xs text-fg-faint">{t("Kokoro speaks with its own voices and reads the text in the language of the voice. Your voice library is kept for the other engines.")}</p></>
+      : <VoiceLibrary value={config.voice || "design"} onChange={voice=>update({voice})} onError={onError} onPending={save=>{pendingDescriptions.current=save;if(save)setSaved(false);}}/>}
+      {!kokoro && (config.voice||"design") === "design" && <label className="block text-xs text-fg-muted">{t("Describe the speaking voice")}<input className="mt-1.5 w-full rounded-lg border border-line bg-surface px-3 py-2 text-xs" value={config.instruction} onChange={e=>update({instruction:e.target.value})}/></label>}
     </section>}
     <section className="rounded-xl border border-line bg-surface/50 p-4 space-y-4">
       <h3 className="text-sm font-medium">{t("Conversation")}</h3>
     <div className="block text-xs text-fg-muted">{t("Input language")}<Select aria-label={t("Input language")} size="sm" className="mt-1.5 w-full" value={config.language || "auto"} onChange={language => update({ language })} options={languages.map(([value, label]) => ({ value, label: value === "auto" ? t("Auto-detect") : languageName(value, label) }))} /></div>
     <p className="text-xs text-fg-faint">{t("Choosing your language improves recognition on short turns.")}</p>
-    {!listening && (chatterbox
+    {!listening && (kokoro
+      ? <div className="block text-xs text-fg-muted">{t("Speaking speed")}<Select<number> aria-label={t("Speaking speed")} size="sm" className="mt-1.5 w-full" value={config.speed ?? 1} onChange={speed => update({ speed })} options={[{ value: 0.85, label: t("Slower") }, { value: 1, label: t("Normal") }, { value: 1.15, label: t("Faster") }]} /></div>
+      : chatterbox
       ? <div className="block text-xs text-fg-muted">{t("Speech delivery")}<Select<number> aria-label={t("Speech delivery")} size="sm" className="mt-1.5 w-full" value={config.exaggeration ?? 0.5} onChange={exaggeration => update({ exaggeration })} options={[{ value: 0.3, label: t("Calm"), hint: t("Flatter delivery") }, { value: 0.5, label: t("Natural"), hint: t("As recorded") }, { value: 0.8, label: t("Expressive"), hint: t("Stronger emotion") }]} /></div>
       : <div className="block text-xs text-fg-muted">{t("Speech generation")}<Select<number> aria-label={t("Speech generation")} size="sm" className="mt-1.5 w-full" value={config.cfgScale ?? 4} onChange={cfgScale => update({ cfgScale })} options={[{ value: 1, label: t("Fast"), hint: t("Lighter voice guidance") }, { value: 4, label: t("Expressive"), hint: t("Stronger voice guidance") }]} /></div>)}
     {chatterbox && <p className="text-xs text-fg-faint">{t("Chatterbox speaks your input language and clones the selected reference voice; it has no designed voice.")} {NUMBER_PACK_LANGUAGES.includes(config.language ?? "") ? t("Numbers are written out before synthesis so they are spoken correctly.") : t("Numbers stay as digits in this language, which Chatterbox reads unreliably.")}</p>}
@@ -132,7 +140,7 @@ export function VoiceAddon({ onError }: { onError: (message: string) => void }) 
     <details className="rounded-xl border border-line p-4">
       <summary className="cursor-pointer text-sm font-medium">{t("Advanced connection")}<span className="mt-1 block text-xs font-normal text-fg-muted">{t("Custom runtime and service addresses")}</span></summary>
       <div className="mt-4 space-y-4">
-    <div className="block text-xs text-fg-muted">{t("Speech runtime")}<Select aria-label={t("Speech runtime")} size="sm" className="mt-1.5 w-full" value={config.runtime ?? "breeze"} onChange={v => setRuntime(v as VoiceConfig["runtime"])} options={[{ value: "breeze", label: "Breeze Python" }, { value: "audio-cpp", label: "Breeze audio.cpp", hint: t("Streaming") }, { value: "chatterbox", label: "Chatterbox audio.cpp", hint: t("Multilingual") }, { value: "none", label: t("No speech synthesis"), hint: t("Dictation only") }]} /></div>
+    <div className="block text-xs text-fg-muted">{t("Speech runtime")}<Select aria-label={t("Speech runtime")} size="sm" className="mt-1.5 w-full" value={config.runtime ?? "breeze"} onChange={v => setRuntime(v as VoiceConfig["runtime"])} options={[{ value: "breeze", label: "Breeze Python" }, { value: "audio-cpp", label: "Breeze audio.cpp", hint: t("Streaming") }, { value: "chatterbox", label: "Chatterbox audio.cpp", hint: t("Multilingual") }, { value: "kokoro", label: "Kokoro audio.cpp", hint: t("Built-in voices") }, { value: "none", label: t("No speech synthesis"), hint: t("Dictation only") }]} /></div>
     {([['whisperUrl', msg('Speech recognition URL')], ...(listening ? [] : [['breezeUrl', msg('Speech synthesis URL')] as const])] as const).map(([key, label]) => <label key={key} className="block text-xs text-fg-muted">{t(label)}<input className="mt-1.5 w-full rounded-lg border border-line bg-surface px-3 py-2 text-xs" value={config[key]} onChange={e => update({ [key]: e.target.value })} /></label>)}
     <label className="block text-xs text-fg-muted">{t("Speech recognition model")}<input className="mt-1.5 w-full rounded-lg border border-line bg-surface px-3 py-2 text-xs" placeholder={t("Whisper.cpp needs none; audio.cpp names its model, e.g. qwen3-asr")} value={config.sttModel ?? ""} onChange={e => update({ sttModel: e.target.value })} /></label>
       </div>

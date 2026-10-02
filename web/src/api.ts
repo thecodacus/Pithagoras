@@ -334,7 +334,7 @@ export interface VoiceConfig {
   // False with no speech synthesis (runtime "none"): the page can listen, but replies are not spoken.
   speech?: boolean;
   vad?: typeof DEFAULT_VAD;
-  enabled: boolean; lazyLoad?: boolean; managed?: boolean; whisperUrl: string; breezeUrl: string; instruction: string; voice?: string; language?: string; cfgScale?: number; runtime?: "breeze" | "audio-cpp" | "chatterbox" | "none"; sttModel?: string; exaggeration?: number;
+  enabled: boolean; lazyLoad?: boolean; managed?: boolean; whisperUrl: string; breezeUrl: string; instruction: string; voice?: string; language?: string; cfgScale?: number; runtime?: "breeze" | "audio-cpp" | "chatterbox" | "kokoro" | "none"; sttModel?: string; exaggeration?: number; kokoroVoice?: string; speed?: number;
 }
 
 export interface VoiceInstallStatus { available: boolean; state: string; busy: boolean; progress: string; error: string; choice?: VoiceChoice; }

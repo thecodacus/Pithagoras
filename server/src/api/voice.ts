@@ -2,6 +2,7 @@ import { addVoice, listVoices, readVoice, updateVoice, deleteVoice, VoiceNotFoun
 import { spokenNumbers } from '../voice-numbers.js';
 import { INPUT_LANGUAGES, CHATTERBOX_LANGUAGES } from '../voice-languages.js';
 import { DEFAULT_CHOICE, endpoints, parseChoice, type VoiceChoice } from '../voice-engines.js';
+import { DEFAULT_KOKORO_VOICE, KOKORO_SPEEDS, isKokoroVoice } from '../kokoro-voices.js';
 import { VoiceLeases } from '../extensions/voice-leases.js';
 import { DEFAULT_VOICE_INSTRUCTIONS, voiceInstructions, voiceRulesOn } from '../pi/voice-first.js';
 import * as voiceService from '../extensions/voice-service.js';
@@ -23,13 +24,18 @@ export interface VoiceConfig {
   language: string;
   cfgScale: number;
   // `none`: speech recognition only. There is nothing to speak with, so no replies are spoken.
-  runtime?: "breeze" | "audio-cpp" | "chatterbox" | "none";
+  runtime?: "breeze" | "audio-cpp" | "chatterbox" | "kokoro" | "none";
   // Sent as the OpenAI transcription "model" field. audio.cpp requires it and
   // names the loaded model; Whisper.cpp ignores unknown fields, so an empty
   // value keeps the existing Whisper contract byte for byte.
   sttModel?: string;
   // Chatterbox emotion exaggeration; its own scale, unrelated to Breeze's CFG.
   exaggeration?: number;
+  // Kokoro speaks with one of its own voices, kept apart from `voice` so that
+  // switching runtimes keeps the library voice the others speak with.
+  kokoroVoice?: string;
+  // Kokoro's speed multiplier.
+  speed?: number;
   // How the agent is told to speak in voice mode. Empty means the built-in text.
   responseInstructions?: string;
 }
@@ -47,7 +53,7 @@ function config(): VoiceConfig {
 export function validateConfig(value: any): VoiceConfig {
   if (typeof value?.enabled !== "boolean") throw new Error("enabled must be a boolean");
   const runtime = value.runtime ?? "breeze";
-  if (!["breeze", "audio-cpp", "chatterbox", "none"].includes(runtime)) throw new Error("Choose a supported speech runtime");
+  if (!["breeze", "audio-cpp", "chatterbox", "kokoro", "none"].includes(runtime)) throw new Error("Choose a supported speech runtime");
   for (const key of ["whisperUrl", "breezeUrl"]) {
     if (typeof value[key] !== "string") throw new Error(`${key} is required`);
     // With no speech synthesis there is no address to speak to.
@@ -72,6 +78,10 @@ export function validateConfig(value: any): VoiceConfig {
   const exaggeration = value.exaggeration ?? 0.5;
   if (typeof exaggeration !== "number" || !Number.isFinite(exaggeration) || exaggeration < 0 || exaggeration > 2)
     throw new Error("Expressiveness must be between 0 and 2");
+  const kokoroVoice = value.kokoroVoice ?? DEFAULT_KOKORO_VOICE;
+  if (!isKokoroVoice(kokoroVoice)) throw new Error("Choose one of Kokoro's voices");
+  const speed = value.speed ?? 1;
+  if (!(KOKORO_SPEEDS as readonly number[]).includes(speed)) throw new Error("Choose a supported speaking speed");
   const responseInstructions = value.responseInstructions ?? "";
   if (typeof responseInstructions !== "string" || responseInstructions.length > MAX_RESPONSE_INSTRUCTIONS)
     throw new Error(`Speaking instructions may be at most ${MAX_RESPONSE_INSTRUCTIONS} characters`);
@@ -89,7 +99,7 @@ export function validateConfig(value: any): VoiceConfig {
     if (typeof vad[key] !== 'number' || !Number.isFinite(vad[key]) || vad[key] < min || vad[key] > max) throw new Error(`Invalid VAD ${key}: expected ${min}–${max}`);
   }
   if (vad.negativeSpeechThreshold >= vad.positiveSpeechThreshold) throw new Error('Speech-end threshold must be lower than speech-start threshold');
-  return { vad, lazyLoad: value.lazyLoad !== false, runtime, voice, language, cfgScale, sttModel, exaggeration, responseInstructions: savedInstructions(responseInstructions), enabled: value.enabled, whisperUrl: value.whisperUrl.trim(), breezeUrl: value.breezeUrl.trim(), instruction: value.instruction.trim() };
+  return { vad, lazyLoad: value.lazyLoad !== false, runtime, voice, language, cfgScale, sttModel, exaggeration, kokoroVoice, speed, responseInstructions: savedInstructions(responseInstructions), enabled: value.enabled, whisperUrl: value.whisperUrl.trim(), breezeUrl: value.breezeUrl.trim(), instruction: value.instruction.trim() };
 }
 /** Text equal to the built-in instructions is not saved, so they follow the portal's updates. */
 function savedInstructions(text: string): string {
@@ -105,30 +115,30 @@ function withInstructions<T extends { responseInstructions?: string }>(value: T)
   return { ...value, responseInstructions: voiceInstructions(value.responseInstructions), defaultResponseInstructions: DEFAULT_VOICE_INSTRUCTIONS, responseInstructionsOff: !voiceRulesOn() };
 }
 /** The samples of a RIFF/WAVE buffer, checked to be what the player expects. */
-export function wavPcm(wav: Buffer): Buffer {
+export function wavPcm(wav: Buffer, runtime = "Chatterbox"): Buffer {
   if (wav.length < 44 || wav.toString("ascii", 0, 4) !== "RIFF" || wav.toString("ascii", 8, 12) !== "WAVE")
-    throw new Error("Chatterbox returned invalid WAV audio");
+    throw new Error(`${runtime} returned invalid WAV audio`);
   let format = false;
   for (let at = 12; at + 8 <= wav.length;) {
     const id = wav.toString("ascii", at, at + 4), size = wav.readUInt32LE(at + 4);
     if (id === "fmt ") {
       if (size < 16 || at + 24 > wav.length || wav.readUInt16LE(at + 8) !== 1 || wav.readUInt16LE(at + 10) !== 1 || wav.readUInt32LE(at + 12) !== 24000 || wav.readUInt16LE(at + 22) !== 16)
-        throw new Error("Expected mono 24 kHz 16-bit audio from Chatterbox");
+        throw new Error(`Expected mono 24 kHz 16-bit audio from ${runtime}`);
       format = true;
     }
     if (id === "data") {
       // Samples are only meaningful once the fmt chunk has described them.
-      if (!format) throw new Error("Expected mono 24 kHz 16-bit audio from Chatterbox");
+      if (!format) throw new Error(`Expected mono 24 kHz 16-bit audio from ${runtime}`);
       // A writer that does not know the length up front leaves a placeholder
       // size behind. The response is fully buffered, so its end is the truth.
       const end = size && at + 8 + size <= wav.length ? at + 8 + size : wav.length;
       const pcm = wav.subarray(at + 8, end);
-      if (!pcm.length || pcm.length % 2) throw new Error("Chatterbox returned invalid PCM audio");
+      if (!pcm.length || pcm.length % 2) throw new Error(`${runtime} returned invalid PCM audio`);
       return pcm;
     }
     at += 8 + size + (size % 2);
   }
-  throw new Error("Chatterbox returned no audio data");
+  throw new Error(`${runtime} returned no audio data`);
 }
 export function pcmWav(pcm: Buffer): Buffer {
   if (!pcm.length || pcm.length % 2) throw new Error("Breeze returned invalid PCM audio");
@@ -140,9 +150,9 @@ export function pcmWav(pcm: Buffer): Buffer {
   header.write("data", 36); header.writeUInt32LE(pcm.length, 40);
   return Buffer.concat([header, pcm]);
 }
-const managedVoice = () => ['audio-cpp', 'chatterbox'].includes(config().runtime ?? '') && config().breezeUrl === voiceService.breezeUrl;
+const managedVoice = () => ['audio-cpp', 'chatterbox', 'kokoro'].includes(config().runtime ?? '') && config().breezeUrl === voiceService.breezeUrl;
 // The lease loads the speech model the saved runtime speaks with. Recognition loads itself on its first request.
-const managedEngine = () => config().runtime === 'chatterbox' ? 'chatterbox' : 'breeze';
+const managedEngine = () => { const runtime = config().runtime; return runtime === 'chatterbox' || runtime === 'kokoro' ? runtime : 'breeze'; };
 const leases = new VoiceLeases(()=>voiceService.modelAction('load', managedEngine()),()=>voiceService.modelAction('unload', managedEngine()));
 async function maintainManagedVoice() {
   // Also reconciles running legacy containers after portal updates, without
@@ -287,8 +297,10 @@ export function voiceRouter(): Router {
       return res.status(400).json({ error: "Speech text must contain 1–600 characters" });
     // The voice of the agent the chat is with, where it has one of its own: the
     // first agent's for a chat in a project, as its avatar is.
+    // An agent's voice is one of Kokoro's or one from the library, and is used by the runtime it belongs to.
     const own = (agentOf(getSession(req.params.id)?.workspace) ?? defaultAgent()).voice;
-    const settings = { ...config(), ...(own ? { voice: own } : {}) };
+    const saved = config();
+    const settings = { ...saved, ...(own && saved.runtime === "kokoro" && isKokoroVoice(own) ? { kokoroVoice: own } : own && !isKokoroVoice(own) ? { voice: own } : {}) };
     const controller = new AbortController();
     res.on("close", () => controller.abort());
     try {
@@ -296,7 +308,8 @@ export function voiceRouter(): Router {
       // the runtime that is about to be called should pay to carry it.
       let instruction = settings.instruction;
       let reference: { audio: Buffer; transcript: string; filename: string } | undefined;
-      if (settings.voice !== "design") {
+      // Kokoro speaks with a voice of its own and reads no library voice.
+      if (settings.runtime !== "kokoro" && settings.voice !== "design") {
         const preset = readVoice(settings.voice);
         instruction = preset.instruction;
         if (preset.audio) reference = { audio: preset.audio, transcript: preset.transcript, filename: "reference.wav" };
@@ -308,7 +321,11 @@ export function voiceRouter(): Router {
         throw new Error("Chatterbox speaks with a reference clone: choose a voice with a recording");
       let form: FormData | undefined;
       let json: Record<string, unknown> | undefined;
-      if (settings.runtime === "chatterbox") {
+      if (settings.runtime === "kokoro") {
+        // Kokoro has no streaming mode in audio.cpp either, and is fast enough that a phrase is ready
+        // soon after it is asked for. The voice names the language, so none is sent.
+        json = { model: "kokoro", input: text, voice: settings.kokoroVoice ?? DEFAULT_KOKORO_VOICE, speed: settings.speed ?? 1, response_format: "wav", options: { seed: "42" } };
+      } else if (settings.runtime === "chatterbox") {
         // Chatterbox has no streaming mode in audio.cpp: one phrase, one WAV.
         // The browser buffers each phrase before playing it either way.
         json = { model: "chatterbox", input: spokenNumbers(text, settings.language), language: settings.language,
@@ -337,13 +354,13 @@ export function voiceRouter(): Router {
         await delay(750, undefined, { signal });
         busyMs+=performance.now()-attemptStarted;
       } while (true);
-      const runtimeName = settings.runtime === "chatterbox" ? "Chatterbox" : "Breeze";
+      const runtimeName = settings.runtime === "chatterbox" ? "Chatterbox" : settings.runtime === "kokoro" ? "Kokoro" : "Breeze";
       if (!upstream.ok) throw new Error(`${runtimeName} returned HTTP ${upstream.status}`);
-      if (settings.runtime === "chatterbox") {
-        if (!/^audio\/(wav|x-wav|wave|vnd\.wave)\b/.test(upstream.headers.get("content-type") ?? "")) throw new Error("Expected WAV audio from the Chatterbox API");
+      if (settings.runtime === "chatterbox" || settings.runtime === "kokoro") {
+        if (!/^audio\/(wav|x-wav|wave|vnd\.wave)\b/.test(upstream.headers.get("content-type") ?? "")) throw new Error(`Expected WAV audio from the ${runtimeName} API`);
         const wav = Buffer.from(await upstream.arrayBuffer());
         // Validate before either branch, so a malformed WAV is never passed on.
-        const pcm = wavPcm(wav);
+        const pcm = wavPcm(wav, runtimeName);
         res.set("Server-Timing", `tts_headers;dur=${(performance.now()-speechStarted).toFixed(1)}, tts_busy;dur=${busyMs.toFixed(1)}`);
         if (req.get("accept") !== "audio/pcm") return res.set({ "Content-Type": "audio/wav", "Cache-Control": "no-store" }).send(wav);
         return res.set({ "Content-Type": "audio/pcm", "X-Sample-Rate": "24000", "X-Sample-Format": "s16le", "Cache-Control": "no-store" }).send(pcm);

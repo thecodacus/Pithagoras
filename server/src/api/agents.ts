@@ -90,7 +90,7 @@ export function agentsRouter(): Router {
     }
   });
 
-  /** `{ voice }`: "design", a voice library id, or "" for the one in the voice settings. */
+  /** `{ voice }`: "design", a voice library id, one of Kokoro's voices, or "" for the one in the voice settings. */
   router.put("/agents/:id/voice", (req, res) => {
     try {
       res.json(agentToApi(setVoice(req.params.id, req.body?.voice)));

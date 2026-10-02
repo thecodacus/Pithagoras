@@ -14,7 +14,7 @@
  * same container later, is one more entry in `serverConfig` and one more
  * `vramMiB` in the sum; `reserveMiB` below keeps room for it in the meantime.
  */
-export type TtsEngine = "breeze" | "chatterbox";
+export type TtsEngine = "breeze" | "chatterbox" | "kokoro";
 /** `none`: no speech synthesis, only recognition. */
 export type TtsChoice = TtsEngine | "none";
 export type AsrEngine = "whisper" | "qwen3-asr";
@@ -31,15 +31,18 @@ export interface VoiceChoice { tts: TtsChoice; asr: AsrEngine; asrModel: string;
  * GPU memory in MiB, with the CUDA context included. These are estimates: Breeze is
  * the 4414 MiB measured for the audio.cpp process in the voice guide, the others
  * come from the size of their Q8_0 files plus the same kind of overhead, and
- * Chatterbox with Qwen3-ASR 1.7B was seen at about 5.5 GB together.
+ * Chatterbox with Qwen3-ASR 1.7B was seen at about 5.5 GB together. Kokoro is an 82M
+ * model of 181 MiB at Q8_0, so nearly all of its figure is the CUDA context.
  *
  * `cpuSecondsPerSecond` is what the engine costs on a CPU, measured on 8 threads of a
  * desktop CPU with the model already loaded: seconds of computing for each second of
  * speech. Far above 1 is no conversation, which is why speech synthesis is a GPU matter.
+ * Kokoro is the exception, measured at about a quarter of a second, on audio.cpp v0.9.0.
  */
 export const TTS_ENGINES: Record<TtsEngine, { label: string; vramMiB: number; cpuSecondsPerSecond: number }> = {
   breeze: { label: "Breeze", vramMiB: 4600, cpuSecondsPerSecond: 3.5 },
   chatterbox: { label: "Chatterbox", vramMiB: 3000, cpuSecondsPerSecond: 7 },
+  kokoro: { label: "Kokoro", vramMiB: 1000, cpuSecondsPerSecond: 0.24 },
 };
 
 /**
@@ -168,19 +171,23 @@ export function pickGpu(gpus: readonly Gpu[], preferred?: number): Gpu | undefin
   return asked ?? [...gpus].sort((a, b) => (b.freeMiB ?? b.totalMiB ?? -1) - (a.freeMiB ?? a.totalMiB ?? -1))[0];
 }
 
-/** The combination that needs the least GPU memory of those with speech synthesis: Chatterbox, with Whisper on the CPU. */
-export const LEAN_CHOICE: VoiceChoice = { tts: "chatterbox", asr: "whisper", asrModel: "base" };
+/** The combination that needs the least GPU memory of those with speech synthesis: Kokoro, with Whisper on the CPU. */
+export const LEAN_CHOICE: VoiceChoice = { tts: "kokoro", asr: "whisper", asrModel: "base" };
 
 /**
  * The best combination that fits with room to spare right now. Breeze stays the
- * speech engine as long as it fits, since it streams; recognition then gets the
- * largest recommended model that still fits next to it. When nothing fits right
+ * speech engine as long as it fits, since it streams, then Chatterbox, which clones
+ * a voice; recognition then gets the largest recommended model that still fits
+ * next to it. Kokoro, which has only voices of its own, is suggested only for a
+ * card too small for the other two, not for one that is busy now. When nothing fits right
  * now it is the original combination if the card can hold it at all, else the
  * leanest one; without a GPU reading it is the original combination.
  */
 export function suggestChoice(gpu: Gpu | undefined, reserveMiB = 0): VoiceChoice {
   if (!gpu || gpu.totalMiB === null) return DEFAULT_CHOICE;
+  const cloning = (["breeze", "chatterbox"] as const).some((tts) => fitOn({ tts, asr: "whisper", asrModel: "base" }, gpu, reserveMiB) !== "too-large");
   for (const tts of Object.keys(TTS_ENGINES) as TtsEngine[]) {
+    if (tts === "kokoro" && cloning) continue;
     const best = ASR_MODELS.filter((o) => o.recommended && fitOn({ tts, asr: o.asr, asrModel: o.model }, gpu, reserveMiB) === "fits").at(-1);
     if (best) return { tts, asr: best.asr, asrModel: best.model };
   }
@@ -203,6 +210,7 @@ const MODELS = {
   breeze: () => ({ id: "breeze", family: "breeze_tts", path: "/voice/models/breeze-q8_0.gguf", task: "tts", mode: "streaming", session_options: { "breeze_tts.reference_cache_slots": "1" } }),
   // "clon" is audio.cpp's own name for voice cloning, not a truncated "clone".
   chatterbox: () => ({ id: "chatterbox", family: "chatterbox", path: "/voice/models/chatterbox-q8_0.gguf", task: "clon", mode: "offline", session_options: { "chatterbox.multilingual_t3": "v3", "chatterbox.conditionals_cache_slots": "2" } }),
+  kokoro: () => ({ id: "kokoro", family: "kokoro_tts", path: "/voice/models/kokoro-82m-q8_0.gguf", task: "tts", mode: "offline" }),
 };
 /** The speech model as audio.cpp loads it, in the server config and in a load request alike. */
 export const ttsModel = (engine: TtsEngine) => MODELS[engine]();
@@ -232,7 +240,7 @@ export const cpuThreads = (cores: number) => Math.min(Math.max(Math.floor(cores)
 export function endpoints(c: VoiceChoice) {
   const whisper = c.asr === "whisper";
   return {
-    runtime: c.tts === "none" ? "none" as const : c.tts === "chatterbox" ? "chatterbox" as const : "audio-cpp" as const,
+    runtime: c.tts === "none" ? "none" as const : c.tts === "breeze" ? "audio-cpp" as const : c.tts,
     // Without speech synthesis there is no address to speak to.
     breezeUrl: c.tts === "none" ? "" : speechUrl,
     whisperUrl: whisper ? whisperUrl : `http://127.0.0.1:${asrDevice(c) === "cpu" ? ASR_CPU_PORT : SPEECH_PORT}/v1/audio/transcriptions`,

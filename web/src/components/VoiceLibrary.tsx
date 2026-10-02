@@ -3,8 +3,11 @@ import { Select } from "./Select";
 import {LuPlus,LuTrash2} from 'react-icons/lu';
 import {samplesWav} from '../voice';
 import {confirmDialog} from './ConfirmDialog';
-import { t } from "../i18n";
+import { languageName, t } from "../i18n";
+import { KOKORO_VOICES } from "../../../server/src/kokoro-voices";
 export type Preset={id:string;name:string;kind:'design'|'clone';instruction:string;transcript:string};
+/** Kokoro's own voices, as a voice menu lists them: Kokoro reads the text in the voice's language. */
+export const kokoroVoiceOptions=()=>KOKORO_VOICES.map(v=>({value:v.id,label:v.name,text:v.name,hint:`${languageName(v.locale,v.language)} · ${v.female?t('female'):t('male')}`}));
 /** The voices in the library. */
 export const voicePresets=():Promise<Preset[]>=>request();
 async function request(path='',method='GET',body?:unknown){const r=await fetch('/api/voice/presets'+path,{method,headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});const data=await r.json();if(!r.ok)throw Error(data.error||t('Voice request failed'));return data;}
