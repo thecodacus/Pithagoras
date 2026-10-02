@@ -31,8 +31,8 @@ export interface VoiceChoice { tts: TtsChoice; asr: AsrEngine; asrModel: string;
  * GPU memory in MiB, with the CUDA context included. These are estimates: Breeze is
  * the 4414 MiB measured for the audio.cpp process in the voice guide, the others
  * come from the size of their Q8_0 files plus the same kind of overhead, and
- * Chatterbox with Qwen3-ASR 1.7B was seen at about 5.5 GB together. Kokoro is an 82M
- * model of 181 MiB at Q8_0, so nearly all of its figure is the CUDA context.
+ * Chatterbox with Qwen3-ASR 1.7B was seen at about 5.5 GB together. Kokoro's process was
+ * measured at 914 MiB on an RTX 3060, nearly all of it the CUDA context: the model is 181 MiB.
  *
  * `cpuSecondsPerSecond` is what the engine costs on a CPU, measured on 8 threads of a
  * desktop CPU with the model already loaded: seconds of computing for each second of
