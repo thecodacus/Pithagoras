@@ -17,7 +17,7 @@ const { addNote } = await import('../server/src/activity.ts');
 const { agentsRouter } = await import('../server/src/api/agents.ts');
 const { guardExtension } = await import('../server/src/pi/guard.ts');
 const { HEARTBEAT_ROLE, NOTE_TOOL } = await import('../server/src/pi/heartbeat-names.ts');
-const { addToolRule, getDb } = await import('../server/src/db.ts');
+const { addToolRule, createSession, getDb } = await import('../server/src/db.ts');
 test.after(() => { getDb().close(); rmSync(temp, { recursive: true, force: true }); });
 
 const at = (hhmm: string) => { const [h, m] = hhmm.split(':').map(Number); return new Date(2026, 9, 2, h, m); };
@@ -98,6 +98,14 @@ test('the routes set the heartbeat and read, mark and delete its notes', async (
     assert.deepEqual([set.body.heartbeat.minutes, set.body.heartbeat.quietStart, set.body.heartbeat.watching], [60, '22:00', true]);
     assert.equal(set.body.unread, 2);
     assert.equal((await call('PUT', '/heartbeat', { minutes: 1 })).status, 400);
+
+    // While a chat is working the model is taken: a look by hand waits, as one on its schedule does.
+    createSession({ id: 'busy-chat', title: 'busy', workspace: agent.home, executor: 'host' });
+    getDb().prepare("UPDATE sessions SET status = 'running' WHERE id = 'busy-chat'").run();
+    const refused = await call('POST', '/heartbeat/run');
+    assert.equal(refused.status, 409);
+    assert.match(refused.body.error, /using the model/);
+    getDb().prepare("UPDATE sessions SET status = 'idle' WHERE id = 'busy-chat'").run();
 
     const listed = await call('GET', '/activity');
     assert.deepEqual(listed.body.notes.map((n: any) => n.title), ['CI failing on main', 'A PR has been waiting a week']);

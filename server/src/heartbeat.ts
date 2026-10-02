@@ -146,10 +146,18 @@ class HeartbeatSupervisor {
     return this.running.has(agentId);
   }
 
+  /**
+   * Whether the model is in use: a look under way, or any chat or routine
+   * working. One look at a time, and none while anything else is using the
+   * model — asked on a schedule and by hand alike.
+   */
+  isBusy(): boolean {
+    return this.running.size > 0 || sessions.anyBusy();
+  }
+
   private async tick(): Promise<void> {
     const now = new Date();
-    // One look at a time, and none while anything else is using the model.
-    if (this.running.size || sessions.anyBusy()) return;
+    if (this.isBusy()) return;
     const due = listAgents().find((a) => heartbeatDue(a, now));
     if (due) void this.run(due, "schedule").catch(() => {});
   }

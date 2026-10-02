@@ -113,6 +113,8 @@ export function agentsRouter(): Router {
     const agent = agentOr404(req.params.id, res);
     if (!agent) return;
     if (heartbeat.isRunning(agent.id)) return res.status(409).json({ error: `${agent.name} is already looking` });
+    // As a look on its schedule waits: the model is one, and a chat or another look has it.
+    if (heartbeat.isBusy()) return res.status(409).json({ error: "A chat, a routine or another agent's look is using the model. Try again when it is done." });
     void heartbeat.run(agent, "manual").catch(() => {});
     res.json(agentToApi(getAgent(agent.id)!));
   });

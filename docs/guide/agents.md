@@ -63,6 +63,7 @@ channel routines report to, when there is one. Most looks find nothing, and say
 nothing.
 
 A look never gets in the way: it waits while any chat or routine is working,
+and **Look now** is refused until they are done,
 since a home lab has one model to share, and one agent looks at a time. Each
 agent looks in one conversation of its own, so it remembers what it already
 told you. Looks need the host executor; under the container executor nothing
