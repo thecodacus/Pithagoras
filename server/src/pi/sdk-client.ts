@@ -2,7 +2,7 @@ import { CanvasTools } from "./canvas-tools.js";
 import { showImageTool } from "./show-image-tool.js";
 import { acceptPrompt } from "./accept-prompt.js";
 import { AUDIO_MESSAGE_PREFIX, AudioRule, VoiceFirstTurn, audioMessage, spokenIn } from "./voice-first.js";
-import { BROWSER_READING_RULE, BROWSER_SCREENSHOT_RULE, PORTAL_BROWSER_RULE } from "./browser-snapshot.js";
+import { BROWSER_READING_RULE, BROWSER_SCREENSHOT_RULE } from "./browser-snapshot.js";
 import { browserTools } from "../browser/tools.js";
 import { EventEmitter } from "node:events";
 import { existsSync, readFileSync } from "node:fs";
@@ -139,8 +139,9 @@ function framing(): string[] {
   // Nor the line naming the agent's own files: which there are can change
   // under an open chat (Understory switched on takes MEMORY.md away), so it is
   // asked for each time the prompt is built — see ownFiles.
-  // The portal's own browser tools, or the rules for a Playwright MCP someone attached by hand.
-  const lines: string[] = portalBrowserOn() ? [PORTAL_BROWSER_RULE] : [BROWSER_READING_RULE, BROWSER_SCREENSHOT_RULE];
+  // The portal's own browser tools carry their rules as promptGuidelines, which pi
+  // includes only while they are active; these are for a Playwright MCP someone attached by hand.
+  const lines: string[] = portalBrowserOn() ? [] : [BROWSER_READING_RULE, BROWSER_SCREENSHOT_RULE];
   // The bracketed-ref trap that used to need a line here is handled in the
   // guard now, which normalises the argument for every session whether it
   // reads this or not. Nothing to say, so nothing spent saying it.
