@@ -1,5 +1,6 @@
 import { nanoid } from 'nanoid';
 import type { EventRow } from './db.js';
+import type { Timings } from './llama-progress.js';
 
 type Store = (session: string, type: string, payload: unknown) => EventRow;
 /** One current snapshot per message/tool, never a growing list of token events. */
@@ -14,11 +15,18 @@ export class LiveEvents {
    * a page that opens, or reconnects, mid-message gets them in the snapshot.
    */
   private subagents = new Map<string, Map<string, { text: string; thinking: string; tools: Map<string, EventRow> }>>();
+  /** What llama.cpp measured for the answer being written, until its message_end takes it. */
+  private measured = new Map<string, Timings>();
   private sequence = -Date.now() * 1000;
   constructor(private store: Store) {}
 
   private live(session: string, type: string, payload: unknown, at = new Date().toISOString()): EventRow {
     return { seq: --this.sequence, session_id: session, type, payload: JSON.stringify(payload), created_at: at };
+  }
+
+  /** llama.cpp's figures for the answer being written: see message_end. */
+  timings(session: string, timings: Timings): void {
+    this.measured.set(session, timings);
   }
 
   /** An event that is only ever live, never kept: numbered like the rest that are. */
@@ -59,6 +67,8 @@ export class LiveEvents {
 
   record(session: string, type: string, payload: any): EventRow {
     if (type === 'portal_subagent') this.subagentSettled(session, payload);
+    // A new answer: figures left from one that never ended are not its.
+    if (type === 'message_start' && payload?.message?.role === 'assistant') this.measured.delete(session);
     if (type === 'message_update') {
       let state = this.messages.get(session);
       if (!state) {
@@ -96,7 +106,15 @@ export class LiveEvents {
     }
     if (type === 'message_end' && payload?.message?.role === 'assistant') {
       const state = this.messages.get(session);
-      const row = this.store(session, type, { ...payload, ...(state && { streamId: state.streamId, ...thinkingTimes(state) }) });
+      // Kept on the message for the figures under it: llama.cpp's own where the model is served by it, and
+      // otherwise when its first token came, for how fast the rest followed.
+      const timings = this.measured.get(session);
+      this.measured.delete(session);
+      const row = this.store(session, type, {
+        ...payload,
+        ...(state && { streamId: state.streamId, ...thinkingTimes(state), firstTokenAt: Date.parse(state.at) }),
+        ...(timings && { timings }),
+      });
       this.messages.delete(session);
       return row;
     }
@@ -135,6 +153,7 @@ export class LiveEvents {
 
   clear(session: string): void {
     this.messages.delete(session);
+    this.measured.delete(session);
     this.tools.delete(session);
     this.updates.delete(session);
     this.subagents.delete(session);

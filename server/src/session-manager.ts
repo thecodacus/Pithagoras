@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { LiveEvents } from "./live-events.js";
+import type { Timings } from "./llama-progress.js";
 import { forgetChat, noteToolCall, subagentGone } from "./memory-llm.js";
 import { ModelErrors } from "./model-errors.js";
 import { EventEmitter } from "node:events";
@@ -853,6 +854,11 @@ class SessionManager extends EventEmitter {
   /** The session's model is being loaded, or has finished loading. */
   reportModelLoad(sessionId: string, load: unknown): void {
     this.record(sessionId, "portal_model", load);
+  }
+
+  /** What llama.cpp measured for the answer it just finished: kept on that answer's message_end. */
+  reportTimings(sessionId: string, timings: Timings): void {
+    this.stream.timings(sessionId, timings);
   }
 
   /**

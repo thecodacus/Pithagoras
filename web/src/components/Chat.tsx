@@ -44,6 +44,7 @@ import { CLIENT_COMMANDS, isClientCommand, isCommand } from "../client-commands"
 import { isComposing, isEnter, isEscape, opensComposer, stopsRun } from "../shortcuts";
 import { DOCKED_MIN, EDGE, KEEP, across, dockedFrameAmong, dockedSize, dropTarget, fitFrame, groupPanels, isDock, readFrame, readFrames, readPlaceSizes, readPlaces, spreadFrames, type Dock, type Frame, type Frames, type PlaceSizes, type Places, type Size } from "../panel-dock";
 import { msg, t, tp } from "../i18n";
+import { ReplyStatsLine } from "./ReplyStats";
 
 /** How many messages are drawn at first, and added each time you scroll up to the edge. */
 const PAGE = 40;
@@ -1847,6 +1848,7 @@ export function Chat({
                 {item.final && (
                   <div className="reply-actions -ml-1.5 mt-1 flex items-center gap-0.5">
                     <CopyAction text={assistantText(item)} />
+                    {item.stats && <ReplyStatsLine stats={item.stats} />}
                   </div>
                 )}
               </div>

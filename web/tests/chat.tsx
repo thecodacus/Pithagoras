@@ -48,6 +48,13 @@ if (phase === 'commands') {
   );
 }
 if (phase === 'compacting') events.push(ev('compaction_start', {}, 6));
+// A finished reply with what writing it took, as llama.cpp measured it: `?phase=stats`.
+if (phase === 'stats') events.push(
+  ev('portal_prompt', { message: 'hi' }, 6),
+  ev('message_end', { streamId: 'st', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'A greeting.' }, { type: 'text', text: 'Hi — what do you need?' }], usage: { input: 1203, output: 41, cacheRead: 11264, cacheWrite: 0 } },
+    timings: { promptTokens: 1203, cachedTokens: 11264, promptMs: 2210, promptPerSecond: 544.3, outputTokens: 41, outputMs: 1142, outputPerSecond: 35.9, draftTokens: 30, draftAccepted: 22 }, thinkingSince: now - 5000, thinkingUntil: now - 4000 }, 3),
+  ev('agent_end', {}, 2),
+);
 // Tools called with more than a path: a search with several queries, an edit with a list of changes, an MCP tool that answers in JSON; then the answer, finished.
 if (phase === 'args') events.push(
   ev('turn_start', {}, 20),
@@ -212,7 +219,7 @@ if (phase === 'git') {
   }) as typeof fetch;
 }
 
-const session: Session = { id: 'preview', title: 'Fix the build', workspace: '/workspaces/pithagoras', executor: 'host', status: phase === 'interrupted' ? 'interrupted' : phase === 'args' ? 'idle' : 'running', created_at: '', updated_at: '', last_error: null, pinned: false, provider: 'llama-server', model: 'Qwen3.6 35B', thinking_level: 'medium' } as Session;
+const session: Session = { id: 'preview', title: 'Fix the build', workspace: '/workspaces/pithagoras', executor: 'host', status: phase === 'interrupted' ? 'interrupted' : phase === 'args' || phase === 'stats' ? 'idle' : 'running', created_at: '', updated_at: '', last_error: null, pinned: false, provider: 'llama-server', model: 'Qwen3.6 35B', thinking_level: 'medium' } as Session;
 const noop = async () => {};
 // An extension moves its status twenty times a second: how often the chat asks for /background is counted.
 if (phase === 'nudge') {

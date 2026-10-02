@@ -29,6 +29,58 @@ export function shownPicture(payload: any): ShownPicture | undefined {
   return { path: details.path, ...(typeof details.title === "string" && details.title ? { title: details.title } : {}) };
 }
 
+/**
+ * What answering took, for the line under a reply: the prompt it read and the
+ * tokens it wrote, from the model's usage, and how fast, where that is known.
+ * llama.cpp measures both speeds itself; for another provider the answer's is
+ * worked out from when its first and last tokens came, and prefill is unknown.
+ */
+export interface ReplyStats {
+  /** The whole prompt, cached part included. */
+  input?: number;
+  /** Of `input`, what came from a cache rather than being read again. */
+  cached?: number;
+  output?: number;
+  /** Tokens written per second. */
+  outputPerSecond?: number;
+  outputMs?: number;
+  /** Prompt tokens read per second (prefill), the cached ones not counted. */
+  promptPerSecond?: number;
+  promptMs?: number;
+  /** Speculative decoding: tokens drafted and how many were kept. */
+  draft?: { tokens: number; accepted: number };
+}
+
+const count = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined);
+
+/** The figures an assistant message_end carries: see ReplyStats. Undefined when it carries none. */
+export function replyStats(payload: any, endedAt?: number): ReplyStats | undefined {
+  const usage = payload?.message?.usage;
+  const timings = payload?.timings;
+  const stats: ReplyStats = {};
+  const prompt = (count(usage?.input) ?? 0) + (count(usage?.cacheRead) ?? 0) + (count(usage?.cacheWrite) ?? 0);
+  if (prompt) stats.input = prompt;
+  if (count(usage?.cacheRead)) stats.cached = usage.cacheRead;
+  if (count(usage?.output)) stats.output = usage.output;
+  if (timings && count(timings.outputPerSecond)) {
+    stats.outputPerSecond = timings.outputPerSecond;
+    stats.outputMs = count(timings.outputMs);
+    // Prefill is only a speed when something was read: an answer from a prompt wholly cached read nothing.
+    if (count(timings.promptTokens) && count(timings.promptPerSecond)) {
+      stats.promptPerSecond = timings.promptPerSecond;
+      stats.promptMs = count(timings.promptMs);
+    }
+    if (count(timings.draftTokens)) stats.draft = { tokens: timings.draftTokens, accepted: count(timings.draftAccepted) ?? 0 };
+    // llama.cpp's own counts where pi's usage has none.
+    stats.input ??= (count(timings.promptTokens) ?? 0) + (count(timings.cachedTokens) ?? 0) || undefined;
+    stats.output ??= count(timings.outputTokens);
+  } else if (stats.output && typeof payload?.firstTokenAt === "number" && endedAt !== undefined && endedAt > payload.firstTokenAt) {
+    stats.outputMs = endedAt - payload.firstTokenAt;
+    stats.outputPerSecond = stats.output / (stats.outputMs / 1000);
+  }
+  return Object.keys(stats).length ? stats : undefined;
+}
+
 export type Item =
   /**
    * `queued`: sent into a run, and not taken in by pi yet — after the current
@@ -49,7 +101,8 @@ export type Item =
     }
   /** `thinkingSince`/`thinkingUntil`: when the reasoning started and last grew, for "Thought for 12s". */
   /** `final`: the stretch that ends an answer, where its Copy goes. */
-  | { kind: "assistant"; id: string; text: string; thinking: string; done: boolean; audio?: boolean; final?: true; thinkingSince?: number; thinkingUntil?: number }
+  /** `stats`: what writing it took, from its message_end; see ReplyStats. */
+  | { kind: "assistant"; id: string; text: string; thinking: string; done: boolean; audio?: boolean; final?: true; thinkingSince?: number; thinkingUntil?: number; stats?: ReplyStats }
   /**
    * `args`: what the tool was called with, whole. `output`: the text it gave
    * back — as it streams, then as it ended — kept to the last TOOL_OUTPUT_MAX.
@@ -321,6 +374,8 @@ export function buildTranscript(events: PortalEvent[], options: { ended?: boolea
           }
           current.thinking = thinking;
           if (ev.type === "message_end") {
+            const stats = replyStats(p, ev.at);
+            if (stats) current.stats = stats;
             const calls = message.content.some((c: any) => c?.type === "toolCall");
             if (calls || message.stopReason === "error") answerEnd = null;
             else if (text) answerEnd = current;

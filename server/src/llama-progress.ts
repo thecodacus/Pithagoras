@@ -31,6 +31,26 @@ export interface Prefill {
 type OnProgress = (sessionId: string, prefill: Prefill) => void;
 
 /**
+ * What llama-server measured for one answer, from the `timings` on the last
+ * chunk of its stream: how many prompt tokens it processed and how fast, how
+ * many it took from the cache, how many it wrote and how fast. `draft*` only
+ * with speculative decoding.
+ */
+export interface Timings {
+  promptTokens: number;
+  cachedTokens: number;
+  promptMs: number;
+  promptPerSecond: number;
+  outputTokens: number;
+  outputMs: number;
+  outputPerSecond: number;
+  draftTokens?: number;
+  draftAccepted?: number;
+}
+
+type OnTimings = (sessionId: string, timings: Timings) => void;
+
+/**
  * Whether a session's model is being loaded before it can answer.
  *
  * Behind llama-server's router or llama-swap, the first request for a model
@@ -52,6 +72,7 @@ let server: http.Server | undefined;
 let port = 0;
 let notify: OnProgress = () => {};
 let notifyModel: OnModel = () => {};
+let notifyTimings: OnTimings = () => {};
 
 const PREFIX = "/s/";
 const diskCache = new LlamaSessionCache();
@@ -63,9 +84,11 @@ function readProgress(text: string, sessionId: string): void {
     if (!line.startsWith("data:")) continue;
     const body = line.slice(5).trim();
     if (!body || body === "[DONE]") continue;
-    if (!body.includes("prompt_progress")) continue;
+    if (!body.includes("prompt_progress") && !body.includes("timings")) continue;
     try {
-      const chunk = JSON.parse(body) as { prompt_progress?: Record<string, number> };
+      const chunk = JSON.parse(body) as { prompt_progress?: Record<string, number>; timings?: Record<string, number> };
+      const timings = readTimings(chunk.timings);
+      if (timings) notifyTimings(sessionId, timings);
       const p = chunk.prompt_progress;
       if (!p || typeof p.total !== "number") continue;
       notify(sessionId, {
@@ -79,6 +102,22 @@ function readProgress(text: string, sessionId: string): void {
       // running total, so nothing is lost by skipping it.
     }
   }
+}
+
+/** llama-server's `timings`, when they are there and say how fast the answer was written. */
+export function readTimings(t: Record<string, number> | undefined): Timings | undefined {
+  if (!t || typeof t.predicted_n !== "number" || typeof t.predicted_per_second !== "number") return undefined;
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  return {
+    promptTokens: num(t.prompt_n),
+    cachedTokens: num(t.cache_n),
+    promptMs: num(t.prompt_ms),
+    promptPerSecond: num(t.prompt_per_second),
+    outputTokens: num(t.predicted_n),
+    outputMs: num(t.predicted_ms),
+    outputPerSecond: num(t.predicted_per_second),
+    ...(typeof t.draft_n === "number" ? { draftTokens: t.draft_n, draftAccepted: num(t.draft_n_accepted) } : {}),
+  };
 }
 
 /** Add `return_progress` to a streaming completion, leaving anything else alone. */
@@ -276,9 +315,10 @@ function handle(req: http.IncomingMessage, res: http.ServerResponse): void {
 }
 
 /** Loopback only: this exists for the pi process in front of it, nobody else. */
-export function startLlamaProxy(onProgress: OnProgress, onModel?: OnModel): void {
+export function startLlamaProxy(onProgress: OnProgress, onModel?: OnModel, onTimings?: OnTimings): void {
   notify = onProgress;
   if (onModel) notifyModel = onModel;
+  if (onTimings) notifyTimings = onTimings;
   if (server) return;
   server = http.createServer(handle);
   server.listen(0, "127.0.0.1", () => {

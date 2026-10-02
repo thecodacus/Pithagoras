@@ -278,3 +278,16 @@ test('the composer stops following the pointer when the drag is lost without a l
   expect((await box.boundingBox())!.height).toBeCloseTo(height, 0);
   await page.mouse.up();
 });
+
+test('a finished reply says how fast it was written and read, and the tokens in and out, beside its Copy', async ({ page }) => {
+  await page.goto('/tests/chat.html?phase=stats');
+  const line = page.getByText('35.9 t/s · prefill 544 t/s · 12,467 in · 41 out');
+  await expect(line).toBeVisible();
+  const details = await line.getAttribute('title');
+  expect(details).toContain('Prompt: 12,467 tokens, read in 2.21 s');
+  expect(details).toContain('11,264 of them from the cache');
+  expect(details).toContain('Answer: 41 tokens, written in 1.14 s');
+  expect(details).toContain('Draft: 22 of 30 tokens kept');
+  await line.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: '/tmp/pithagoras-reply-stats.png', clip: await page.locator('.reply-actions').last().evaluate((el) => { const r = el.parentElement!.getBoundingClientRect(); return { x: r.x - 8, y: r.y - 8, width: Math.min(r.width + 16, 900), height: r.height + 16 }; }) });
+});

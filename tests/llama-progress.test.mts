@@ -116,3 +116,16 @@ test('llama-swap: a model up is loaded, one down is not, and an alias is not tak
   assert.equal(await modelLoaded(origin,'fast'),undefined,'an alias: what it stands for is not said');
  }finally{upstream.closeAllConnections();upstream.close();}
 });
+test('llama-server\'s timings on the last chunk are passed on as they are, and the stream is untouched',async()=>{
+ const frames='data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}],"timings":{"cache_n":40,"prompt_n":15,"prompt_ms":250.5,"prompt_per_second":59.9,"predicted_n":20,"predicted_ms":556.9,"predicted_per_second":35.9,"draft_n":19,"draft_n_accepted":11}}\n\ndata: [DONE]\n\n';
+ const upstream=http.createServer((req,res)=>{req.resume();req.on('end',()=>{res.writeHead(200,{'Content-Type':'text/event-stream'});res.end(frames);});});
+ upstream.listen(0,'127.0.0.1');await once(upstream,'listening');
+ const timings:any[]=[];startLlamaProxy(()=>{},undefined,(id,t)=>timings.push({id,...t}));
+ await new Promise(resolve=>setTimeout(resolve,20));
+ const origin=`http://127.0.0.1:${(upstream.address() as any).port}`;
+ try{
+  const base=proxyBaseUrl('test-timings',origin)!;
+  assert.equal(await (await fetch(base+'/v1/chat/completions',{method:'POST',body:JSON.stringify({stream:true,model:'m'})})).text(),frames);
+  assert.deepEqual(timings,[{id:'test-timings',promptTokens:15,cachedTokens:40,promptMs:250.5,promptPerSecond:59.9,outputTokens:20,outputMs:556.9,outputPerSecond:35.9,draftTokens:19,draftAccepted:11}]);
+ }finally{forgetSession('test-timings');upstream.closeAllConnections();upstream.close();}
+});

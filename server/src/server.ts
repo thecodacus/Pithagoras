@@ -1635,6 +1635,7 @@ watchBrowserFrames();
 startLlamaProxy(
   (sessionId, prefill) => sessions.reportPrefill(sessionId, prefill),
   (sessionId, load) => sessions.reportModelLoad(sessionId, load),
+  (sessionId, timings) => sessions.reportTimings(sessionId, timings),
 );
 sessions.recoverOrphans();
 getDb().prepare("UPDATE canvases SET active_call = NULL, status = 'interrupted', agent_read_revision = revision WHERE active_call IS NOT NULL").run();
