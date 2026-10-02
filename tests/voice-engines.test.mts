@@ -198,6 +198,9 @@ test('Kokoro can be put on the CPU: it then shares the CPU process with recognit
   assert.equal(serverConfig(cpu), undefined);
   const config = cpuServerConfig(cpu, 8)!;
   assert.deepEqual([config.port, config.backend, config.threads, config.max_loaded_models], [CPU_PORT, 'cpu', 8, 2]);
+  // The portal loads and unloads speech as voice sessions come and go: audio.cpp refuses that (403) without model management.
+  assert.equal(config.ui_management, true);
+  assert.equal('ui_management' in cpuServerConfig({ tts: 'none', asr: 'qwen3-asr', asrModel: '0.6b' })!, false, 'recognition alone is never loaded by the portal');
   assert.deepEqual(config.models.map(m => m.id), ['kokoro', 'qwen3-asr']);
   assert.deepEqual(cpuServerConfig({ tts: 'kokoro', ttsDevice: 'cpu', asr: 'whisper', asrModel: 'base' })!.models.map(m => m.id), ['kokoro']);
   assert.deepEqual(endpoints(cpu), { runtime: 'kokoro', breezeUrl: 'http://127.0.0.1:7863/v1/audio/speech', whisperUrl: 'http://127.0.0.1:7863/v1/audio/transcriptions', sttModel: 'qwen3-asr' });
@@ -367,6 +370,8 @@ test('on a host that was found to have no GPU, recognition alone is chosen, spee
   assert.throws(() => decide({ tts: 'kokoro', asr: 'whisper', asrModel: 'base' }, [], { noGpu: true, host }), (e: Error) => e.message === NO_GPU_FOR_SPEECH, 'Kokoro on the GPU needs one too');
   assert.match(NO_GPU_FOR_SPEECH, /put Kokoro on the CPU/);
   assert.throws(() => decide({ tts: 'breeze', asr: 'qwen3-asr', asrModel: '0.6b', asrDevice: 'cpu' }, [], { noGpu: true, host }), /This choice needs a GPU/);
+  // On a GPU host, everything put on the CPU asks for no GPU, and says so.
+  assert.equal(decide({ tts: 'kokoro', ttsDevice: 'cpu', asr: 'whisper', asrModel: 'base' }, [card(12288)], { host }).summary, 'Kokoro speech on the CPU with Whisper base needs no GPU, and about 1.7 GiB of memory on the CPU, which fits.');
   // Kokoro on a host with few threads is said to be slow, and still installs.
   assert.match(decide({ tts: 'kokoro', ttsDevice: 'cpu', asr: 'whisper', asrModel: 'base' }, [], { noGpu: true, host: machine(8192, 8000, 1) }).summary, /which fits, and on this host's 1 CPU threads speech may take longer to make than to say/);
   // A card the host lists that Docker cannot hand on is not "none was found": it is the toolkit that is asked for, in the log as well.

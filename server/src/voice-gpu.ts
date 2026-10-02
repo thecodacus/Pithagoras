@@ -180,7 +180,7 @@ export function decide(requested: VoiceChoice | undefined, gpus: readonly Gpu[],
       : `Even the smallest voice setup (${choiceLabel(LEAN_CHOICE)}) needs about ${gib(vramNeeded(LEAN_CHOICE))} of GPU memory${kept}, but ${card} has less.`);
   }
   const ram = ramVerdict(choice, host, !usesGpu(choice));
-  if (!usesGpu(choice)) return { choice, gpu, summary: `${label} needs ${ram} and no GPU.` };
+  if (!usesGpu(choice)) return { choice, gpu, summary: `${label} needs no GPU, and ${ram}.` };
   if (!gpu) return { choice, gpu, summary: `No GPU could be read here; installing ${label} unchecked.` };
   const verdict = fit === "tight" ? `needs about ${need}; the card is big enough, but other programs use part of it now`
     : fit === "unknown" ? `needs about ${need}; its memory could not be read`

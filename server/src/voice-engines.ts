@@ -277,9 +277,11 @@ export function serverConfig(c: VoiceChoice) {
  * None where neither is.
  */
 export function cpuServerConfig(c: VoiceChoice, threads = 4) {
-  const models = [...(c.tts !== "none" && ttsDevice(c) === "cpu" ? [ttsModel(c.tts)] : []), ...(c.asr === "qwen3-asr" && asrDevice(c) === "cpu" ? [asrModel(c.asrModel)] : [])];
+  const speech = c.tts !== "none" && ttsDevice(c) === "cpu";
+  const models = [...(speech ? [ttsModel(c.tts as TtsEngine)] : []), ...(c.asr === "qwen3-asr" && asrDevice(c) === "cpu" ? [asrModel(c.asrModel)] : [])];
   if (!models.length) return undefined;
-  return { host: "127.0.0.1", port: CPU_PORT, backend: "cpu", device: 0, threads, lazy_load: true, idle_unload_ms: 90000, max_loaded_models: models.length, models };
+  // Speech is loaded and unloaded by the portal as voice sessions come and go, which audio.cpp allows only with model management on.
+  return { host: "127.0.0.1", port: CPU_PORT, backend: "cpu", device: 0, threads, lazy_load: true, idle_unload_ms: 90000, ...(speech ? { ui_management: true } : {}), max_loaded_models: models.length, models };
 }
 /** Threads for what runs on the CPU: all the host has, up to the ones the speeds above were measured on, and not fewer than two. */
 export const cpuThreads = (cores: number) => Math.min(Math.max(Math.floor(cores) || 1, 2), MEASURED_THREADS);
