@@ -1465,6 +1465,7 @@ const de: Locale = {
     "Numbers stay as digits in this language, which Chatterbox reads unreliably.": "Zahlen bleiben in dieser Sprache Ziffern, die Chatterbox unzuverlässig vorliest.",
     "Choose a voice with a recording above: Chatterbox cannot speak with a designed voice.": "Wähle oben eine Stimme mit Aufnahme: Chatterbox kann nicht mit einer gestalteten Stimme sprechen.",
     "Reply without thinking first on": "Ohne vorheriges Nachdenken antworten bei",
+    "Reset to the default list": "Auf die Standardliste zurücksetzen",
     "Providers, by the name the model menu shows, whose first answer to a spoken message skips thinking so it starts speaking sooner. Separate them with commas. It works through the llama.cpp chat template, so only llama.cpp servers and gateways in front of them, such as llama-swap, follow it. Empty keeps thinking on everywhere.": "Anbieter, mit dem Namen aus dem Modellmenü, deren erste Antwort auf eine gesprochene Nachricht das Nachdenken überspringt, damit sie früher zu sprechen beginnt. Trenne sie mit Kommas. Das geht über die Chat-Vorlage von llama.cpp, daher folgen ihm nur llama.cpp-Server und Gateways davor wie llama-swap. Leer lässt das Nachdenken überall an.",
     "Speaking instructions": "Sprechanweisungen",
     "What the assistant is told about how to reply in voice mode": "Was dem Assistenten darüber gesagt wird, wie er im Sprachmodus antwortet",

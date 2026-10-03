@@ -36,8 +36,12 @@ function UninstallQuestion({ removeData }: { removeData: { current: boolean } })
 
 export function VoiceAddon({ onError }: { onError: (message: string) => void }) {
   const [config, setConfig] = useState<VoiceConfig | null>(null);
+  // The providers as typed, commas and all, while they are edited; the list itself is in the config.
+  const [providersText, setProvidersText] = useState<string | null>(null);
+  // Settings from the server replace what was typed, which would otherwise show a list other than the one saved.
+  const fromServer = (value: VoiceConfig) => { setConfig(value); setProvidersText(null); };
   const [install, setInstall] = useState<VoiceInstallStatus | null>(null);
-  useEffect(()=>{if(install?.state==='running')void api.voice().then(value=>{setConfig(value);window.dispatchEvent(new Event('voice-config-changed'));}).catch(e=>onError(e.message));},[install?.state]);
+  useEffect(()=>{if(install?.state==='running')void api.voice().then(value=>{fromServer(value);window.dispatchEvent(new Event('voice-config-changed'));}).catch(e=>onError(e.message));},[install?.state]);
   const [actionBusy, setActionBusy] = useState(false);
   useEffect(() => {
     let disposed=false, timer: ReturnType<typeof setTimeout>;
@@ -80,8 +84,6 @@ export function VoiceAddon({ onError }: { onError: (message: string) => void }) 
   const [saved, setSaved] = useState(false);
   // A saved voice's description is stored on its own; this saves the edited ones along with the settings.
   const pendingDescriptions = useRef<(() => Promise<void>) | null>(null);
-  // The providers as typed, commas and all, while they are edited; the list itself is in the config.
-  const [providersText, setProvidersText] = useState<string | null>(null);
   useEffect(() => { api.voice().then(setConfig).catch(e => onError(e.message)); }, []);
   if (!config) return null;
   const update = (patch: Partial<VoiceConfig>) => { setConfig({ ...config, ...patch }); setSaved(false); };
@@ -130,7 +132,7 @@ export function VoiceAddon({ onError }: { onError: (message: string) => void }) 
       </label>
       <p className="text-xs text-fg-faint">{t("Providers, by the name the model menu shows, whose first answer to a spoken message skips thinking so it starts speaking sooner. Separate them with commas. It works through the llama.cpp chat template, so only llama.cpp servers and gateways in front of them, such as llama-swap, follow it. Empty keeps thinking on everywhere.")}</p>
       <button type="button" className={btnCls} disabled={(config.skipThinkingProviders ?? []).join(",") === (config.defaultSkipThinkingProviders ?? []).join(",")}
-        onClick={() => { setProvidersText(null); update({ skipThinkingProviders: config.defaultSkipThinkingProviders }); }}>{t("Reset to default")}</button>
+        onClick={() => { setProvidersText(null); update({ skipThinkingProviders: config.defaultSkipThinkingProviders }); }}>{t("Reset to the default list")}</button>
     </div>}
     </section>
     {!listening && <details className="rounded-xl border border-line p-4">
@@ -170,7 +172,7 @@ export function VoiceAddon({ onError }: { onError: (message: string) => void }) 
         {install?.available && !rebuild && <button disabled={actionBusy || install.busy || ['starting','running'].includes(install.state)} className="rounded-lg bg-accent/12 px-3 py-1.5 text-xs text-accent disabled:opacity-40" onClick={()=>manage(install.state==='absent'?'install':'start',install.state==='absent'?picked??undefined:undefined)}>{install.state==='absent'?t("Install voice"):install.state==='failed'?t("Retry setup"):t("Start voice")}</button>}
         {install?.available && ['starting','running'].includes(install.state) && <button disabled={actionBusy} className="rounded-lg border border-line px-3 py-1.5 text-xs" onClick={()=>manage('stop')}>{t("Stop · release VRAM")}</button>}
         {install?.available && (install.state!=='absent' || install.connected) && <button disabled={actionBusy || install.busy} className="rounded-lg border border-line px-3 py-1.5 text-xs text-fg-muted transition hover:bg-danger/10 hover:text-danger disabled:opacity-40" onClick={()=>void uninstall()}>{t("Uninstall")}</button>}
-        {install?.state==='running' && <button disabled={busy} className="rounded-lg bg-accent/12 px-3 py-1.5 text-xs text-accent" onClick={async()=>{setBusy(true);try{setConfig(await api.connectVoice());window.dispatchEvent(new Event('voice-config-changed'));}catch(e){onError((e as Error).message);}finally{setBusy(false);}}}>{t("Use installed voice")}</button>}
+        {install?.state==='running' && <button disabled={busy} className="rounded-lg bg-accent/12 px-3 py-1.5 text-xs text-accent" onClick={async()=>{setBusy(true);try{fromServer(await api.connectVoice());window.dispatchEvent(new Event('voice-config-changed'));}catch(e){onError((e as Error).message);}finally{setBusy(false);}}}>{t("Use installed voice")}</button>}
       </div>
       {install?.error && <p role="alert" className="text-xs text-red-400">{install.error}</p>}
       {install?.progress && <details open={install.state==='starting'||install.state==='failed'||install.busy}><summary className="text-xs cursor-pointer text-fg-muted">{t("Setup log")}</summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all text-[10px] text-fg-faint" aria-label={t("Voice setup log")}>{install.progress}</pre></details>}
@@ -191,7 +193,7 @@ export function VoiceAddon({ onError }: { onError: (message: string) => void }) 
     </details>
     <div className="sticky -bottom-4 z-10 -mx-5 !-mb-4 flex justify-end border-t border-line bg-raised px-5 pt-3 pb-7">
     <button disabled={busy} className="rounded-lg bg-accent px-4 py-2 text-xs font-medium text-black disabled:opacity-40" onClick={async () => {
-      setBusy(true); try { await pendingDescriptions.current?.(); setConfig(await api.setVoice(toSave())); setSaved(true); window.dispatchEvent(new Event('voice-config-changed')); } catch (e) { onError((e as Error).message); } finally { setBusy(false); }
+      setBusy(true); try { await pendingDescriptions.current?.(); fromServer(await api.setVoice(toSave())); setSaved(true); window.dispatchEvent(new Event('voice-config-changed')); } catch (e) { onError((e as Error).message); } finally { setBusy(false); }
     }}>{busy ? t("Saving…") : saved ? t("Saved") : t("Save voice settings")}</button>
     </div>
   </div>;

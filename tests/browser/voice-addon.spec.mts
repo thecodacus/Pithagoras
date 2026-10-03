@@ -719,3 +719,38 @@ test('engine choice: a card that Docker cannot use is named, with what to instal
  await expect(page.getByRole('combobox',{name:'Speech synthesis engine'})).toContainText('Kokoro');
  await expect(page.getByRole('combobox',{name:'Speech synthesis runs on'})).toContainText('CPU');
 });
+
+test('the providers that reply without thinking first: the list is typed with commas, saved as the server keeps it, and reset to the default one',async({page})=>{
+ const builtIn=['llama.cpp','llama-server','llama-swap'];
+ let config:any={enabled:true,whisperUrl:'http://localhost:8188/inference',breezeUrl:'http://localhost:7862/v1/audio/speech',instruction:'Clear speech',voice:'design',runtime:'audio-cpp'};
+ const puts:any[]=[];
+ await page.route('**/api/voice/presets',r=>r.fulfill({json:[]}));
+ await page.route('**/api/voice/install',r=>r.fulfill({json:{available:true,state:'running',busy:false}}));
+ // As the server answers: the list in use, the default one to go back to, and a list saved each name once.
+ const shown=()=>({...config,skipThinkingProviders:config.skipThinkingProviders??builtIn,defaultSkipThinkingProviders:builtIn});
+ await page.route('**/api/voice',async r=>{
+  if(r.request().method()==='PUT'){const body=r.request().postDataJSON();puts.push(body);const names=[...new Set<string>(body.skipThinkingProviders)];config={...body,skipThinkingProviders:names.join()===builtIn.join()?undefined:names};}
+  return r.fulfill({json:shown()});
+ });
+ await page.goto('/tests/voice-addon.html');
+ const field=page.getByRole('textbox',{name:'Reply without thinking first on'});
+ const reset=page.getByRole('button',{name:'Reset to the default list'});
+ await expect(field).toHaveValue('llama.cpp, llama-server, llama-swap');
+ await expect(reset).toBeDisabled();
+ // Typed as it is, commas and all, while it is written.
+ await field.fill('llama-swap, my-gateway, llama-swap, ');
+ await expect(field).toHaveValue('llama-swap, my-gateway, llama-swap, ');
+ await expect(reset).toBeEnabled();
+ const save=page.getByRole('button',{name:'Save voice settings'}),saved=page.getByRole('button',{name:'Saved',exact:true});
+ await save.click();
+ await expect(saved).toBeVisible();
+ expect(puts.at(-1).skipThinkingProviders).toEqual(['llama-swap','my-gateway','llama-swap']);
+ // Once saved, the list the server kept, not the text that was typed.
+ await expect(field).toHaveValue('llama-swap, my-gateway');
+ await reset.click();
+ await expect(field).toHaveValue('llama.cpp, llama-server, llama-swap');
+ await save.click();
+ await expect(saved).toBeVisible();
+ expect(puts.at(-1).skipThinkingProviders).toEqual(builtIn);
+ expect(config.skipThinkingProviders).toBeUndefined();
+});
