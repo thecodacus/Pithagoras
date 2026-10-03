@@ -82,6 +82,17 @@ test('comparison instance preserves model thinking on the first voice request', 
  }
 });
 
+test('every way a llama.cpp server shows up skips thinking on the first call, llama-swap included', () => {
+ for (const provider of ['llama.cpp', 'llama-server=http://127.0.0.1:8080', 'llama-swap']) {
+  const { turn, handlers } = setup(); turn.arm();
+  const payload = { messages: [], chat_template_kwargs: {} };
+  assert.equal(handlers.get('before_provider_request')!({ payload }, { model: { provider } })?.chat_template_kwargs.enable_thinking, false, provider);
+ }
+ // A provider that is not llama.cpp has no chat template to switch it off in.
+ const { turn, handlers } = setup(); turn.arm();
+ assert.equal(handlers.get('before_provider_request')!({ payload: { messages: [] } }, { model: { provider: 'anthropic' } }), undefined);
+});
+
 test('unoptimized voice baseline omits voice instructions and the audio marker', () => {
  const previous = process.env.VOICE_RESPONSE_INSTRUCTIONS;
  try {

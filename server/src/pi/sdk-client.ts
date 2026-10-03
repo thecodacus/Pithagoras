@@ -6,6 +6,7 @@ import { EDIT_IMAGE_SOURCE, EDIT_IMAGE_TOOL, GENERATE_IMAGE_SOURCE, GENERATE_IMA
 import { GENERATED_PICTURE_MARK } from "../generated-picture.js";
 import { acceptPrompt } from "./accept-prompt.js";
 import { AUDIO_MESSAGE_PREFIX, AudioRule, VoiceFirstTurn, audioMessage, spokenIn } from "./voice-first.js";
+import { isLlama } from "./llama-provider.js";
 import { crossModelThinkingExtension } from "./cross-model-thinking.js";
 import { BROWSER_READING_RULE, BROWSER_SCREENSHOT_RULE } from "./browser-snapshot.js";
 import { browserTools } from "../browser/tools.js";
@@ -223,19 +224,6 @@ function viaProgressProxy<T extends { provider?: string; baseUrl?: string }>(
   if (!rerouted) return model;
   console.log(`[portal] prefill progress for ${sessionId}: ${model.baseUrl} -> ${rerouted}`);
   return { ...model, baseUrl: rerouted };
-}
-
-/**
- * The ways a llama.cpp server shows up.
- *
- * pi has a built-in provider called `llama.cpp`, and the `pi-llama-cpp` package
- * registers one per server as `llama-server=<url>`. Behind a llama-swap gateway
- * neither fits — pi-llama-cpp probes `/props?model=<id>` for every model, which
- * llama-swap answers by loading it — so the gateway is a plain provider in
- * models.json named `llama-swap`. It is still llama-server underneath.
- */
-function isLlama(provider: string | undefined): boolean {
-  return provider === "llama.cpp" || provider === "llama-swap" || (provider?.startsWith("llama-server") ?? false);
 }
 
 /**
