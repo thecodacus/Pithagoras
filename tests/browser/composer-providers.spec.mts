@@ -92,3 +92,19 @@ test('a model list cached within its expiry is used as it is', async ({ page }) 
   await page.waitForTimeout(300);
   expect(fetched).toBe(0);
 });
+
+test("a model picked in the menu is asked for with its own provider, not the one the chat was on", async ({ page }) => {
+  const asked: unknown[] = [];
+  // The chat is on a provider since renamed: llama-server, whose models are now llama-swap's.
+  await page.route('**/api/sessions/preview/models', (route) => route.fulfill({ json: catalogue(['strata-1gpu']) }));
+  await page.route('**/api/sessions/preview/config', (route) => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    asked.push(route.request().postDataJSON());
+    return route.fulfill({ json: { ok: true, applied: ['model'], state: catalogue([]).state } });
+  });
+  await page.goto('/tests/chat.html?phase=model');
+  await page.getByTitle('Qwen3.6 35B', { exact: true }).click();
+  await page.getByRole('button', { name: 'More models' }).click();
+  await page.getByTitle('strata-1gpu', { exact: true }).click();
+  await expect.poll(() => asked).toEqual([{ provider: 'llama-swap', modelId: 'strata-1gpu' }]);
+});

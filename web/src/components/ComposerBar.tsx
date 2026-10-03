@@ -370,11 +370,14 @@ export function ComposerBar({
     return (q ? models.filter((m) => (m.id + m.name).toLowerCase().includes(q)) : models).slice(0, 200);
   }, [models, filter]);
 
-  const applyModel = async (id: string) => {
+  // With its provider: without one the server takes the chat's, which names
+  // another provider's model, or none, once a chat moves between providers or
+  // the one it was on is renamed.
+  const applyModel = async (m: PiModel) => {
     setBusy(true);
     try {
-      await api.setConfig(sessionId, { modelId: id });
-      setRecents(pushRecent(id));
+      await api.setConfig(sessionId, { provider: m.provider, modelId: m.id });
+      setRecents(pushRecent(m.id));
       await load();
       setOpen(null);
       setShowAll(false);
@@ -548,7 +551,7 @@ export function ComposerBar({
                 <button
                   key={m.id}
                   type="button"
-                  onClick={() => applyModel(m.id)}
+                  onClick={() => applyModel(m)}
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-fg hover:bg-raised"
                   title={m.id}
                 >
@@ -582,7 +585,7 @@ export function ComposerBar({
                   <button
                     key={m.id}
                     type="button"
-                    onClick={() => applyModel(m.id)}
+                    onClick={() => applyModel(m)}
                     className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-fg-muted hover:bg-raised"
                     title={m.id}
                   >
