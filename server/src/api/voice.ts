@@ -4,7 +4,7 @@ import { INPUT_LANGUAGES, CHATTERBOX_LANGUAGES } from '../voice-languages.js';
 import { DEFAULT_CHOICE, cpuSpeechUrl, endpoints, isManagedUrl, parseChoice, type VoiceChoice } from '../voice-engines.js';
 import { DEFAULT_KOKORO_VOICE, KOKORO_SPEEDS, isKokoroVoice } from '../kokoro-voices.js';
 import { VoiceLeases } from '../extensions/voice-leases.js';
-import { DEFAULT_VOICE_INSTRUCTIONS, voiceInstructions, voiceRulesOn } from '../pi/voice-first.js';
+import { DEFAULT_SKIP_THINKING_PROVIDERS, DEFAULT_VOICE_INSTRUCTIONS, voiceInstructions, voiceRulesOn } from '../pi/voice-first.js';
 import * as voiceService from '../extensions/voice-service.js';
 import { setTimeout as delay } from "node:timers/promises";
 import { once } from "node:events";
@@ -38,6 +38,8 @@ export interface VoiceConfig {
   speed?: number;
   // How the agent is told to speak in voice mode. Empty means the built-in text.
   responseInstructions?: string;
+  // The providers whose first call of a spoken turn goes without thinking. Absent means DEFAULT_SKIP_THINKING_PROVIDERS.
+  skipThinkingProviders?: string[];
 }
 /** Long enough for the built-in text several times over; every voice turn carries it. */
 export const MAX_RESPONSE_INSTRUCTIONS = 8000;
@@ -88,6 +90,7 @@ export function validateConfig(value: any): VoiceConfig {
   const responseInstructions = value.responseInstructions ?? "";
   if (typeof responseInstructions !== "string" || responseInstructions.length > MAX_RESPONSE_INSTRUCTIONS)
     throw new Error(`Speaking instructions may be at most ${MAX_RESPONSE_INSTRUCTIONS} characters`);
+  const skipThinkingProviders = skipThinking(value.skipThinkingProviders);
   if (runtime === "chatterbox") {
     // Chatterbox is told a language or it refuses; it has no detection mode,
     // and the language also decides how numbers are written out for synthesis.
@@ -102,7 +105,22 @@ export function validateConfig(value: any): VoiceConfig {
     if (typeof vad[key] !== 'number' || !Number.isFinite(vad[key]) || vad[key] < min || vad[key] > max) throw new Error(`Invalid VAD ${key}: expected ${min}–${max}`);
   }
   if (vad.negativeSpeechThreshold >= vad.positiveSpeechThreshold) throw new Error('Speech-end threshold must be lower than speech-start threshold');
-  return { vad, lazyLoad: value.lazyLoad !== false, runtime, voice, language, cfgScale, sttModel, exaggeration, kokoroVoice, speed, responseInstructions: savedInstructions(responseInstructions), enabled: value.enabled, whisperUrl: value.whisperUrl.trim(), breezeUrl: value.breezeUrl.trim(), instruction: value.instruction.trim() };
+  return { vad, lazyLoad: value.lazyLoad !== false, runtime, voice, language, cfgScale, sttModel, exaggeration, kokoroVoice, speed, responseInstructions: savedInstructions(responseInstructions), skipThinkingProviders, enabled: value.enabled, whisperUrl: value.whisperUrl.trim(), breezeUrl: value.breezeUrl.trim(), instruction: value.instruction.trim() };
+}
+/**
+ * The providers as saved: names as the model menu shows them, each once. The
+ * default list is not saved, so it follows the portal's updates; an empty list
+ * is, and switches the first call's thinking back on everywhere.
+ */
+function skipThinking(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > 50 || value.some((name) => typeof name !== "string"))
+    throw new Error("Name at most 50 providers");
+  const names = [...new Set((value as string[]).map((name) => name.trim()).filter(Boolean))];
+  const bad = names.find((name) => name.length > 100 || !/^[\w.:@-]+$/.test(name));
+  if (bad) throw new Error(`"${bad}" is not a provider name: use letters, digits, dot, colon, @, dash or underscore`);
+  const same = names.length === DEFAULT_SKIP_THINKING_PROVIDERS.length && names.every((name) => DEFAULT_SKIP_THINKING_PROVIDERS.includes(name));
+  return same ? undefined : names;
 }
 /** Text equal to the built-in instructions is not saved, so they follow the portal's updates. */
 function savedInstructions(text: string): string {
@@ -114,8 +132,9 @@ function savedInstructions(text: string): string {
  * saved or built in, and the built-in ones to go back to. `off` says the portal
  * sends none at all (VOICE_RESPONSE_INSTRUCTIONS=false), saved or not.
  */
-function withInstructions<T extends { responseInstructions?: string }>(value: T) {
-  return { ...value, responseInstructions: voiceInstructions(value.responseInstructions), defaultResponseInstructions: DEFAULT_VOICE_INSTRUCTIONS, responseInstructionsOff: !voiceRulesOn() };
+function withInstructions<T extends { responseInstructions?: string; skipThinkingProviders?: string[] }>(value: T) {
+  return { ...value, responseInstructions: voiceInstructions(value.responseInstructions), defaultResponseInstructions: DEFAULT_VOICE_INSTRUCTIONS, responseInstructionsOff: !voiceRulesOn(),
+    skipThinkingProviders: value.skipThinkingProviders ?? [...DEFAULT_SKIP_THINKING_PROVIDERS], defaultSkipThinkingProviders: [...DEFAULT_SKIP_THINKING_PROVIDERS] };
 }
 /** The samples of a RIFF/WAVE buffer, checked to be what the player expects. */
 export function wavPcm(wav: Buffer, runtime = "Chatterbox"): Buffer {

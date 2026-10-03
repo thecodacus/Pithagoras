@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { AudioRule, VoiceFirstTurn, AUDIO_SYSTEM_RULE, DEFAULT_VOICE_INSTRUCTIONS, audioSystemRule, voiceInstructions, voiceRulesOn, audioMessage, spokenIn } from '../server/src/pi/voice-first.js';
+import { AudioRule, VoiceFirstTurn, DEFAULT_SKIP_THINKING_PROVIDERS, listsProvider, AUDIO_SYSTEM_RULE, DEFAULT_VOICE_INSTRUCTIONS, audioSystemRule, voiceInstructions, voiceRulesOn, audioMessage, spokenIn } from '../server/src/pi/voice-first.js';
 function setup() {
  const turn = new VoiceFirstTurn(), handlers = new Map<string, (...args: any[]) => any>();
  turn.extension({ on: (name: string, fn: any) => handlers.set(name, fn) });
@@ -82,15 +82,25 @@ test('comparison instance preserves model thinking on the first voice request', 
  }
 });
 
-test('every way a llama.cpp server shows up skips thinking on the first call, llama-swap included', () => {
- for (const provider of ['llama.cpp', 'llama-server=http://127.0.0.1:8080', 'llama-swap']) {
-  const { turn, handlers } = setup(); turn.arm();
-  const payload = { messages: [], chat_template_kwargs: {} };
-  assert.equal(handlers.get('before_provider_request')!({ payload }, { model: { provider } })?.chat_template_kwargs.enable_thinking, false, provider);
- }
- // A provider that is not llama.cpp has no chat template to switch it off in.
- const { turn, handlers } = setup(); turn.arm();
- assert.equal(handlers.get('before_provider_request')!({ payload: { messages: [] } }, { model: { provider: 'anthropic' } }), undefined);
+test('the first call skips thinking for the providers listed: by default every way a llama.cpp server shows up, llama-swap included', () => {
+ const call = (turn: VoiceFirstTurn, provider: string) => {
+  const handlers = new Map<string, (...args: any[]) => any>();
+  turn.extension({ on: (name: string, fn: any) => handlers.set(name, fn) }); turn.arm();
+  return handlers.get('before_provider_request')!({ payload: { messages: [], chat_template_kwargs: {} } }, { model: { provider } })?.chat_template_kwargs?.enable_thinking;
+ };
+ for (const provider of ['llama.cpp', 'llama-server=http://127.0.0.1:8080', 'llama-swap']) assert.equal(call(new VoiceFirstTurn(), provider), false, provider);
+ assert.equal(call(new VoiceFirstTurn(), 'anthropic'), undefined, 'not listed');
+ assert.equal(call(new VoiceFirstTurn(), 'llama-swapper'), undefined, 'a name is matched whole, not as a prefix');
+ // A saved list replaces the default one, read at the call.
+ let saved: string[] | undefined = ['my-gateway'];
+ const turn = () => new VoiceFirstTurn(() => saved);
+ assert.equal(call(turn(), 'my-gateway'), false);
+ assert.equal(call(turn(), 'my-gateway=http://10.0.0.2:8080'), false);
+ assert.equal(call(turn(), 'llama-swap'), undefined);
+ saved = [];
+ assert.equal(call(turn(), 'llama-swap'), undefined, 'an empty list keeps thinking on everywhere');
+ assert.deepEqual([...DEFAULT_SKIP_THINKING_PROVIDERS], ['llama.cpp', 'llama-server', 'llama-swap']);
+ assert.equal(listsProvider(['a'], undefined), false);
 });
 
 test('unoptimized voice baseline omits voice instructions and the audio marker', () => {

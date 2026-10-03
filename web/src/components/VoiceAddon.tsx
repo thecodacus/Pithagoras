@@ -80,6 +80,8 @@ export function VoiceAddon({ onError }: { onError: (message: string) => void }) 
   const [saved, setSaved] = useState(false);
   // A saved voice's description is stored on its own; this saves the edited ones along with the settings.
   const pendingDescriptions = useRef<(() => Promise<void>) | null>(null);
+  // The providers as typed, commas and all, while they are edited; the list itself is in the config.
+  const [providersText, setProvidersText] = useState<string | null>(null);
   useEffect(() => { api.voice().then(setConfig).catch(e => onError(e.message)); }, []);
   if (!config) return null;
   const update = (patch: Partial<VoiceConfig>) => { setConfig({ ...config, ...patch }); setSaved(false); };
@@ -121,6 +123,15 @@ export function VoiceAddon({ onError }: { onError: (message: string) => void }) 
       : <div className="block text-xs text-fg-muted">{t("Speech generation")}<Select<number> aria-label={t("Speech generation")} size="sm" className="mt-1.5 w-full" value={config.cfgScale ?? 4} onChange={cfgScale => update({ cfgScale })} options={[{ value: 1, label: t("Fast"), hint: t("Lighter voice guidance") }, { value: 4, label: t("Expressive"), hint: t("Stronger voice guidance") }]} /></div>)}
     {chatterbox && <p className="text-xs text-fg-faint">{t("Chatterbox speaks your input language and clones the selected reference voice; it has no designed voice.")} {NUMBER_PACK_LANGUAGES.includes(config.language ?? "") ? t("Numbers are written out before synthesis so they are spoken correctly.") : t("Numbers stay as digits in this language, which Chatterbox reads unreliably.")}</p>}
     {chatterbox && (config.voice || "design") === "design" && <p role="alert" className="text-xs text-red-400">{t("Choose a voice with a recording above: Chatterbox cannot speak with a designed voice.")}</p>}
+    {!listening && <div className="space-y-2">
+      <label className="block text-xs text-fg-muted">{t("Reply without thinking first on")}
+        <input aria-label={t("Reply without thinking first on")} className="mt-1.5 w-full rounded-lg border border-line bg-surface px-3 py-2 text-xs" value={providersText ?? (config.skipThinkingProviders ?? []).join(", ")}
+          onChange={e => { setProvidersText(e.target.value); update({ skipThinkingProviders: e.target.value.split(",").map(name => name.trim()).filter(Boolean) }); }} />
+      </label>
+      <p className="text-xs text-fg-faint">{t("Providers, by the name the model menu shows, whose first answer to a spoken message skips thinking so it starts speaking sooner. Separate them with commas. It works through the llama.cpp chat template, so only llama.cpp servers and gateways in front of them, such as llama-swap, follow it. Empty keeps thinking on everywhere.")}</p>
+      <button type="button" className={btnCls} disabled={(config.skipThinkingProviders ?? []).join(",") === (config.defaultSkipThinkingProviders ?? []).join(",")}
+        onClick={() => { setProvidersText(null); update({ skipThinkingProviders: config.defaultSkipThinkingProviders }); }}>{t("Reset to default")}</button>
+    </div>}
     </section>
     {!listening && <details className="rounded-xl border border-line p-4">
       <summary className="cursor-pointer text-sm font-medium">{t("Speaking instructions")}<span className="mt-1 block text-xs font-normal text-fg-muted">{t("What the assistant is told about how to reply in voice mode")}</span></summary>

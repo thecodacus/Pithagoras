@@ -1,5 +1,4 @@
 import { isUser, textOf } from "./entries.js";
-import { isLlama } from "./llama-provider.js";
 
 export const AUDIO_MESSAGE_PREFIX = "[Audio mode]\n";
 export const DEFAULT_VOICE_INSTRUCTIONS = 'This is a live voice conversation. Start with a short, useful spoken response before any tool calls. For a simple question, answer directly. IMPORTANT: When a request needs tools, first tell the user once, in one brief plain spoken sentence, what you are going to do, then carry out all the steps without announcing each one. A sequence of actions gets one announcement, not one per step. Speak again during the work only when the plan changes, something unexpected turns up, or you need the user; otherwise stay quiet until you have the result. Do not claim results before checking them. Keep every spoken reply brief: usually one to three short sentences, with only the essential answer or action update. Keep the response short. Use canvas tools for richer, detailed reports, rich Markdown text, detailed explanations, documents, lists, tables, and code that the user should read. When generating a report, write the full report in a canvas and give only a brief spoken summary. To show the user a picture, chart, diagram or screenshot, save it as a PNG, JPEG, GIF or WebP in the chat folder and call show_image; a canvas can also include a picture from the folder with Markdown image syntax. Pictures the user sends arrive with their message; look at them before answering. Briefly introduce or summarize the canvas in plain speech instead of reading its contents aloud. All user-facing replies in this voice turn, including updates and replies after tools, will be read aloud by text-to-speech. Write plain conversational text in short, clean sentences or simple lines. Do not use Markdown headings, bold, italics, bullet or numbered lists, tables, backticks, code fences, decorative symbols, or Markdown links. Describe steps naturally with words such as first, next, and finally. Avoid raw URLs, long file paths, and command or code dumps in spoken replies; briefly explain the result instead. Write numbers, units, and abbreviations in an easy-to-say form when it improves clarity without changing meaning. Use normal punctuation for natural pauses. You may occasionally include these exact nonverbal emotion tags when they fit the response naturally: (laugh), (cough), (clears throat), (sigh). These are speech cues, not words to explain or read literally. Use them sparingly; never add them to tool arguments or generated files. These presentation instructions apply only to user-facing speech: keep tool calls, tool arguments, code edits, and generated files in their required formats.';
@@ -105,16 +104,31 @@ export class AudioRule {
   }
 }
 
+/**
+ * The providers whose first call of a spoken turn goes without thinking, unless
+ * the voice settings name others: the ways a llama.cpp server shows up. Thinking
+ * is switched off through the chat template (`enable_thinking`), which only a
+ * llama.cpp server reads.
+ */
+export const DEFAULT_SKIP_THINKING_PROVIDERS: readonly string[] = ["llama.cpp", "llama-server", "llama-swap"];
+
+/** Whether `list` names `provider`: as it is, or as `name=<url>`, which is how pi-llama-cpp names one per server. */
+export function listsProvider(list: readonly string[], provider: string | undefined): boolean {
+  return !!provider && list.some((name) => provider === name || provider.startsWith(`${name}=`));
+}
+
 /** First-call thinking is transient; formatting is governed by AudioRule. */
 export class VoiceFirstTurn {
   private active = false;
   private first = false;
+  /** `providers`: the list saved in the voice settings, read at each call; none saved means the default one. */
+  constructor(private readonly providers: () => readonly string[] | undefined = () => undefined) {}
   arm(first = true) { this.active = true; this.first = first; }
   reset() { this.active = false; this.first = false; }
   extension = (pi: any) => {
     pi.on('before_provider_request', (event: any, ctx: any) => {
       if (process.env.VOICE_SKIP_FIRST_THINKING === 'false') return;
-      if (!this.active || !this.first || !isLlama(ctx.model?.provider)) return;
+      if (!this.active || !this.first || !listsProvider(this.providers() ?? DEFAULT_SKIP_THINKING_PROVIDERS, ctx.model?.provider)) return;
       const payload = { ...event.payload, chat_template_kwargs: { ...event.payload.chat_template_kwargs, enable_thinking: false } };
       delete payload.thinking_budget_tokens;
       return payload;

@@ -12,8 +12,8 @@ process.env.AGENT_HOME = join(dir, 'agent-home');
 process.env.DOCKER_SOCKET = join(dir, 'no-docker.sock');
 const { voiceRouter, pcmWav, wavPcm, validateConfig, connectManagedVoice } = await import('../server/src/api/voice.js');
 const { INPUT_LANGUAGES, CHATTERBOX_LANGUAGES } = await import('../server/src/voice-languages.js');
-const { getDb, getVoiceInstructions } = await import('../server/src/db.js');
-const { DEFAULT_VOICE_INSTRUCTIONS } = await import('../server/src/pi/voice-first.js');
+const { getDb, getSkipThinkingProviders, getVoiceInstructions } = await import('../server/src/db.js');
+const { DEFAULT_SKIP_THINKING_PROVIDERS, DEFAULT_VOICE_INSTRUCTIONS } = await import('../server/src/pi/voice-first.js');
 const upstream = express();
 let calls = 0;
 let busyAttempts = 0;
@@ -489,6 +489,32 @@ test('speaking instructions: the built-in text is offered, a custom one is saved
   assert.equal((await put('x'.repeat(8000))).status, 200);
   assert.equal(getVoiceInstructions(), 'x'.repeat(8000));
   await put('');
+});
+test('the providers that skip thinking on the first spoken call: the default list is offered, another is saved, and the default sent back is not', async () => {
+  const put = (skipThinkingProviders: unknown) => fetch(`${base}/voice`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...settings, skipThinkingProviders }) });
+  const get = async () => (await fetch(`${base}/voice`)).json();
+  await put(undefined);
+  let shown = await get();
+  assert.deepEqual(shown.skipThinkingProviders, [...DEFAULT_SKIP_THINKING_PROVIDERS]);
+  assert.deepEqual(shown.defaultSkipThinkingProviders, [...DEFAULT_SKIP_THINKING_PROVIDERS]);
+  assert.equal(getSkipThinkingProviders(), undefined);
+  // Trimmed, each once, and what the first call then reads.
+  assert.equal((await put([' llama-swap ', 'my-gateway', 'llama-swap', ''])).status, 200);
+  assert.deepEqual(getSkipThinkingProviders(), ['llama-swap', 'my-gateway']);
+  shown = await get();
+  assert.deepEqual(shown.skipThinkingProviders, ['llama-swap', 'my-gateway']);
+  // Kept when the managed voice saves the settings again.
+  assert.deepEqual(connectManagedVoice().skipThinkingProviders, ['llama-swap', 'my-gateway']);
+  // Empty is a choice: thinking stays on everywhere.
+  await put([]);
+  assert.deepEqual(getSkipThinkingProviders(), []);
+  assert.deepEqual((await get()).skipThinkingProviders, []);
+  // The default list sent back, in any order, is not saved: it then follows the portal's updates.
+  await put([...DEFAULT_SKIP_THINKING_PROVIDERS].reverse());
+  assert.equal(getSkipThinkingProviders(), undefined);
+  // What is not a list of provider names.
+  for (const bad of ['llama-swap', [42], ['two words'], ['a/b'], Array(51).fill('x')]) assert.equal((await put(bad)).status, 400, JSON.stringify(bad).slice(0, 40));
+  await put(undefined);
 });
 test('VOICE_RESPONSE_INSTRUCTIONS=false is shown to the page, and leaves a saved text alone', async () => {
   const previous = process.env.VOICE_RESPONSE_INSTRUCTIONS;

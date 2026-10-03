@@ -332,6 +332,9 @@ export interface VoiceConfig {
   responseInstructions?: string;
   defaultResponseInstructions?: string;
   responseInstructionsOff?: boolean;
+  // The providers whose first call of a spoken turn goes without thinking, and the built-in list to go back to.
+  skipThinkingProviders?: string[];
+  defaultSkipThinkingProviders?: string[];
   pipelineMode?: "parallel" | "sequential";
   // False with no speech synthesis (runtime "none"): the page can listen, but replies are not spoken.
   speech?: boolean;
