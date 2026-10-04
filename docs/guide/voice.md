@@ -446,24 +446,27 @@ thinking for its first model call and asks for a brief spoken answer before
 tools. Later calls after tools use the session’s existing thinking setting.
 A conditional rule in the system prompt asks for plain, concise speech when the
 latest user message begins with `[Audio mode]`. The portal adds that prefix to
-microphone submissions and typed requests sent in voice mode. The rule is only in
-the system prompt of a conversation that has had voice, and it is part of the
-prompt pi builds, so it stays when tools come and go. It comes in with the first
-spoken message, including one sent while a typed run is still going, and typing
-again does not take it out, so the prompt does not change back and forth. It is
-left out again when a spoken message never reached the conversation (refused, or
-taken by an extension) and no other spoken one is there, and when the
-conversation is opened with no spoken message in what the model is given: after
-a restart, a compaction, or an edit that removed the spoken messages. A
-typed-only conversation never mentions `[Audio mode]`; with the rule there, a
-model took typed messages for spoken ones.
+microphone submissions and typed requests sent in voice mode. The rule is part
+of the prompt pi builds, so it stays when tools come and go.
 
-The first spoken message in a conversation that was typed until then changes
-the system prompt once. A local model keeps a cache of the prompt it has
-already read, and that cache starts at the system prompt, so the whole
-conversation is read again before that first spoken reply. In a long
-conversation on llama.cpp, that can be a noticeable wait; every spoken or typed
-message after it has the cache again.
+While voice is switched on with a speech engine (not recognition alone), the rule
+is in the system prompt of every conversation, spoken in or not. A local model
+keeps a cache of the prompt it has already read, and that cache starts at the
+system prompt: with the rule there from the start, the first spoken message in a
+typed conversation leaves the prompt as it was, and nothing is read again before
+the first spoken reply. The rule says plainly that it describes the marker and
+that a message is spoken only when its own text begins with it, so typed
+messages keep normal chat formatting.
+
+With voice switched off, or left with recognition alone, the rule is only in a
+conversation that has had voice. It comes in with the first spoken message,
+including one sent while a typed run is still going, and typing again does not
+take it out. It is left out again when a spoken message never reached the
+conversation (refused, or taken by an extension) and no other spoken one is
+there, and when the conversation is opened with no spoken message in what the
+model is given: after a restart, a compaction, or an edit that removed the
+spoken messages. Coming in, it changes the system prompt once, and a local model
+reads the conversation again before that first spoken reply.
 The marker stays in model conversation history, while the chat UI shows the
 original user text. No temporary system messages are inserted. Ordinary text
 requests have no marker and use normal chat formatting, even after voice turns.

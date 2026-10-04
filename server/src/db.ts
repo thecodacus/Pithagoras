@@ -1278,6 +1278,16 @@ export function getSkipThinkingProviders(): string[] | undefined {
   }
 }
 
+/** Whether voice mode can speak: the add-on is on, with a speech engine (not recognition alone). */
+export function voiceSpeaks(): boolean {
+  try {
+    const voice = JSON.parse(getSetting("voice") ?? "{}");
+    return voice.enabled === true && voice.runtime !== "none";
+  } catch {
+    return false;
+  }
+}
+
 /** Only what the portal was explicitly told; absent keys fall through. */
 export function getStoredSettings(): Partial<GlobalSettings> {
   const rows = getDb().prepare("SELECT key, value FROM settings").all() as {

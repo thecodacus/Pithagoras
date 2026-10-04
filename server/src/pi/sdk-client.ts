@@ -23,7 +23,7 @@ import { heartbeatTool } from "./heartbeat-tool.js";
 import { askPrimaryTool } from "./ask-primary.js";
 import { proxyBaseUrl } from "../llama-progress.js";
 import { bridgeSubagents, SUBAGENT_INPUT, SUBAGENT_STOP, type Bridge } from "../subagent-protocol.js";
-import { contextWindowFor, getSkipThinkingProviders, getVoiceInstructions, portalBrowserOn } from "../db.js";
+import { contextWindowFor, getSkipThinkingProviders, getVoiceInstructions, portalBrowserOn, voiceSpeaks } from "../db.js";
 import { configStamp } from "../providers.js";
 import { rereadConfig } from "./model-runtime.js";
 import { UNDERSTORY_RULE, understoryOn } from "../features.js";
@@ -419,6 +419,7 @@ export class SdkPiClient extends EventEmitter implements PiClient {
         imageTool?.registered() && !switchedOff().has(GENERATE_IMAGE_TOOL) ? GENERATE_IMAGE_VOICE_LINE : "",
         editTool?.registered() && !switchedOff().has(EDIT_IMAGE_TOOL) ? EDIT_IMAGE_VOICE_LINE : "",
       ].filter(Boolean).join(" "),
+      voiceSpeaks,
     );
     const canvases = opts.sessionId ? new CanvasTools(opts.sessionId) : undefined;
     try {

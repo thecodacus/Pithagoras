@@ -48,6 +48,34 @@ test('a prompt built elsewhere is made to say what the rule says now', () => {
  rule.set(false);
  assert.equal(rule.into(`${said}\n\nPolicy`, 'Appended'), 'Base\n\nAppended\n\nPolicy', 'out again');
 });
+test('while voice can speak the rule is in every conversation, spoken in or not, and goes when voice is switched off', () => {
+ let speaks = true;
+ const rule = new AudioRule(undefined, undefined, () => speaks);
+ // A conversation nobody has spoken in has it from the start, and its first spoken message changes nothing.
+ assert.equal(rule.set(false), true);
+ assert.deepEqual(rule.lines(), [AUDIO_SYSTEM_RULE]);
+ assert.equal(rule.set(true), false, 'the prompt is not built again for the first spoken message');
+ // Its spoken message edited away: still there, as voice can still speak.
+ assert.equal(rule.set(false), false);
+ // Voice switched off, or left with recognition alone: as before, only where there was a spoken message.
+ speaks = false;
+ assert.equal(rule.set(false), true);
+ assert.deepEqual(rule.lines(), []);
+ assert.equal(rule.set(true), true);
+ assert.deepEqual(rule.lines(), [AUDIO_SYSTEM_RULE]);
+ // VOICE_RESPONSE_INSTRUCTIONS=false sends no rule at all, whatever voice can do.
+ const previous = process.env.VOICE_RESPONSE_INSTRUCTIONS;
+ try {
+  process.env.VOICE_RESPONSE_INSTRUCTIONS = 'false';
+  speaks = true;
+  const off = new AudioRule(undefined, undefined, () => speaks);
+  off.set(true);
+  assert.deepEqual(off.lines(), []);
+ } finally {
+  if (previous === undefined) delete process.env.VOICE_RESPONSE_INSTRUCTIONS;
+  else process.env.VOICE_RESPONSE_INSTRUCTIONS = previous;
+ }
+});
 test('the rule says whether it changed, so the prompt is built again only then', () => {
  const rule = new AudioRule();
  assert.deepEqual(rule.lines(), []);
