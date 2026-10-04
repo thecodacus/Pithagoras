@@ -101,6 +101,15 @@ function fsError(op: string, target: string, ran: Ran): Error {
 export function fileOperations(ids: Ids) {
   const run = (argv: string[], input?: Buffer | string) => runAsAgent(ids, argv, input);
   const test = async (flag: string, p: string) => (await run(["test", flag, p])).code === 0;
+  /**
+   * Whether a path is there. A path inside a folder the sandbox may not enter
+   * counts as there: "not found" would send the agent looking elsewhere, when
+   * the truth is that it may not look.
+   */
+  const exists = async (p: string) => {
+    const ran = await run(["stat", "--", p]);
+    return ran.code === 0 || /permission denied/i.test(ran.stderr);
+  };
   const readFile = async (p: string) => {
     const ran = await run(["cat", "--", p]);
     if (ran.code !== 0) throw fsError("read", p, ran);
@@ -110,9 +119,11 @@ export function fileOperations(ids: Ids) {
     const ran = await run(["sh", "-c", 'umask 002; cat > "$1"', "sh", p], content);
     if (ran.code !== 0) throw fsError("write", p, ran);
   };
+  // Opening it says which it is, missing or not allowed, where test(1) says only "no".
   const access = async (p: string, write = false) => {
-    if (!(await test("-e", p))) throw fsError("access", p, { code: 1, stdout: Buffer.alloc(0), stderr: "No such file or directory" });
-    if (!(await test("-r", p)) || (write && !(await test("-w", p)))) throw fsError("access", p, { code: 1, stdout: Buffer.alloc(0), stderr: "Permission denied" });
+    const ran = await run(["head", "-c", "0", "--", p]);
+    if (ran.code !== 0) throw fsError("access", p, ran);
+    if (write && !(await test("-w", p))) throw fsError("access", p, { code: 1, stdout: Buffer.alloc(0), stderr: "Permission denied" });
   };
   return {
     read: { readFile, access: (p: string) => access(p) },
@@ -125,10 +136,11 @@ export function fileOperations(ids: Ids) {
     },
     edit: { readFile, writeFile, access: (p: string) => access(p, true) },
     ls: {
-      exists: (p: string) => test("-e", p),
+      exists,
       stat: async (p: string) => {
-        const dir = await test("-d", p);
-        if (!dir && !(await test("-e", p))) throw fsError("stat", p, { code: 1, stdout: Buffer.alloc(0), stderr: "No such file or directory" });
+        const ran = await run(["stat", "-c", "%F", "--", p]);
+        if (ran.code !== 0) throw fsError("stat", p, ran);
+        const dir = ran.stdout.toString().trim() === "directory";
         return { isDirectory: () => dir };
       },
       readdir: async (p: string) => {
@@ -139,9 +151,9 @@ export function fileOperations(ids: Ids) {
     },
     grep: {
       isDirectory: async (p: string) => {
-        if (await test("-d", p)) return true;
-        if (await test("-e", p)) return false;
-        throw fsError("grep", p, { code: 1, stdout: Buffer.alloc(0), stderr: "No such file or directory" });
+        const ran = await run(["stat", "-c", "%F", "--", p]);
+        if (ran.code !== 0) throw fsError("grep", p, ran);
+        return ran.stdout.toString().trim() === "directory";
       },
       readFile: async (p: string) => (await readFile(p)).toString("utf8"),
     },

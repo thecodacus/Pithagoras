@@ -96,6 +96,10 @@ test("the sandbox holds against the ways round it", { skip: why }, async (t) => 
 
   await t.test("pi's file tools are held the same way", async () => {
     await assert.rejects(ops.read.readFile(secret), { code: "EACCES" });
+    // Refused as not allowed, not as missing: "not found" would send the agent looking elsewhere.
+    await assert.rejects(ops.read.access(secret), { code: "EACCES" });
+    assert.equal(await ops.ls.exists(secret), true);
+    await assert.rejects(ops.read.access(path.join(WORK, "project", "nothing-here")), { code: "ENOENT" });
     await assert.rejects(ops.read.readFile(auth), { code: "EACCES" });
     await assert.rejects(ops.ls.readdir(path.join(DATA, ".secrets")), { code: "EACCES" });
     assert.equal((await ops.read.readFile(path.join(WORK, "project", "notes.txt"))).toString(), "hello\n");
