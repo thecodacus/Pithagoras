@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { BROWSER_CDP } from "../api/mcp.js";
-import { pointAt, pointTo, press, typing, withoutCursor } from "./cursor.js";
+import { pointAt, pointTo, press, typedLabel, typing, withoutCursor } from "./cursor.js";
 import { diffViews, findNodes, findRef, pinned, renderView, sectionText, textPage, type AxChild, type View, type Viewport } from "./view.js";
 
 /**
@@ -292,7 +292,7 @@ export function browserTools(sessionId: string) {
       async execute(_id: string, p: { ref: string; text: string; submit?: boolean }) {
         return act(sessionId, `Typed into ${cleanRef(p.ref)}`, async (page) => {
           const { locator } = await element(page, p.ref);
-          await pointAt(page, locator, "Type", `"${p.text.length > 28 ? `${p.text.slice(0, 27)}…` : p.text}"`);
+          await pointAt(page, locator, "Type", await typedLabel(locator, p.text));
           await typing(page, true);
           try {
             await locator.fill(p.text, { timeout: 10_000 });

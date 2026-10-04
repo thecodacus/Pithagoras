@@ -21,6 +21,7 @@ interface Cursor {
   typing(on: boolean): void;
   hide(on: boolean): void;
   place(x: number, y: number): void;
+  off(): void;
   where(): { x: number; y: number } | null;
 }
 
@@ -134,6 +135,10 @@ function overlay() {
   let trail: { d: HTMLElement; x: number; y: number }[] = [];
   let at: { x: number; y: number } | null = null; // the tip, in viewport pixels; null until first placed
   let anim = 0, labelTimer = 0;
+  // The glide in flight, settled when another one or a place takes over: its caller is still waiting on it.
+  let settleGlide: (() => void) | null = null;
+  // Screenshots in progress; the cursor stays hidden until the last one is taken.
+  let hiding = 0;
 
   function mount(): boolean {
     if (host?.isConnected) return true;
@@ -174,9 +179,16 @@ function overlay() {
     });
   }
 
+  function stopGlide() {
+    cancelAnimationFrame(anim);
+    const settle = settleGlide;
+    settleGlide = null;
+    settle?.();
+  }
+
   function place(x: number, y: number) {
     if (!mount()) return;
-    cancelAnimationFrame(anim);
+    stopGlide();
     at = { x, y };
     trail.forEach((t) => {
       t.x = x;
@@ -194,9 +206,10 @@ function overlay() {
     if (!mount()) return Promise.resolve();
     // The first time, from just above and to the left of the target, not from a corner of the screen.
     if (!at) place(Math.max(8, x - 140), Math.max(8, y - 90));
-    cancelAnimationFrame(anim);
+    stopGlide();
     const from = { ...at! }, dist = Math.hypot(x - from.x, y - from.y);
-    if (dist < 2) {
+    // A tab in the background gets no animation frames: there it is put in place at once.
+    if (dist < 2 || document.hidden) {
       place(x, y);
       return Promise.resolve();
     }
@@ -207,7 +220,24 @@ function overlay() {
     const start = performance.now();
     ptr.classList.remove("land", "press");
     ptr.classList.add("go");
-    return new Promise((done) => {
+    return new Promise((resolve) => {
+      // Once only, whichever comes first: the landing, another glide or place taking over, or the
+      // deadline below, in case animation frames stop coming mid-glide.
+      let over = false;
+      const done = () => {
+        if (over) return;
+        over = true;
+        clearTimeout(deadline);
+        if (settleGlide === done) settleGlide = null;
+        resolve();
+      };
+      const deadline = setTimeout(() => {
+        if (over) return;
+        cancelAnimationFrame(anim);
+        place(x, y);
+        done();
+      }, ms + 400);
+      settleGlide = done;
       const step = (now: number) => {
         const t = Math.min(1, (now - start) / ms), e = ease(t), u = 1 - e;
         at = { x: u * u * from.x + 2 * u * e * cx + e * e * x, y: u * u * from.y + 2 * u * e * cy + e * e * y };
@@ -259,15 +289,26 @@ function overlay() {
     if (mount()) caret.classList.toggle("on", on);
   }
 
-  /** Out of the way for a screenshot, and back. */
+  /** Out of the way for a screenshot, and back once the last screenshot taken at the same time is done. */
   function hide(on: boolean) {
     if (!mount()) return;
-    el.classList.toggle("hidden", on);
-    trail.forEach((t) => t.d.classList.toggle("hidden", on));
+    hiding = Math.max(0, hiding + (on ? 1 : -1));
+    el.classList.toggle("hidden", hiding > 0);
+    trail.forEach((t) => t.d.classList.toggle("hidden", hiding > 0));
+  }
+
+  /** Gone, as when the cursor is switched off: shown again by the next place or glide. */
+  function off() {
+    if (!mount()) return;
+    stopGlide();
+    el.classList.remove("on");
+    label.classList.remove("on");
+    caret.classList.remove("on");
+    trail.forEach((t) => (t.d.style.opacity = "0"));
   }
 
   Object.defineProperty(window, "__agentCursor", {
-    value: Object.freeze({ move, click, say, typing, hide, place, where: () => (at ? { ...at } : null) }),
+    value: Object.freeze({ move, click, say, typing, hide, place, off, where: () => (at ? { ...at } : null) }),
   });
 }
 
@@ -319,6 +360,34 @@ async function nameOf(locator: Locator): Promise<string> {
   return one.length > 40 ? `${one.slice(0, 39)}…` : one;
 }
 
+/** Takes a cursor already on screen away, for when the cursor has been switched off: the switch says off, so nothing is left showing. */
+async function gone(page: Page): Promise<void> {
+  await page.evaluate(() => (window as unknown as Win).__agentCursor?.off()).catch(() => {});
+}
+
+/**
+ * The label for text about to be typed: the text, short, unless the field is
+ * one whose value is meant to stay hidden (a password, a one-time code, a card
+ * number), where it would show on screen what the field itself masks. Then
+ * only the field's name.
+ */
+export async function typedLabel(locator: Locator, text: string): Promise<string | undefined> {
+  const secret = await locator
+    .evaluate((node: Element) => {
+      const e = node as HTMLInputElement;
+      const auto = (e.getAttribute("autocomplete") ?? "").toLowerCase();
+      const named = `${e.name ?? ""} ${e.id ?? ""} ${e.getAttribute("aria-label") ?? ""}`;
+      return (
+        e.type === "password" ||
+        /password|one-time-code|cc-/.test(auto) ||
+        /pass|secret|token|otp|\bpin\b|cvc|cvv|api.?key/i.test(named)
+      );
+    })
+    .catch(() => true);
+  if (secret) return undefined;
+  return `"${text.length > 28 ? `${text.slice(0, 27)}…` : text}"`;
+}
+
 /** Glides to x, y with a word on what is about to happen, from where the tab's cursor last was if the page is new. */
 async function glide(page: Page, x: number, y: number, text: string): Promise<void> {
   await page
@@ -339,7 +408,8 @@ async function glide(page: Page, x: number, y: number, text: string): Promise<vo
  * action would; its box is measured from the top of the page, frames and all.
  */
 export async function pointAt(page: Page, locator: Locator, verb: string, detail?: string): Promise<void> {
-  if (!browserCursorOn() || !(await ready(page))) return;
+  if (!browserCursorOn()) return gone(page);
+  if (!(await ready(page))) return;
   await locator.scrollIntoViewIfNeeded({ timeout: 5000 }).catch(() => {});
   const box = await locator.boundingBox().catch(() => null);
   if (!box) return;
@@ -349,13 +419,14 @@ export async function pointAt(page: Page, locator: Locator, verb: string, detail
 
 /** Glides to a point in the viewport, as for a scroll at the middle of the page. */
 export async function pointTo(page: Page, x: number, y: number, text: string): Promise<void> {
-  if (!browserCursorOn() || !(await ready(page))) return;
+  if (!browserCursorOn()) return gone(page);
+  if (!(await ready(page))) return;
   await glide(page, x, y, text);
 }
 
 /** A press where the cursor is: a click, or a key. */
 export async function press(page: Page, text?: string): Promise<void> {
-  if (!browserCursorOn()) return;
+  if (!browserCursorOn()) return gone(page);
   await page
     .evaluate((t) => {
       const c = (window as unknown as Win).__agentCursor;

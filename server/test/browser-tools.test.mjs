@@ -172,11 +172,18 @@ test("the browser tools, on a real browser", { skip: browser ? false : "no Chrom
         assert.ok(Math.abs(where.x - (lb.x + lb.width / 2)) < 1.5 && Math.abs(where.y - (lb.y + lb.height / 2)) < 1.5, `kept its place on page ${n + 1}: ${JSON.stringify(where)}`);
       }
 
+      // What is typed is shown beside the cursor, except in a field that hides its value.
+      const { typedLabel } = await import("../dist/browser/cursor.js");
+      const page4 = pageAt(`${base}/cursor/4`);
+      await page4.evaluate(() => document.body.insertAdjacentHTML("beforeend",
+        '<input id=city aria-label=City><input id=pw type=password aria-label=Password><input id=code autocomplete=one-time-code aria-label=Code><input id=key name=api_key aria-label=Key>'));
+      assert.equal(await typedLabel(page4.locator("#city"), "Lisbon"), '"Lisbon"');
+      for (const field of ["#pw", "#code", "#key"]) assert.equal(await typedLabel(page4.locator(field), "hunter2"), undefined, field);
+
       // Switched off on the Browser page, it does not move and the click does not wait for it.
       const { setBrowserCursor } = await import("../dist/db.js");
       setBrowserCursor(false);
       try {
-        const page4 = pageAt(`${base}/cursor/4`);
         const before = await page4.evaluate(() => window.__agentCursor.where());
         const started = Date.now();
         await call("browser_click", { ref: refOf(current, /button "Go"/) });
