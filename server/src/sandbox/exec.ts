@@ -69,14 +69,19 @@ interface Ran {
 export function runAsAgent(ids: Ids, argv: string[], input?: Buffer | string): Promise<Ran> {
   return new Promise((resolve, reject) => {
     const [cmd, ...args] = [...asAgent(ids), ...argv];
-    const child = spawn(cmd, args, { env: sandboxEnv(process.env), cwd: "/", stdio: ["pipe", "pipe", "pipe"] });
+    // stdin only where there is something to send. A command that does not read it can be gone
+    // before it is written; the write then fails with EPIPE, which unheard would end the portal.
+    const child = spawn(cmd, args, { env: sandboxEnv(process.env), cwd: "/", stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
     const out: Buffer[] = [];
     let err = "";
-    child.stdout.on("data", (d: Buffer) => out.push(d));
-    child.stderr.on("data", (d: Buffer) => (err += d.toString()));
+    child.stdout!.on("data", (d: Buffer) => out.push(d));
+    child.stderr!.on("data", (d: Buffer) => (err += d.toString()));
     child.on("error", reject);
     child.on("close", (code) => resolve({ code, stdout: Buffer.concat(out), stderr: err.trim() }));
-    child.stdin.end(input ?? "");
+    if (child.stdin) {
+      child.stdin.on("error", () => {});
+      child.stdin.end(input);
+    }
   });
 }
 
