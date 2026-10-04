@@ -442,7 +442,7 @@ export class SdkPiClient extends EventEmitter implements PiClient {
           ) },
       ];
       // While the sandbox is on, pi's own tools do what they do to the system as the sandbox user: see sandbox/.
-      const sandboxed = sandboxTools(pi, opts.cwd);
+      const sandboxed = await sandboxTools(pi, opts.cwd);
       if (sandboxed) factories.push({ name: "sandbox", factory: sandboxed });
       if (canvases) factories.push({ name: "canvases", factory: canvases.extension });
       // Beside the canvases: both are how the agent puts something on the screen.

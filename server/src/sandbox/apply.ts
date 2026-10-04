@@ -262,6 +262,25 @@ export async function applySandbox(policy: SandboxPolicy, support: SandboxSuppor
   return report;
 }
 
+/**
+ * A chat's folder, made writable again for the sandbox where a write rule says
+ * it is, before the chat starts: what was added to it since the policy was put
+ * on (a project cloned or created by the host's root, with root's umask) is not
+ * the sandbox group's yet, and the agent could not change it. Only that folder,
+ * so a start does not walk every project.
+ */
+export async function prepareFolder(policy: SandboxPolicy, support: SandboxSupport, folder: string): Promise<void> {
+  if (!policy.enabled || !support.ids || ruleFor(policy, folder)?.access !== "write" || !existsSync(folder)) return;
+  const report: ApplyReport = { ok: true, done: [], warnings: [] };
+  await recursive(["chown", "-R", "--no-dereference", `:${support.ids.group}`, folder], report);
+  await recursive(["chmod", "-R", "g+rwX", folder], report);
+  await recursive(["find", folder, "-type", "d", "-exec", "chmod", "g+s", "{}", "+"], report);
+  // A narrower rule inside it keeps its word: put the rules again that lie under this folder.
+  const inside = policy.rules.filter((r) => r.path !== folder && r.path.startsWith(`${folder}/`));
+  if (inside.length) await applyRules({ ...policy, rules: inside }, support.ids, report, true);
+  if (report.warnings.length) console.log(`[sandbox] ${folder}: ${report.warnings.join("; ")}`);
+}
+
 /** At start: the whole policy again if its rules changed since they were last put on, else the quick part. */
 export function applyOnStart(policy: SandboxPolicy, support: SandboxSupport): Promise<ApplyReport> {
   return applySandbox(policy, support, getSetting("sandbox_applied") !== rulesHash(policy));

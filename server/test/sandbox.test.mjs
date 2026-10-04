@@ -42,6 +42,7 @@ test("the sandbox holds against the ways round it", { skip: why }, async (t) => 
   users();
   for (const dir of [DATA, WORK, path.join(WORK, "project"), path.join(DATA, "agent-home"), path.join(DATA, "bin"), path.join(DATA, "home", ".pi", "agent"), path.join(DATA, "trusted"), path.join(DATA, ".secrets")]) mkdirSync(dir, { recursive: true });
   writeFileSync(path.join(WORK, "project", "notes.txt"), "hello\n");
+  execFileSync("git", ["init", "-q", path.join(WORK, "existing")]);
   writeFileSync(path.join(DATA, ".secrets", "key.json"), '{"api_key":"sk-secret-123"}\n');
   writeFileSync(path.join(DATA, "home", ".pi", "agent", "auth.json"), '{"token":"pi-auth-secret"}\n');
   writeFileSync(path.join(DATA, "bin", "hello"), "#!/bin/sh\necho hi\n", { mode: 0o755 });
@@ -115,10 +116,21 @@ test("the sandbox holds against the ways round it", { skip: why }, async (t) => 
   });
 
   await t.test("git works in a project that belongs to root, without the agent trusting it first", () => {
-    execFileSync("git", ["init", "-q", path.join(WORK, "project")]);
-    const ran = bash("git status --short && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m first && git log --format=%s -1");
+    // Made before the policy went on, as the projects on a portal are.
+    const ran = bash("git status --short && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m first && git log --format=%s -1", path.join(WORK, "existing"));
     assert.doesNotMatch(ran.stderr, /dubious ownership/);
     assert.equal(ran.stdout.trim().split("\n").pop(), "first", ran.stderr);
+  });
+
+  await t.test("a project added after the policy went on is the agent's to change once a chat starts in it", async () => {
+    const later = path.join(WORK, "later");
+    execFileSync("git", ["init", "-q", later]);
+    const commit = () => bash("git -c user.name=t -c user.email=t@t commit -q --allow-empty -m later && git log --format=%s -1", later);
+    assert.notEqual(commit().status, 0, "root's repository, with root's umask, before the chat");
+    const { prepareFolder } = await import("../dist/sandbox/apply.js");
+    await prepareFolder(policy, support, later);
+    const ran = commit();
+    assert.equal(ran.stdout.trim(), "later", ran.stderr);
   });
 
   await t.test("a read-only folder runs but cannot be changed; a workspace can", () => {

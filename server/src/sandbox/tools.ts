@@ -1,6 +1,7 @@
 import { readPiSettings } from "../pi-settings.js";
 import { bashSpawnHook, fileOperations } from "./exec.js";
-import { sandboxOn, sandboxSupport } from "./policy.js";
+import { prepareFolder } from "./apply.js";
+import { sandboxOn, sandboxPolicy, sandboxSupport } from "./policy.js";
 
 /**
  * pi's own tools again, under the same names, with what they do to the system
@@ -13,11 +14,16 @@ import { sandboxOn, sandboxSupport } from "./policy.js";
  * The options pi gives its built-ins come from its settings, so a shell, a
  * command prefix or the image resizing set there still apply.
  *
+ * The chat's folder is made writable for the sandbox first, where a rule says
+ * so: see prepareFolder.
+ *
  * Null when the sandbox is off or not possible here: the built-ins stay.
  */
-export function sandboxTools(pi: any, cwd: string): ((ext: any) => void) | null {
+export async function sandboxTools(pi: any, cwd: string): Promise<((ext: any) => void) | null> {
   if (!sandboxOn()) return null;
-  const ids = sandboxSupport().ids!;
+  const support = sandboxSupport();
+  await prepareFolder(sandboxPolicy(), support, cwd);
+  const ids = support.ids!;
   const ops = fileOperations(ids);
   const settings = readPiSettings() as { shellCommandPrefix?: string; shellPath?: string; images?: { autoResize?: boolean } };
   return (ext: any) => {
