@@ -134,7 +134,7 @@ the field keeps it.
   never contain it, and it is hidden while `browser_screenshot` takes a picture.
 - It keeps its place when a page loads, so it does not jump to a corner on every
   navigation, and it points at elements inside frames too.
-- After 30 seconds with nothing done it fades away, and comes back where it was
+- After two minutes with nothing done it fades away, and comes back where it was
   at the next action.
 - It follows the browser's light or dark theme: see-through dark glass with a
   white edge and a light blue glow in dark mode, a deep blue glass with a blue

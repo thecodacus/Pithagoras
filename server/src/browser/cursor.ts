@@ -140,7 +140,7 @@ function overlay() {
   // Screenshots in progress; the cursor stays hidden until the last one is taken.
   let hiding = 0;
   // After a long pause with nothing done, it fades away; the next action brings it back where it was.
-  const IDLE_MS = 30_000;
+  const IDLE_MS = 120_000;
   let idleTimer = 0;
   function awake() {
     el.classList.add("on");
