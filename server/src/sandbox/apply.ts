@@ -96,6 +96,16 @@ async function applyRules(policy: SandboxPolicy, ids: Ids, report: ApplyReport, 
       const keys = rule.path === SECRETS_DIR;
       chownSync(rule.path, 0, keys ? ids.tools : 0);
       chmodSync(rule.path, dir ? (keys ? 0o750 : 0o700) : keys ? 0o640 : 0o600);
+      // A database's journal holds what was written last: SQLite keeps it beside the file, readable unless closed too.
+      if (!dir) {
+        for (const side of ["-wal", "-shm", "-journal"]) {
+          const sibling = `${rule.path}${side}`;
+          if (existsSync(sibling)) {
+            chownSync(sibling, 0, 0);
+            chmodSync(sibling, 0o600);
+          }
+        }
+      }
       report.done.push(`${rule.path}: no access`);
       continue;
     }
