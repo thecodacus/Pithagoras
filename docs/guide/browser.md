@@ -125,13 +125,17 @@ such, and the session is limited as for mail (see
 While the agent works you can watch it in the browser: before each click,
 typed text, choice, key or scroll, an arrow glides to the element along a slight
 arc, with a few words on what is about to happen (`Click · Save`,
-`Type · "Lisbon"`, `Choose · Pro`), and pulses as the real action lands.
+`Type · City`, `Choose · Pro`), and pulses as the real action lands. What is
+typed is never shown, only the field's name, so a password stays as hidden as
+the field keeps it.
 
 - It is drawn by the page, not the system pointer, and clicks pass through it.
   It is not in the accessibility tree, so the views and diffs the model reads
   never contain it, and it is hidden while `browser_screenshot` takes a picture.
 - It keeps its place when a page loads, so it does not jump to a corner on every
   navigation, and it points at elements inside frames too.
+- After 30 seconds with nothing done it fades away, and comes back where it was
+  at the next action.
 - It follows the browser's light or dark theme: see-through dark glass with a
   white edge and a light blue glow in dark mode, a deep blue glass with a blue
   glow in light mode.

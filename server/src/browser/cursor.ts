@@ -139,6 +139,17 @@ function overlay() {
   let settleGlide: (() => void) | null = null;
   // Screenshots in progress; the cursor stays hidden until the last one is taken.
   let hiding = 0;
+  // After a long pause with nothing done, it fades away; the next action brings it back where it was.
+  const IDLE_MS = 30_000;
+  let idleTimer = 0;
+  function awake() {
+    el.classList.add("on");
+    clearTimeout(idleTimer);
+    idleTimer = window.setTimeout(() => {
+      el.classList.remove("on");
+      trail.forEach((t) => (t.d.style.opacity = "0"));
+    }, IDLE_MS);
+  }
 
   function mount(): boolean {
     if (host?.isConnected) return true;
@@ -196,7 +207,7 @@ function overlay() {
       t.d.style.opacity = "0";
     });
     draw(x, y);
-    el.classList.add("on");
+    awake();
   }
 
   const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
@@ -207,6 +218,7 @@ function overlay() {
     // The first time, from just above and to the left of the target, not from a corner of the screen.
     if (!at) place(Math.max(8, x - 140), Math.max(8, y - 90));
     stopGlide();
+    awake();
     const from = { ...at! }, dist = Math.hypot(x - from.x, y - from.y);
     // A tab in the background gets no animation frames: there it is put in place at once.
     if (dist < 2 || document.hidden) {
@@ -266,6 +278,7 @@ function overlay() {
   /** A press where the tip is: the arrow squishes and a ring spreads out. */
   function click(): Promise<void> {
     if (!mount() || !at) return Promise.resolve();
+    awake();
     ptr.classList.remove("go", "land", "press");
     void ptr.offsetWidth;
     ptr.classList.add("press");
@@ -348,13 +361,17 @@ async function ready(page: Page): Promise<boolean> {
   return has();
 }
 
-/** What an element is called, for the label: its accessible name as near as the page says it, kept short. */
-async function nameOf(locator: Locator): Promise<string> {
+/**
+ * What an element is called, for the label: its accessible name as near as the
+ * page says it, kept short. A field's text is never part of it (`text` false):
+ * in an editable area that is what is being typed.
+ */
+async function nameOf(locator: Locator, text = true): Promise<string> {
   const name = await locator
-    .evaluate((node: Element) => {
+    .evaluate((node: Element, withText: boolean) => {
       const e = node as HTMLElement & { labels?: NodeListOf<HTMLLabelElement>; placeholder?: string };
-      return (e.getAttribute("aria-label") || e.labels?.[0]?.textContent || e.placeholder || e.innerText || e.getAttribute("title") || "").trim();
-    })
+      return (e.getAttribute("aria-label") || e.labels?.[0]?.textContent || e.placeholder || (withText ? e.innerText : "") || e.getAttribute("title") || "").trim();
+    }, text)
     .catch(() => "");
   const one = name.replace(/\s+/g, " ");
   return one.length > 40 ? `${one.slice(0, 39)}…` : one;
@@ -363,29 +380,6 @@ async function nameOf(locator: Locator): Promise<string> {
 /** Takes a cursor already on screen away, for when the cursor has been switched off: the switch says off, so nothing is left showing. */
 async function gone(page: Page): Promise<void> {
   await page.evaluate(() => (window as unknown as Win).__agentCursor?.off()).catch(() => {});
-}
-
-/**
- * The label for text about to be typed: the text, short, unless the field is
- * one whose value is meant to stay hidden (a password, a one-time code, a card
- * number), where it would show on screen what the field itself masks. Then
- * only the field's name.
- */
-export async function typedLabel(locator: Locator, text: string): Promise<string | undefined> {
-  const secret = await locator
-    .evaluate((node: Element) => {
-      const e = node as HTMLInputElement;
-      const auto = (e.getAttribute("autocomplete") ?? "").toLowerCase();
-      const named = `${e.name ?? ""} ${e.id ?? ""} ${e.getAttribute("aria-label") ?? ""}`;
-      return (
-        e.type === "password" ||
-        /password|one-time-code|cc-/.test(auto) ||
-        /pass|secret|token|otp|\bpin\b|cvc|cvv|api.?key/i.test(named)
-      );
-    })
-    .catch(() => true);
-  if (secret) return undefined;
-  return `"${text.length > 28 ? `${text.slice(0, 27)}…` : text}"`;
 }
 
 /** Glides to x, y with a word on what is about to happen, from where the tab's cursor last was if the page is new. */
@@ -413,7 +407,7 @@ export async function pointAt(page: Page, locator: Locator, verb: string, detail
   await locator.scrollIntoViewIfNeeded({ timeout: 5000 }).catch(() => {});
   const box = await locator.boundingBox().catch(() => null);
   if (!box) return;
-  const name = detail ?? (await nameOf(locator));
+  const name = detail ?? (await nameOf(locator, verb !== "Type"));
   await glide(page, box.x + box.width / 2, box.y + box.height / 2, name ? `${verb} · ${name}` : verb);
 }
 
