@@ -131,7 +131,10 @@ the field keeps it.
 
 - It is drawn by the page, not the system pointer, and clicks pass through it.
   It is not in the accessibility tree, so the views and diffs the model reads
-  never contain it, and it is hidden while `browser_screenshot` takes a picture.
+  never contain it. It stays in what `browser_screenshot` takes, on purpose:
+  there it shows the agent which element it last went for, so it can tell when
+  that was the wrong one. The screenshot tool tells the model the arrow is its
+  own cursor.
 - It keeps its place when a page loads, so it does not jump to a corner on every
   navigation, and it points at elements inside frames too.
 - After two minutes with nothing done it fades away, and comes back where it was

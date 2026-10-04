@@ -10,8 +10,9 @@ import { browserCursorOn } from "../db.js";
  * (pointer-events: none), in a closed shadow root, so the page's CSS cannot
  * reach it, and aria-hidden, so it is not in the accessibility tree the views
  * are built from or in the diffs after an action. It follows the system's light
- * or dark theme, and is hidden while a screenshot is taken. Switched off on the
- * Browser page, nothing moves and the actions do not wait for it.
+ * or dark theme. It is left in screenshots on purpose: there it shows the agent
+ * which element it last went for, which tells it when that was the wrong one.
+ * Switched off on the Browser page, nothing moves and the actions do not wait for it.
  */
 
 interface Cursor {
@@ -19,7 +20,6 @@ interface Cursor {
   click(): Promise<void>;
   say(text: string, ms?: number): void;
   typing(on: boolean): void;
-  hide(on: boolean): void;
   place(x: number, y: number): void;
   off(): void;
   where(): { x: number; y: number } | null;
@@ -112,7 +112,6 @@ function overlay() {
       background: var(--fill); box-shadow: 0 0 0 1px rgba(255,255,255,.7); opacity: 0; }
     .caret.on { animation: caret .9s steps(1) infinite; }
     @keyframes caret { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
-    .c.hidden, .dot.hidden { visibility: hidden; }
   `;
   const mask = (id: string) =>
     `<mask id="${id}" maskUnits="userSpaceOnUse" x="-10" y="-10" width="48" height="50"><rect x="-10" y="-10" width="48" height="50" fill="#fff"/><path d="${ARROW}" fill="#000"/></mask>`;
@@ -137,8 +136,6 @@ function overlay() {
   let anim = 0, labelTimer = 0;
   // The glide in flight, settled when another one or a place takes over: its caller is still waiting on it.
   let settleGlide: (() => void) | null = null;
-  // Screenshots in progress; the cursor stays hidden until the last one is taken.
-  let hiding = 0;
   // After a long pause with nothing done, it fades away; the next action brings it back where it was.
   const IDLE_MS = 120_000;
   let idleTimer = 0;
@@ -302,14 +299,6 @@ function overlay() {
     if (mount()) caret.classList.toggle("on", on);
   }
 
-  /** Out of the way for a screenshot, and back once the last screenshot taken at the same time is done. */
-  function hide(on: boolean) {
-    if (!mount()) return;
-    hiding = Math.max(0, hiding + (on ? 1 : -1));
-    el.classList.toggle("hidden", hiding > 0);
-    trail.forEach((t) => t.d.classList.toggle("hidden", hiding > 0));
-  }
-
   /** Gone, as when the cursor is switched off: shown again by the next place or glide. */
   function off() {
     if (!mount()) return;
@@ -321,7 +310,7 @@ function overlay() {
   }
 
   Object.defineProperty(window, "__agentCursor", {
-    value: Object.freeze({ move, click, say, typing, hide, place, off, where: () => (at ? { ...at } : null) }),
+    value: Object.freeze({ move, click, say, typing, place, off, where: () => (at ? { ...at } : null) }),
   });
 }
 
@@ -435,14 +424,4 @@ export async function press(page: Page, text?: string): Promise<void> {
 export async function typing(page: Page, on: boolean): Promise<void> {
   if (!browserCursorOn()) return;
   await page.evaluate((v) => (window as unknown as Win).__agentCursor?.typing(v), on).catch(() => {});
-}
-
-/** Takes a picture of the page without the cursor in it: a model reading the picture would take it for part of the page. */
-export async function withoutCursor<T>(page: Page, shoot: () => Promise<T>): Promise<T> {
-  await page.evaluate(() => (window as unknown as Win).__agentCursor?.hide(true)).catch(() => {});
-  try {
-    return await shoot();
-  } finally {
-    await page.evaluate(() => (window as unknown as Win).__agentCursor?.hide(false)).catch(() => {});
-  }
 }
