@@ -120,6 +120,25 @@ now. Page content is someone else's words: every browser result is marked as
 such, and the session is limited as for mail (see
 [Prompt injection](/guide/security)).
 
+### The agent's cursor
+
+While the agent works you can watch it in the browser: before each click,
+typed text, choice, key or scroll, an arrow glides to the element along a slight
+arc, with a few words on what is about to happen (`Click · Save`,
+`Type · "Lisbon"`, `Choose · Pro`), and pulses as the real action lands.
+
+- It is drawn by the page, not the system pointer, and clicks pass through it.
+  It is not in the accessibility tree, so the views and diffs the model reads
+  never contain it, and it is hidden while `browser_screenshot` takes a picture.
+- It keeps its place when a page loads, so it does not jump to a corner on every
+  navigation, and it points at elements inside frames too.
+- It follows the browser's light or dark theme: see-through dark glass with a
+  white edge and a light blue glow in dark mode, a deep blue glass with a blue
+  glow in light mode.
+
+Each move takes about a third of a second, which the action waits for. To turn
+it off, clear **Browser → Show the agent's cursor**; the actions then do not wait.
+
 ### Upgrading from the Playwright MCP
 
 Before these tools, the portal attached the browser as a Playwright MCP server.
