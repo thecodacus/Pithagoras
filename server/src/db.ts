@@ -1758,6 +1758,18 @@ export function setPortalBrowser(on: boolean): void {
   putSetting("browser_tools", on ? "1" : "0");
 }
 
+/**
+ * Whether the browser tools show their cursor: on unless switched off on the
+ * Browser page ("0"). Off, nothing moves and the actions do not wait for it.
+ */
+export function browserCursorOn(): boolean {
+  return (getStoredSettings() as Record<string, string>).browser_cursor !== "0";
+}
+
+export function setBrowserCursor(on: boolean): void {
+  putSetting("browser_cursor", on ? "1" : "0");
+}
+
 /** Whether the agent has a browser at all: the portal's tools, or an MCP server pointed at it. */
 export function browserConfigured(): boolean {
   return portalBrowserOn() || browserServers().length > 0;

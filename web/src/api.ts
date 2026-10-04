@@ -727,6 +727,8 @@ export const api = {
     json<{ connectedAs: string | null }>("/api/browser/connect", { method: "POST" }),
   disconnectBrowser: () =>
     json<{ connectedAs: string | null }>("/api/browser/connect", { method: "DELETE" }),
+  setBrowserCursor: (on: boolean) =>
+    json<{ cursor: boolean }>("/api/browser/cursor", { method: "PUT", body: JSON.stringify({ on }) }),
   setBrowserAllowlist: (domains: string) =>
     json<{ allowlist: string }>("/api/browser/allowlist", {
       method: "PUT",
@@ -1571,6 +1573,8 @@ export interface BrowserStatus {
   pages: { title: string; url: string }[];
   uiPort: string;
   allowlist: string;
+  /** Whether the browser tools glide a cursor to what they act on. */
+  cursor: boolean;
   /** Is the browser wired up at all, whether or not it is running right now? */
   configured: boolean;
   /** Does a conversation that has never said anything about it get the browser? */

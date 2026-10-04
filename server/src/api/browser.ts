@@ -4,6 +4,7 @@ import {
   browserAllowlist,
   browserByDefault,
   browserConfigured,
+  browserCursorOn,
   browserExceptions,
   getDb,
   knownTools,
@@ -12,6 +13,7 @@ import {
   projectTools,
   sessionTools,
   setBrowserAllowlist,
+  setBrowserCursor,
   setPortalBrowser,
   setProjectTools,
   setSessionTools,
@@ -207,6 +209,8 @@ export function browserRouter(): Router {
       pages,
       uiPort: uiPort(),
       allowlist: browserAllowlist().join("\n"),
+      // Whether the tools glide a cursor to what they act on, for whoever watches.
+      cursor: browserCursorOn(),
       // Two separate things that each look fine alone: a browser nobody can
       // drive, and tools pointed at a browser that is gone.
       connectedAs: portalBrowserOn() ? "built-in" : findConnection(),
@@ -286,6 +290,14 @@ export function browserRouter(): Router {
 
   router.get("/browser/suggest-password", (_req, res) => {
     res.json({ password: service.suggestPassword() });
+  });
+
+  /** Whether the browser tools show their cursor. It applies from the next action. */
+  router.put("/browser/cursor", (req, res) => {
+    const on = req.body?.on;
+    if (typeof on !== "boolean") return res.status(400).json({ error: "on must be a boolean" });
+    setBrowserCursor(on);
+    res.json({ cursor: browserCursorOn() });
   });
 
   /** Domains the browser may be pointed at. Empty means no restriction. */

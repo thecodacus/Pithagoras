@@ -29,9 +29,15 @@ const LONG = `<!doctype html><title>Long</title>
 <article id=essay><h2>Essay</h2><p>${words(600)}</p></article>
 <h2>Pricing</h2><p>It costs nothing.</p></main>`;
 
+// A button that notes where the agent's cursor was when it was clicked, and a link to the next page.
+const CURSOR = (n) => `<!doctype html><title>Cursor ${n}</title>
+<button id=go style="position:absolute;left:400px;top:300px;width:120px;height:40px" onclick="window.__clickedAt = window.__agentCursor && window.__agentCursor.where(); this.textContent = 'Done'">Go</button>
+<a href="/cursor/${n + 1}" style="position:absolute;left:${100 + n * 60}px;top:500px">Next page</a>`;
+
 const site = createServer((req, res) => {
   res.setHeader("content-type", "text/html");
-  res.end(req.url === "/long" ? LONG : FORM);
+  const cursorPage = req.url.match(/^\/cursor\/(\d+)/);
+  res.end(cursorPage ? CURSOR(Number(cursorPage[1])) : req.url === "/long" ? LONG : FORM);
 });
 let browser;
 let tools = {};
@@ -134,6 +140,55 @@ test("the browser tools, on a real browser", { skip: browser ? false : "no Chrom
     assert.match(page1, /get_text (?:f\d+)?e\d+ offset=\d+ for more/);
     const page2 = await call("browser_get_text", { ref: article, offset: 2000 });
     assert.match(page2, /\(chars [\d,]+–/);
+  });
+
+  await t.test("the cursor lands on the element before the real click, keeps its place over navigations and is never in what the model reads", async () => {
+    // A second client on the same browser, to look at the page as the tools leave it.
+    const observer = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
+    try {
+      const pageAt = (url) => observer.contexts().flatMap((c) => c.pages()).find((pg) => pg.url() === url);
+      const view = await call("browser_navigate", { url: `${base}/cursor/1` });
+      assert.doesNotMatch(view, /agent-cursor|Click ·/, "the cursor is not in the view");
+      const clicked = await call("browser_click", { ref: refOf(view, /button "Go"/) });
+      assert.match(clicked, /button "Done"/);
+      assert.doesNotMatch(clicked, /Click ·|agent-cursor/, "nor in the diff after an action");
+      const first = pageAt(`${base}/cursor/1`);
+      const at = await first.evaluate(() => window.__clickedAt);
+      const box = await first.locator("#go").boundingBox();
+      assert.ok(at, "the cursor was on the page when the button was clicked");
+      assert.ok(Math.abs(at.x - (box.x + box.width / 2)) < 1.5 && Math.abs(at.y - (box.y + box.height / 2)) < 1.5, `at the button's centre: ${JSON.stringify(at)}`);
+
+      // Three navigations in a row: each new page has the cursor, where it was when the link was clicked.
+      let current = await call("browser_snapshot");
+      for (let n = 1; n <= 3; n++) {
+        const link = pageAt(`${base}/cursor/${n}`).locator("a");
+        const lb = await link.boundingBox();
+        current = await call("browser_click", { ref: refOf(current, /link "Next page"/) });
+        assert.match(current, new RegExp(`the page is now .*/cursor/${n + 1}`));
+        const next = pageAt(`${base}/cursor/${n + 1}`);
+        let where = null;
+        for (let i = 0; i < 40 && !where; i++) where = await next.evaluate(() => window.__agentCursor?.where() ?? null).catch(() => null), where || (await new Promise((r) => setTimeout(r, 50)));
+        assert.ok(where, `the cursor is on page ${n + 1}`);
+        assert.ok(Math.abs(where.x - (lb.x + lb.width / 2)) < 1.5 && Math.abs(where.y - (lb.y + lb.height / 2)) < 1.5, `kept its place on page ${n + 1}: ${JSON.stringify(where)}`);
+      }
+
+      // Switched off on the Browser page, it does not move and the click does not wait for it.
+      const { setBrowserCursor } = await import("../dist/db.js");
+      setBrowserCursor(false);
+      try {
+        const page4 = pageAt(`${base}/cursor/4`);
+        const before = await page4.evaluate(() => window.__agentCursor.where());
+        const started = Date.now();
+        await call("browser_click", { ref: refOf(current, /button "Go"/) });
+        assert.deepEqual(await page4.evaluate(() => window.__clickedAt), before, "it stayed where it was");
+        assert.ok(Date.now() - started < 2500, "and the click did not wait for a glide");
+      } finally {
+        setBrowserCursor(true);
+      }
+    } finally {
+      // Not close(): on a browser reached over CDP that can end the browser itself, which the next test needs.
+      // The connection goes when the test's browser closes.
+    }
   });
 
   await t.test("a screenshot is an image", async () => {

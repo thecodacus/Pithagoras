@@ -199,6 +199,8 @@ const de: Locale = {
     "Fullscreen": "Vollbild",
     "Open now": "Jetzt geöffnet",
     "Untitled": "Ohne Titel",
+    "Show the agent's cursor": "Den Mauszeiger des Agenten zeigen",
+    "Before each click, typed text or choice, an arrow glides to the element and says what it is about to do, so you can follow along. Off, the actions do not wait for it.": "Vor jedem Klick, jeder Eingabe und jeder Auswahl gleitet ein Pfeil zum Element und sagt, was er gleich tut, damit du mitverfolgen kannst. Ausgeschaltet warten die Aktionen nicht auf ihn.",
     "Where it may go": "Wohin er darf",
     "One domain per line. {pattern} covers its subdomains. Leave it empty for no restriction — the per-session switch is the gate, and a list nobody filled in should not quietly block everything.": "Eine Domain pro Zeile. {pattern} umfasst ihre Subdomains. Leer lassen für keine Einschränkung — der Schalter pro Sitzung ist das Tor, und eine Liste, die niemand ausgefüllt hat, soll nicht still alles blockieren.",
     "Checked when the agent asks for a URL, and every allowed one is recorded in Audit. A page that redirects itself is not covered — that needs a filtering proxy, which is not built yet.": "Geprüft, wenn der Agent eine URL anfragt, und jede erlaubte wird im Audit festgehalten. Eine Seite, die selbst weiterleitet, ist nicht abgedeckt — dafür bräuchte es einen filternden Proxy, den es noch nicht gibt.",
