@@ -45,9 +45,6 @@ test("the sandbox holds against the ways round it", { skip: why }, async (t) => 
   writeFileSync(path.join(DATA, ".secrets", "key.json"), '{"api_key":"sk-secret-123"}\n');
   writeFileSync(path.join(DATA, "home", ".pi", "agent", "auth.json"), '{"token":"pi-auth-secret"}\n');
   writeFileSync(path.join(DATA, "bin", "hello"), "#!/bin/sh\necho hi\n", { mode: 0o755 });
-  // The portal's database with SQLite's journal beside it, as a running portal has.
-  writeFileSync(path.join(DATA, "portal.db"), "db");
-  writeFileSync(path.join(DATA, "portal.db-wal"), "recent writes: sk-secret-in-wal");
   // A trusted command that reads the key: only pi-tools can.
   writeFileSync(path.join(DATA, "trusted", "show-key"), `#!/bin/sh\ngrep -o 'sk-[a-z0-9-]*' ${path.join(DATA, ".secrets", "key.json")}\n`, { mode: 0o755 });
 
@@ -87,10 +84,18 @@ test("the sandbox holds against the ways round it", { skip: why }, async (t) => 
       `cat ${auth}`,
       `ls ${path.join(DATA, ".secrets")}`,
       `sudo -n cat ${secret}`,
-      `cat ${path.join(DATA, "portal.db-wal")}`,
     ]) {
       const ran = bash(command);
-      assert.doesNotMatch(ran.stdout, /sk-secret-123|pi-auth-secret|key\.json|sk-secret-in-wal/, command);
+      assert.doesNotMatch(ran.stdout, /sk-secret-123|pi-auth-secret|key\.json/, command);
+    }
+  });
+
+  await t.test("the portal's database and the journal SQLite keeps beside it are closed", () => {
+    // Saving the policy opened the real database, in WAL mode, as a running portal has it.
+    for (const file of ["portal.db", "portal.db-wal"]) {
+      if (!existsSync(path.join(DATA, file))) continue;
+      const ran = bash(`cat ${path.join(DATA, file)} | wc -c`);
+      assert.match(ran.stderr, /Permission denied/, file);
     }
   });
 
