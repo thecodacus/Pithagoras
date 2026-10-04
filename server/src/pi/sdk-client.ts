@@ -6,6 +6,7 @@ import { EDIT_IMAGE_SOURCE, EDIT_IMAGE_TOOL, GENERATE_IMAGE_SOURCE, GENERATE_IMA
 import { GENERATED_PICTURE_MARK } from "../generated-picture.js";
 import { acceptPrompt } from "./accept-prompt.js";
 import { AUDIO_MESSAGE_PREFIX, AudioRule, VoiceFirstTurn, audioMessage, spokenIn } from "./voice-first.js";
+import { sandboxTools } from "../sandbox/tools.js";
 import { crossModelThinkingExtension } from "./cross-model-thinking.js";
 import { BROWSER_READING_RULE, BROWSER_SCREENSHOT_RULE } from "./browser-snapshot.js";
 import { browserTools } from "../browser/tools.js";
@@ -440,6 +441,9 @@ export class SdkPiClient extends EventEmitter implements PiClient {
             opts.browserNow ?? (() => ({ allowed: false, allowlist: [] })),
           ) },
       ];
+      // While the sandbox is on, pi's own tools do what they do to the system as the sandbox user: see sandbox/.
+      const sandboxed = sandboxTools(pi, opts.cwd);
+      if (sandboxed) factories.push({ name: "sandbox", factory: sandboxed });
       if (canvases) factories.push({ name: "canvases", factory: canvases.extension });
       // Beside the canvases: both are how the agent puts something on the screen.
       if (opts.sessionId) factories.push({ name: SHOW_IMAGE_SOURCE, factory: showImageTool(opts.cwd) });
