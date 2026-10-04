@@ -475,7 +475,8 @@ Other providers and the container executor retain their normal thinking behavior
 ### Speaking instructions
 
 The rules for how the agent talks — one short spoken sentence before a task's
-tools, not one before every step, plain
+tools, then now and then a short line of what it found or is trying next while
+it works (not one per tool call), plain
 text without Markdown, long reports in a canvas, pictures through `show_image`,
 the `(laugh)` / `(sigh)` cues — are a block of text that is part of the rule
 above. **Settings → Add-ons → Voice → Speaking instructions** shows the text in
