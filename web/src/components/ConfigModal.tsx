@@ -11,6 +11,7 @@ import {
   LuFileJson,
   LuFolder,
   LuHammer,
+  LuShieldCheck,
   LuImage,
   LuInfo,
   LuKeyboard,
@@ -47,6 +48,7 @@ import { PicturesPanel } from "./PicturesPanel";
 import { PortalExtensions } from "./PortalExtensions";
 import { Modal } from "./Modal";
 import { ToolDefaults } from "./ToolDefaults";
+import { SandboxSettings } from "./SandboxSettings";
 import { isEnter } from "../shortcuts";
 import { KeyboardShortcuts } from "./KeyboardShortcuts";
 import { ProvidersPanel } from "./ProvidersPanel";
@@ -69,6 +71,7 @@ export type Tab =
   | "people"
   | "add-ons"
   | "tools"
+  | "sandbox"
   | "images"
   | "skills"
   | "mcp"
@@ -100,6 +103,7 @@ const GROUPS: { label: string; tabs: TabDef[] }[] = [
     label: msg("Agent"),
     tabs: [
       { id: "tools", label: msg("Tools"), icon: <LuHammer />, hint: msg("What the agent may reach for, by default") },
+      { id: "sandbox", label: msg("Sandbox"), icon: <LuShieldCheck />, hint: msg("What the agent may read, change and run") },
       { id: "images", label: msg("Images"), icon: <LuImage />, hint: msg("The image model behind making and changing pictures") },
       { id: "skills", label: msg("Skills"), icon: <LuWrench />, hint: msg("Procedures the agent can reach for") },
       { id: "mcp", label: msg("MCP"), icon: <LuPlug />, hint: msg("Servers the agent can pull tools from") },
@@ -308,6 +312,7 @@ export function ConfigModal({
       {nav.kind === "tab" && nav.id === "people" && <PeoplePanel onError={setError} />}
       {nav.kind === "tab" && nav.id === "add-ons" && <PortalExtensions onError={setError} />}
       {nav.kind === "tab" && nav.id === "tools" && <ToolDefaults onError={setError} />}
+      {nav.kind === "tab" && nav.id === "sandbox" && <SandboxSettings onError={setError} />}
       {nav.kind === "tab" && nav.id === "images" && <PicturesPanel onError={setError} />}
       {nav.kind === "tab" && nav.id === "skills" && <SkillsPanel onError={setError} />}
       {nav.kind === "tab" && nav.id === "mcp" && <McpPanel onError={setError} />}
