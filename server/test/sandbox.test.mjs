@@ -114,6 +114,13 @@ test("the sandbox holds against the ways round it", { skip: why }, async (t) => 
     await assert.rejects(ops.grep.readFile(secret), { code: "EACCES" });
   });
 
+  await t.test("git works in a project that belongs to root, without the agent trusting it first", () => {
+    execFileSync("git", ["init", "-q", path.join(WORK, "project")]);
+    const ran = bash("git status --short && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m first && git log --format=%s -1");
+    assert.doesNotMatch(ran.stderr, /dubious ownership/);
+    assert.equal(ran.stdout.trim().split("\n").pop(), "first", ran.stderr);
+  });
+
   await t.test("a read-only folder runs but cannot be changed; a workspace can", () => {
     assert.equal(bash(`${path.join(DATA, "bin", "hello")}`).stdout.trim(), "hi");
     assert.notEqual(bash(`echo x >> ${path.join(DATA, "bin", "hello")}`).status, 0);

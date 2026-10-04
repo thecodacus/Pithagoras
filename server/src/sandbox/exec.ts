@@ -39,6 +39,14 @@ export function sandboxEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   out.LOGNAME = AGENT_USER;
   out.SHELL = "/bin/bash";
   out.TMPDIR = "/tmp";
+  // The projects belong to root and the agent works in them as pi-agent, which git takes for a repository
+  // someone else put there ("dubious ownership"). Trusted here, through git's own environment config, so
+  // no file of anyone's changes. A command that sets its own keeps them: git counts them from 0 again.
+  if (!out.GIT_CONFIG_COUNT) {
+    out.GIT_CONFIG_COUNT = "1";
+    out.GIT_CONFIG_KEY_0 = "safe.directory";
+    out.GIT_CONFIG_VALUE_0 = "*";
+  }
   out.PATH ??= "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
   return out;
 }
