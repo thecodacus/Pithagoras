@@ -6,7 +6,7 @@ import type { Agent } from "../agents.js";
 import { SANDBOX_HOME, idOf, type SandboxSupport } from "./policy.js";
 
 /**
- * Who an agent is in the sandbox: a user of its own, `pi-agent-<id>`, with a
+ * Who an agent is in the sandbox: a user of its own, `pi-agent-<hash>`, with a
  * group of its own that owns its home. One agent cannot read another's home,
  * nor reach it through the other's processes (/proc/<pid>/cwd is only open to
  * the same user) or its temporary files, since each has its own HOME and TMPDIR.
@@ -31,21 +31,12 @@ export interface Identity {
 const FIRST_ID = 10100;
 const IDS_SETTING = "sandbox_agent_ids";
 
-const PREFIX = "pi-agent-";
-const MAX_USER = 32;
-
 /**
- * A user name for an agent, from its id, which its name gave it: valid for
- * useradd and at most 32 characters. An id too long for that is cut, with a
- * hash of the whole of it after, so two agents whose ids begin alike are not
- * made the same user.
+ * A user name for an agent: a hash of its id, which a rename leaves as it is,
+ * so the name is always valid for useradd and the same length, whatever the
+ * agent is called.
  */
-export function userFor(agentId: string): string {
-  const id = agentId.toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
-  if (PREFIX.length + id.length <= MAX_USER) return PREFIX + id;
-  const hash = createHash("sha256").update(agentId).digest("hex").slice(0, 6);
-  return `${PREFIX}${id.slice(0, MAX_USER - PREFIX.length - hash.length - 1).replace(/-+$/, "")}-${hash}`;
-}
+export const userFor = (agentId: string) => `pi-agent-${createHash("sha256").update(agentId).digest("hex").slice(0, 8)}`;
 
 function ids(): Record<string, number> {
   try {

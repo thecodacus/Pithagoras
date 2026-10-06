@@ -57,7 +57,7 @@ export function SandboxSettings({ onError }: { onError: (message: string) => voi
         )}
         <SwitchRow
           title={t("Run the agent in the sandbox")}
-          detail={t("Its commands, and everything its file tools do, run as an unprivileged user of the agent's own, pi-agent-<id>, which cannot read another agent's home, with an environment that holds none of the portal's secrets. Whatever it tries, a script of its own or a symlink included, meets the permissions below.")}
+          detail={t("Its commands, and everything its file tools do, run as an unprivileged user of the agent's own, which cannot read another agent's home, with an environment that holds none of the portal's secrets. Whatever it tries, a script of its own or a symlink included, meets the permissions below.")}
           on={draft.enabled}
           disabled={!state.available}
           onChange={(enabled) => update({ enabled })}

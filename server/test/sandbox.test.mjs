@@ -39,9 +39,7 @@ function users() {
 test("an agent's user name is valid for useradd and its own, however long its name", async () => {
   const { userFor } = await import("../dist/sandbox/identity.js");
   const { slugOf } = await import("../dist/agents.js");
-  const valid = /^[a-z_][a-z0-9_-]*[a-z0-9_]$/;
-  assert.equal(userFor("home"), "pi-agent-home");
-  assert.equal(userFor("test"), "pi-agent-test");
+  const valid = /^pi-agent-[0-9a-f]{8}$/;
   const long = slugOf("My research assistant for the garden");
   const ids = [long, `${long}-2`, slugOf("My research assistant for the garage"), slugOf("Ünïcödé — ✨ 東京"), "a".repeat(23), "a".repeat(24), "abcdefghijklmnop-qrstuv-wxyz"];
   const users = ids.map(userFor);
