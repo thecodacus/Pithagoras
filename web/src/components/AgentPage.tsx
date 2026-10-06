@@ -17,6 +17,7 @@ import {
   LuRadio,
   LuRefreshCw,
   LuTrash2,
+  LuUser,
 } from "react-icons/lu";
 import { PageHeader, Stat } from "./PageHeader";
 import { RowsSkeleton } from "./Skeleton";
@@ -390,6 +391,10 @@ function AgentView({
               <div className="flex min-w-0 items-center gap-1.5 rounded-lg bg-raised/60 px-2.5 py-1">
                 <LuFolder className="h-3 w-3 shrink-0 text-fg-faint" />
                 <span className="truncate font-mono text-[11px] text-fg-subtle">{agent.home}</span>
+              </div>
+              <div className="flex min-w-0 items-center gap-1.5 rounded-lg bg-raised/60 px-2.5 py-1" title={t("The user it runs as when the sandbox is on")}>
+                <LuUser className="h-3 w-3 shrink-0 text-fg-faint" />
+                <span className="truncate font-mono text-[11px] text-fg-subtle">{agent.sandboxUser}</span>
               </div>
             </div>
           </PageHeader>

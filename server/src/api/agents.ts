@@ -6,6 +6,7 @@ import { listAgentSessions, listSessions } from "../db.js";
 import { deleteNote, listNotes, markNoteRead, markNotesRead, unreadNotes } from "../activity.js";
 import { heartbeat, setHeartbeat, watchList } from "../heartbeat.js";
 import { EXECUTOR_KIND } from "../session-manager.js";
+import { userFor } from "../sandbox/identity.js";
 
 /**
  * The agents: listing them, making one, naming it, and its own files and setup.
@@ -22,6 +23,7 @@ export function agentToApi(a: Agent, chats = 0) {
     id: a.id,
     name: a.name,
     home: a.home,
+    sandboxUser: userFor(a.id),
     first: a.id === DEFAULT_AGENT,
     initialised: isInitialised(a.home),
     chats,

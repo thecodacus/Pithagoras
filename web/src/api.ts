@@ -115,6 +115,8 @@ export interface Agent {
   id: string;
   name: string;
   home: string;
+  /** The user it runs as when the sandbox is on. */
+  sandboxUser: string;
   /** The Home there always was: the one chats go to when none is named, which cannot be deleted. */
   first: boolean;
   initialised: boolean;

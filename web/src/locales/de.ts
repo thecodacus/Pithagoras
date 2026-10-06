@@ -84,6 +84,7 @@ const de: Locale = {
     "Its one chat is stopped and deleted with it.": "Sein einziger Chat wird angehalten und mit ihm gelöscht.",
     "Its {n} chats are stopped and deleted with it.": "Seine {n} Chats werden angehalten und mit ihm gelöscht.",
     "Keep its folder": "Ordner behalten",
+    "The user it runs as when the sandbox is on": "Der Benutzer, als der er läuft, wenn die Sandbox an ist",
     "Its files and memory stay in {home}. An agent made under the same name picks them up again.": "Seine Dateien und sein Gedächtnis bleiben in {home}. Ein Agent mit demselben Namen übernimmt sie wieder.",
     "Delete its folder too": "Auch den Ordner löschen",
     "Everything in {home} is removed, its memory with it. This cannot be undone.": "Alles in {home} wird entfernt, auch sein Gedächtnis. Das lässt sich nicht rückgängig machen.",
