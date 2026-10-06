@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { useSearchParams } from "react-router-dom";
 import { OrbStudio } from "./OrbStudio";
 import { ActivityFeed, HeartbeatSettings } from "./AgentHeartbeat";
+import { AgentSkills } from "./AgentSkills";
 import { VoiceOrb, type VoiceLevels } from "./VoiceOrb";
 import {
   LuBot,
@@ -401,6 +402,7 @@ function AgentView({
 
           {tab === "activity" && <ActivityFeed agent={agent} onChanged={onChanged} onSelect={onSelect} />}
           {tab === "heartbeat" && <HeartbeatSettings agent={agent} onChanged={onChanged} />}
+          {tab === "skills" && <AgentSkills agent={agent} />}
           {tab === "files" && setup?.initialised && <AgentFiles agent={agent.id} setup={setup} onSaved={setSetup} />}
 
           {tab === "conversations" && (
@@ -519,6 +521,7 @@ const AGENT_TABS = [
   ["conversations", msg("Conversations")],
   ["activity", msg("Activity")],
   ["heartbeat", msg("Heartbeat")],
+  ["skills", msg("Skills")],
   ["files", msg("Files")],
 ] as const;
 type AgentTab = (typeof AGENT_TABS)[number][0];

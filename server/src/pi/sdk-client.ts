@@ -7,6 +7,8 @@ import { GENERATED_PICTURE_MARK } from "../generated-picture.js";
 import { acceptPrompt } from "./accept-prompt.js";
 import { AUDIO_MESSAGE_PREFIX, AudioRule, VoiceFirstTurn, audioMessage, spokenIn } from "./voice-first.js";
 import { sandboxTools } from "../sandbox/tools.js";
+import { agentSkillsDir, skillsLine } from "../agent-skills.js";
+import { agentOf, defaultAgent } from "../agents.js";
 import { crossModelThinkingExtension } from "./cross-model-thinking.js";
 import { BROWSER_READING_RULE, BROWSER_SCREENSHOT_RULE } from "./browser-snapshot.js";
 import { browserTools } from "../browser/tools.js";
@@ -427,6 +429,8 @@ export class SdkPiClient extends EventEmitter implements PiClient {
       // Both are required: the constructor resolves each and throws on
       // undefined, which previously left every session with no extensions.
       const builtinSkills = builtinSkillsDir();
+      // The skills the agent wrote for itself, in its own home: a chat in a project is the first agent's.
+      const skillsOf = agentOf(opts.cwd) ?? defaultAgent();
       // Every session, unconditionally: the point is to limit what a turn can do
       // after it reads something untrusted, and any session can read something.
       const factories: { name: string; factory: (pi: any) => void }[] = [
@@ -477,7 +481,8 @@ export class SdkPiClient extends EventEmitter implements PiClient {
         // Available everywhere without being installed, and not editable in
         // place: they belong to the image, so an edit would be lost on the next
         // deploy without saying so.
-        ...(builtinSkills ? { additionalSkillPaths: [builtinSkills] } : {}),
+        // Its own only once it has one: pi reports a skill path that is not there as an error.
+        additionalSkillPaths: [...(builtinSkills ? [builtinSkills] : []), ...(skillsOf && existsSync(agentSkillsDir(skillsOf)) ? [agentSkillsDir(skillsOf)] : [])],
         // Inline rather than an installed package: the portal owns routines, so
         // a package would have to call back over HTTP to reach the database it
         // sits beside. Absent unless asked, so a task session never sees them.
@@ -503,6 +508,8 @@ export class SdkPiClient extends EventEmitter implements PiClient {
         // A conversation with anyone else had no memory to replace.
       }, audioRule, () => [
         ...ownFiles(opts.cwd, opts.role),
+        // Where its own skills go: only for the person it works for; a look or a colleague does not write them.
+        ...(skillsOf && (!opts.role || opts.role === "primary") && !opts.heartbeatAgent ? [skillsLine(skillsOf)] : []),
         ...((!opts.role || opts.role === "primary") && understoryOn() ? [UNDERSTORY_RULE] : []),
       ]);
       await resourceLoader.reload();

@@ -823,6 +823,9 @@ export const api = {
     ),
   setAgentVoice: (agent: string, voice: string) =>
     json<Agent>(`/api/agents/${encodeURIComponent(agent)}/voice`, { method: "PUT", body: JSON.stringify({ voice }) }),
+  agentSkills: (agent: string) => json<{ folder: string; skills: AgentSkill[] }>(`/api/agents/${encodeURIComponent(agent)}/skills`),
+  agentSkill: (agent: string, skill: string) =>
+    json<{ content: string }>(`/api/agents/${encodeURIComponent(agent)}/skills/${encodeURIComponent(skill)}`),
   agentSetup: (agent: string) => json<AgentSetup>(`/api/agents/${encodeURIComponent(agent)}/setup`),
   /** The avatar voice mode shows for a chat: its agent's. */
   chatOrb: (session: string) => json<OrbStyle>(`/api/agent/orb?session=${encodeURIComponent(session)}`),
@@ -1585,6 +1588,15 @@ export interface BrowserStatus {
   /** Only the conversations that disagree with that — see "Who may drive it". */
   sessions: { id: string; title: string; kind: string; allowed: boolean }[];
   routines: { slug: string; name: string }[];
+}
+
+/** A skill an agent wrote for itself, in its home's skills folder. */
+export interface AgentSkill {
+  id: string;
+  name: string;
+  description: string;
+  updatedAt: number;
+  files: string[];
 }
 
 /** What the agent may do to a path in the sandbox. */
