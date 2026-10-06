@@ -51,7 +51,12 @@ test("the sandbox holds against the ways round it", { skip: why }, async (t) => 
 
   const { parsePolicy, saveSandboxPolicy, sandboxSupport, defaultRules } = await import("../dist/sandbox/policy.js");
   const { applySandbox } = await import("../dist/sandbox/apply.js");
-  const { bashSpawnHook, fileOperations } = await import("../dist/sandbox/exec.js");
+  const { bashSpawnHook, fileOperations, runToolAsAgent, asAgent } = await import("../dist/sandbox/exec.js");
+  const { identityOf } = await import("../dist/sandbox/identity.js");
+  const { createAgent, defaultAgent } = await import("../dist/agents.js");
+  // A second agent, with something of its own in its home.
+  const second = createAgent({ name: "Second" });
+  writeFileSync(path.join(second.home, "MEMORY.md"), "second-agent-memory: the renewal is on Friday\n");
   // /sys is read-only in a container, as /certs is on a portal that mounts it so: put on first, as the widest.
   const policy = parsePolicy({ enabled: true, rules: [{ path: "/sys", access: "none" }, ...defaultRules()], trusted: [{ name: "show-key", script: "show-key" }] });
   saveSandboxPolicy(policy);
@@ -62,21 +67,58 @@ test("the sandbox holds against the ways round it", { skip: why }, async (t) => 
   // A rule on a read-only filesystem is noted and the others still go on.
   if (spawnSync("sh", ["-c", "touch /sys/x 2>&1 | grep -q 'Read-only'"]).status === 0) assert.ok(report.done.some((d) => /^\/sys: on a read-only filesystem/.test(d)), report.done.join("\n"));
 
+  // Each agent as its own user: the first, whose chats in a project are, and the second.
+  const first = defaultAgent();
+  const whoA = identityOf(first, support), whoB = identityOf(second, support);
   // What pi's bash runs, through the spawn hook, as it would.
-  const hook = bashSpawnHook(support.ids);
-  const bash = (command, cwd = path.join(WORK, "project")) => {
-    const c = hook({ command, cwd, env: process.env });
+  const bashAs = (who, command, cwd = path.join(WORK, "project")) => {
+    const c = bashSpawnHook(who)({ command, cwd, env: process.env });
     return spawnSync("/bin/bash", ["-c", c.command], { cwd: c.cwd, env: c.env, encoding: "utf8" });
   };
-  const ops = fileOperations(support.ids);
+  const bash = (command, cwd) => bashAs(whoA, command, cwd);
+  const ops = fileOperations(whoA);
   const secret = path.join(DATA, ".secrets", "key.json");
   const auth = path.join(DATA, "home", ".pi", "agent", "auth.json");
 
-  await t.test("the shell runs as pi-agent, without the portal's secrets in its environment", () => {
-    assert.equal(bash("id -un").stdout.trim(), "pi-agent");
+  await t.test("the shell runs as the agent's own user, without the portal's secrets in its environment", () => {
+    assert.equal(bash("id -un").stdout.trim(), whoA.user);
+    assert.equal(bashAs(whoB, "id -un", second.home).stdout.trim(), whoB.user);
     const env = bash("env").stdout;
     assert.doesNotMatch(env, /portal-secret-value/);
-    assert.match(env, new RegExp(`HOME=${path.join(DATA, "sandbox-home")}`));
+    assert.match(env, new RegExp(`HOME=${path.join(DATA, "sandbox-home", first.id)}`));
+    assert.match(env, new RegExp(`TMPDIR=${path.join(DATA, "sandbox-home", first.id, "tmp")}`));
+  });
+
+  await t.test("one agent cannot read another's home, list the homes, reach it through its processes or read its temporary files", async () => {
+    const memory = path.join(second.home, "MEMORY.md");
+    for (const command of [`cat ${memory}`, `ls ${second.home}`, `ls ${path.dirname(second.home)}`, `cat ${path.join(whoB.home, ".bash_history")}`]) {
+      const ran = bash(command);
+      assert.doesNotMatch(ran.stdout, /second-agent-memory|MEMORY\.md|second/i, command);
+    }
+    assert.match(bashAs(whoB, `cat ${memory}`, second.home).stdout, /second-agent-memory/, "its own, it reads");
+    // A process of the second agent's, sitting in its home: the first cannot go in through /proc.
+    const sleeper = spawnSync("sh", ["-c", `${asAgent(whoB).join(" ")} sh -c 'cd ${second.home} && exec sleep 30' >/dev/null 2>&1 & echo $!`], { encoding: "utf8" }).stdout.trim();
+    try {
+      await new Promise((r) => setTimeout(r, 200));
+      const pid = spawnSync("pgrep", ["-u", String(whoB.uid), "-x", "sleep"], { encoding: "utf8" }).stdout.trim().split("\n")[0] || sleeper;
+      assert.doesNotMatch(bash(`ls /proc/${pid}/cwd/; cat /proc/${pid}/cwd/MEMORY.md`).stdout, /second-agent-memory|MEMORY\.md/);
+    } finally {
+      spawnSync("pkill", ["-u", String(whoB.uid), "-x", "sleep"]);
+    }
+    // A file in the second agent's temporary folder.
+    bashAs(whoB, 'echo second-agent-temp > "$TMPDIR/note"', second.home);
+    assert.doesNotMatch(bash(`cat ${path.join(whoB.tmp, "note")} 2>&1`).stdout, /second-agent-temp/);
+  });
+
+  await t.test("search runs as the agent: grep finds nothing in another agent's home or in the keys, and finds its own", async () => {
+    const grepAs = (who, params, cwd = path.join(WORK, "project")) =>
+      runToolAsAgent(who, "grep", cwd, params).then((r) => r.content.map((c) => c.text).join("\n"), (e) => `ERROR ${e.message}`);
+    assert.doesNotMatch(await grepAs(whoA, { pattern: "second-agent-memory", path: second.home }), /renewal is on Friday/);
+    assert.doesNotMatch(await grepAs(whoA, { pattern: "sk-secret", path: path.join(DATA, ".secrets") }), /sk-secret-123/);
+    assert.match(await grepAs(whoB, { pattern: "second-agent-memory", path: second.home }, second.home), /renewal is on Friday/);
+    assert.match(await grepAs(whoA, { pattern: "hello", path: path.join(WORK, "project") }), /notes\.txt/);
+    const found = await runToolAsAgent(whoA, "find", path.join(WORK, "project"), { pattern: "*.txt" }).then((r) => r.content.map((c) => c.text).join("\n"), (e) => `ERROR ${e.message}`);
+    assert.match(found, /notes\.txt/);
   });
 
   await t.test("a key cannot be read directly, through another interpreter, a script of its own or a symlink", () => {
@@ -115,7 +157,6 @@ test("the sandbox holds against the ways round it", { skip: why }, async (t) => 
     await ops.write.writeFile(path.join(WORK, "project", "new.txt"), "made by the agent\n");
     assert.equal(readFileSync(path.join(WORK, "project", "new.txt"), "utf8"), "made by the agent\n");
     await assert.rejects(ops.write.writeFile(path.join(DATA, "bin", "hello"), "changed"), { code: "EACCES" });
-    await assert.rejects(ops.grep.readFile(secret), { code: "EACCES" });
   });
 
   await t.test("git works in a project that belongs to root, without the agent trusting it first", () => {
@@ -148,19 +189,10 @@ test("the sandbox holds against the ways round it", { skip: why }, async (t) => 
   await t.test("a trusted command reads its key; the agent cannot change it or its key", () => {
     const ran = bash(path.join(DATA, "bin", "show-key"));
     assert.equal(ran.stdout.trim(), "sk-secret-123", ran.stderr);
+    assert.equal(bashAs(whoB, path.join(DATA, "bin", "show-key"), second.home).stdout.trim(), "sk-secret-123", "every agent may run it");
     assert.notEqual(bash(`echo 'cat /etc/shadow' >> ${path.join(DATA, "trusted", "show-key")}`).status, 0);
     assert.notEqual(bash(`sudo -n -u pi-tools cat ${secret}`).status, 0, "only the listed script, not any command");
     assert.notEqual(bash(`sudo -n -u pi-tools /bin/sh -c 'cat ${secret}'`).status, 0);
-  });
-
-  await t.test("search runs as pi-agent: rg finds nothing in the keys", () => {
-    const rg = path.join(DATA, "home", ".pi", "agent", "bin", "rg");
-    assert.ok(existsSync(rg), "the rg wrapper is in pi's tools folder");
-    if (!has("rg")) return;
-    const found = spawnSync(rg, ["-r", "x", "sk-secret", path.join(DATA, ".secrets")], { encoding: "utf8" });
-    assert.doesNotMatch(found.stdout, /sk-secret-123/);
-    const ok = spawnSync(rg, ["hello", path.join(WORK, "project")], { encoding: "utf8" });
-    assert.match(ok.stdout, /notes\.txt/);
   });
 
   await t.test("the sandbox's tools follow the switch each time they are loaded, so a reload reaches open chats", async () => {
@@ -172,14 +204,14 @@ test("the sandbox holds against the ways round it", { skip: why }, async (t) => 
     };
     const fakePi = new Proxy({}, { get: (_, key) => (_cwd) => ({ name: String(key).replace(/^create(\w+)ToolDefinition$/, "$1").toLowerCase() }) });
     const factory = await sandboxTools(fakePi, path.join(WORK, "project"));
-    assert.deepEqual(names(factory), ["bash", "edit", "grep", "ls", "read", "write"]);
+    assert.deepEqual(names(factory), ["bash", "edit", "find", "grep", "ls", "read", "write"]);
     saveSandboxPolicy({ ...policy, enabled: false });
     assert.deepEqual(names(factory), [], "switched off: the built-ins stay");
     saveSandboxPolicy(policy);
-    assert.equal(names(factory).length, 6, "and on again");
+    assert.equal(names(factory).length, 7, "and on again");
   });
 
-  await t.test("switched off, the search wrappers run as the portal again and nothing else changes", async () => {
+  await t.test("switched off, the flag goes and nothing else changes", async () => {
     const off = await applySandbox({ ...policy, enabled: false }, support, false);
     assert.equal(off.ok, true);
     assert.equal(existsSync(path.join(DATA, "sandbox", "enabled")), false);

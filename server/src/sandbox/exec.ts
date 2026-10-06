@@ -1,22 +1,23 @@
 import { spawn } from "node:child_process";
-import { AGENT_USER, SANDBOX_HOME, type SandboxSupport } from "./policy.js";
+import type { Identity } from "./identity.js";
 
 /**
- * Doing things as the sandbox user: the agent's shell commands, and what pi's
- * file tools do to files, so that the kernel decides each of them by the
+ * Doing things as an agent's user in the sandbox: its shell commands, and what
+ * pi's file tools do to files, so that the kernel decides each of them by the
  * permissions the policy put on the files.
  */
 
-type Ids = NonNullable<SandboxSupport["ids"]>;
+/** Who something runs as: an agent's user, its own group and the sandbox group's. */
+export type Who = Pick<Identity, "user" | "uid" | "gid" | "shared" | "home" | "tmp">;
 
 /**
- * The argv that runs the rest as `pi-agent`: its uid, its own group and the
- * sandbox group, and no capabilities carried over. New privileges are not
+ * The argv that runs the rest as the agent's user: its uid, its own group and
+ * the sandbox group, and no capabilities carried over. New privileges are not
  * blocked: sudo has to be able to run a trusted command as `pi-tools`, which
  * the sudoers rules restrict to exactly those commands.
  */
-export function asAgent(ids: Ids): string[] {
-  return ["setpriv", `--reuid=${ids.agent}`, `--regid=${ids.agent}`, `--groups=${ids.group}`, "--inh-caps=-all", "--"];
+export function asAgent(who: Who): string[] {
+  return ["setpriv", `--reuid=${who.uid}`, `--regid=${who.gid}`, `--groups=${who.gid},${who.shared}`, "--inh-caps=-all", "--"];
 }
 
 /** Variables passed on: the shell's and the terminal's, and pi's own session metadata. */
@@ -28,18 +29,19 @@ const KEEP = new Set(["PATH", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TERM", 
  * them with `env`. pi's PI_* session variables stay (they say which session
  * this is), except the ones that point into the portal's HOME.
  */
-export function sandboxEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function sandboxEnv(base: NodeJS.ProcessEnv, who: Who): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(base)) {
     if (value === undefined) continue;
     if (KEEP.has(key) || (key.startsWith("PI_") && key !== "PI_CODING_AGENT_DIR" && !/KEY|TOKEN|SECRET|PASSWORD/.test(key))) out[key] = value;
   }
-  out.HOME = SANDBOX_HOME;
-  out.USER = AGENT_USER;
-  out.LOGNAME = AGENT_USER;
+  // Its own HOME and temporary folder: /tmp is everyone's, and a file one agent left there another could read.
+  out.HOME = who.home;
+  out.USER = who.user;
+  out.LOGNAME = who.user;
   out.SHELL = "/bin/bash";
-  out.TMPDIR = "/tmp";
-  // The projects belong to root and the agent works in them as pi-agent, which git takes for a repository
+  out.TMPDIR = who.tmp;
+  // The projects belong to root and the agent works in them as its own user, which git takes for a repository
   // someone else put there ("dubious ownership"). Trusted here, through git's own environment config, so
   // no file of anyone's changes. A command that sets its own keeps them: git counts them from 0 again.
   if (!out.GIT_CONFIG_COUNT) {
@@ -55,15 +57,15 @@ export function sandboxEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 export const shQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
 /**
- * pi's bash spawn hook: the command, as typed, run by bash as `pi-agent`, with
+ * pi's bash spawn hook: the command, as typed, run by bash as the agent's user, with
  * a umask that leaves what it makes writable for the group, so the portal and
  * the agent can both change it later.
  */
-export function bashSpawnHook(ids: Ids) {
+export function bashSpawnHook(who: Who) {
   return (context: { command: string; cwd: string; env: NodeJS.ProcessEnv }) => ({
-    command: `exec ${asAgent(ids).join(" ")} /bin/bash -c ${shQuote(`umask 002\n${context.command}`)}`,
+    command: `exec ${asAgent(who).join(" ")} /bin/bash -c ${shQuote(`umask 002\n${context.command}`)}`,
     cwd: context.cwd,
-    env: sandboxEnv(context.env),
+    env: sandboxEnv(context.env, who),
   });
 }
 
@@ -73,13 +75,14 @@ interface Ran {
   stderr: string;
 }
 
-/** Runs argv as `pi-agent`, with `input` on stdin; never throws for a non-zero exit. */
-export function runAsAgent(ids: Ids, argv: string[], input?: Buffer | string): Promise<Ran> {
+/** Runs argv as the agent's user, with `input` on stdin; never throws for a non-zero exit. */
+export function runAsAgent(who: Who, argv: string[], input?: Buffer | string, options: { cwd?: string; signal?: AbortSignal } = {}): Promise<Ran> {
   return new Promise((resolve, reject) => {
-    const [cmd, ...args] = [...asAgent(ids), ...argv];
+    const [cmd, ...args] = [...asAgent(who), ...argv];
     // stdin only where there is something to send. A command that does not read it can be gone
     // before it is written; the write then fails with EPIPE, which unheard would end the portal.
-    const child = spawn(cmd, args, { env: sandboxEnv(process.env), cwd: "/", stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
+    const child = spawn(cmd, args, { env: sandboxEnv(process.env, who), cwd: options.cwd ?? "/", stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
+    options.signal?.addEventListener("abort", () => child.kill("SIGTERM"), { once: true });
     const out: Buffer[] = [];
     let err = "";
     child.stdout!.on("data", (d: Buffer) => out.push(d));
@@ -106,13 +109,11 @@ function fsError(op: string, target: string, ran: Ran): Error {
 }
 
 /**
- * What pi's file tools do to files, done as `pi-agent`: read, write, edit,
- * ls, and grep's own reading of context lines. grep's search and find's are
- * run by rg and fd, which the portal points at the sandbox in the same way
- * (see apply.ts, toolWrappers).
+ * What pi's file tools do to files, done as the agent's user: read, write,
+ * edit and ls. grep and find run whole as the agent: see runToolAsAgent.
  */
-export function fileOperations(ids: Ids) {
-  const run = (argv: string[], input?: Buffer | string) => runAsAgent(ids, argv, input);
+export function fileOperations(who: Who) {
+  const run = (argv: string[], input?: Buffer | string) => runAsAgent(who, argv, input);
   const test = async (flag: string, p: string) => (await run(["test", flag, p])).code === 0;
   /**
    * Whether a path is there. A path inside a folder the sandbox may not enter
@@ -162,13 +163,40 @@ export function fileOperations(ids: Ids) {
         return ran.stdout.toString("utf8").split("\0").filter(Boolean);
       },
     },
-    grep: {
-      isDirectory: async (p: string) => {
-        const ran = await run(["stat", "-c", "%F", "--", p]);
-        if (ran.code !== 0) throw fsError("grep", p, ran);
-        return ran.stdout.toString().trim() === "directory";
-      },
-      readFile: async (p: string) => (await readFile(p)).toString("utf8"),
-    },
   };
+}
+
+/** Where pi is, for a process of the agent's own to load it from. */
+const PI_MODULE = import.meta.resolve("@earendil-works/pi-coding-agent");
+
+/** What the agent's process runs: pi's own tool, made and run as pi makes and runs it, its answer as JSON. */
+const TOOL_RUNNER = `
+let input = "";
+for await (const chunk of process.stdin) input += chunk;
+const { module, tool, cwd, params } = JSON.parse(input);
+const pi = await import(module);
+const make = { grep: pi.createGrepTool, find: pi.createFindTool }[tool];
+try {
+  const result = await make(cwd).execute("sandbox", params);
+  process.stdout.write(JSON.stringify({ result }));
+} catch (e) {
+  process.stdout.write(JSON.stringify({ error: String(e?.message ?? e) }));
+}
+`;
+
+/**
+ * pi's grep or find, run whole by a process of the agent's own: the search
+ * (rg, fd) as well as the reading, so it finds only what that agent may read.
+ * The answer is pi's own, as its tool would have given it in the portal.
+ */
+export async function runToolAsAgent(who: Who, tool: "grep" | "find", cwd: string, params: unknown, signal?: AbortSignal) {
+  const ran = await runAsAgent(who, [process.execPath, "--input-type=module", "-e", TOOL_RUNNER], JSON.stringify({ module: PI_MODULE, tool, cwd, params }), { cwd, signal });
+  let answer: { result?: unknown; error?: string };
+  try {
+    answer = JSON.parse(ran.stdout.toString("utf8"));
+  } catch {
+    throw new Error(`${tool} could not run in the sandbox: ${ran.stderr.split("\n").slice(-3).join(" ") || `exit ${ran.code}`}`);
+  }
+  if (answer.error) throw new Error(answer.error);
+  return answer.result as { content: { type: "text"; text: string }[]; details: unknown };
 }

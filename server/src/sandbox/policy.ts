@@ -66,12 +66,8 @@ const env = (name: string, fallback: string) => process.env[name] || fallback;
  */
 export function defaultRules(): SandboxRule[] {
   const home = path.resolve(env("HOME", "/data/home"));
-  const agentHome = path.resolve(env("AGENT_HOME", path.join(DATA_DIR, "agent-home")));
   return [
     { path: path.resolve(env("WORKSPACE_ROOT", env("WORKSPACES_DIR", "/workspaces"))), access: "write", note: "The projects." },
-    { path: agentHome, access: "write", note: "The first agent's home." },
-    { path: path.join(path.dirname(agentHome), "agents"), access: "write", note: "The other agents' homes." },
-    { path: SANDBOX_HOME, access: "write", note: "The agent's own HOME in the sandbox." },
     { path: path.join(DATA_DIR, "bin"), access: "read", note: "Commands on PATH: run, not changed." },
     { path: SECRETS_DIR, access: "none", note: "Keys for trusted commands." },
     { path: path.join(DATA_DIR, "portal.db"), access: "none", note: "The portal's database, with its settings." },
@@ -163,7 +159,7 @@ export function sandboxSupport(): SandboxSupport {
   if (agent === null || tools === null || group === null) {
     return { available: false, reason: `The users ${AGENT_USER} and ${TOOLS_USER} and the group ${SANDBOX_GROUP} do not exist here. The Docker image makes them; on another install, create them as the docs describe.` };
   }
-  for (const tool of ["setpriv", "sudo"]) {
+  for (const tool of ["setpriv", "sudo", "useradd", "groupadd"]) {
     if (!["/usr/bin", "/bin", "/usr/sbin", "/sbin"].some((d) => existsSync(path.join(d, tool)))) {
       return { available: false, reason: `${tool} is not installed.` };
     }

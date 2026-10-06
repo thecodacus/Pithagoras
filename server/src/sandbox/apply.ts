@@ -6,12 +6,13 @@ import { promisify } from "node:util";
 import { getSetting, putSetting } from "../db.js";
 import { DATA_DIR as DATA_SETTING } from "../data-dir.js";
 import { piAgentDir } from "../pi-settings.js";
-import { asAgent } from "./exec.js";
-import { SANDBOX_HOME, SECRETS_DIR, TOOLS_USER, TRUSTED_DIR, ruleFor, type SandboxPolicy, type SandboxSupport } from "./policy.js";
+import { agentOf, agentsRoot, listAgents, type Agent } from "../agents.js";
+import { identityOf } from "./identity.js";
+import { SANDBOX_GROUP, SANDBOX_HOME, SECRETS_DIR, TOOLS_USER, TRUSTED_DIR, ruleFor, type SandboxPolicy, type SandboxSupport } from "./policy.js";
 
 /**
- * Puts a policy on the files: owner, group and mode for each rule, the trusted
- * commands' folder, keys and sudo rules, and the search tools' wrappers.
+ * Puts a policy on the files: owner, group and mode for each rule, each
+ * agent's own folders, and the trusted commands' folder, keys and sudo rules.
  *
  * - none: the path's group is root's and neither group nor others may do
  *   anything with it. For a folder that closes everything under it. The keys'
@@ -23,6 +24,10 @@ import { SANDBOX_HOME, SECRETS_DIR, TOOLS_USER, TRUSTED_DIR, ruleFor, type Sandb
  *
  * The rules go on from the widest to the narrowest, so a narrower one under a
  * wider one has the last word.
+ *
+ * The agents' homes and their HOMEs in the sandbox are no rule's: each belongs
+ * to its own agent's group alone, so one agent cannot read another's (see
+ * identity.ts). The folders that hold them can be passed through, not listed.
  */
 
 const run = promisify(execFile);
@@ -98,14 +103,21 @@ async function applyRules(policy: SandboxPolicy, ids: Ids, report: ApplyReport, 
   }
 }
 
+/** The folders kept per agent rather than by the rules: the homes, the folder of the other agents', the sandbox HOMEs. */
+function perAgent(target: string): boolean {
+  const inside = (dir: string) => target === dir || target.startsWith(`${dir}/`);
+  return [SANDBOX_HOME, agentsRoot(), ...listAgents().map((a) => a.home)].some((dir) => inside(path.resolve(dir)));
+}
+
 async function applyRule(policy: SandboxPolicy, rule: SandboxPolicy["rules"][number], ids: Ids, report: ApplyReport, deep: boolean) {
+  if (perAgent(rule.path)) {
+    report.done.push(`${rule.path}: kept per agent`);
+    return;
+  }
   if (!existsSync(rule.path)) {
-    // The sandbox's own HOME is made; others are put on when they appear, on the next apply.
-    if (rule.path !== SANDBOX_HOME) {
-      report.done.push(`${rule.path}: not there yet`);
-      return;
-    }
-    mkdirSync(rule.path, { recursive: true });
+    // Put on when it appears, on the next apply.
+    report.done.push(`${rule.path}: not there yet`);
+    return;
   }
   const dir = lstatSync(rule.path).isDirectory();
   if (rule.access === "none") {
@@ -196,7 +208,7 @@ async function applyTrusted(policy: SandboxPolicy, ids: Ids, report: ApplyReport
       writeFileSync(onPath, wrapper(t.script), { mode: 0o755 });
       chownSync(onPath, 0, 0);
     }
-    lines.push(`pi-agent ALL=(${TOOLS_USER}) NOPASSWD: ${t.script}`);
+    lines.push(`%${SANDBOX_GROUP} ALL=(${TOOLS_USER}) NOPASSWD: ${t.script}`);
     report.done.push(`${t.name}: runs ${t.script} as ${TOOLS_USER}`);
   }
   // Wrappers for commands no longer trusted go, so nothing calls a sudo rule that is not there.
@@ -208,8 +220,8 @@ async function applyTrusted(policy: SandboxPolicy, ids: Ids, report: ApplyReport
     }
   }
 
-  const sudoers = `# Written by the Pithagoras sandbox: the agent may run exactly these as ${TOOLS_USER}.\n` +
-    `Defaults:pi-agent !requiretty, env_reset\n${lines.join("\n")}\n`;
+  const sudoers = `# Written by the Pithagoras sandbox: the agents may run exactly these as ${TOOLS_USER}.\n` +
+    `Defaults:%${SANDBOX_GROUP} !requiretty, env_reset\n${lines.join("\n")}\n`;
   if (!existsSync(path.dirname(SUDOERS))) {
     report.warnings.push(`${path.dirname(SUDOERS)} does not exist: sudo is not set up, so trusted commands will not run.`);
     return;
@@ -226,22 +238,67 @@ async function applyTrusted(policy: SandboxPolicy, ids: Ids, report: ApplyReport
 }
 
 /**
- * rg and fd, as pi's grep and find run them: in pi's own tools folder, which
- * it looks in before PATH, a wrapper that runs the real one as the sandbox
- * user while the sandbox is on. A binary pi downloaded there is kept beside
- * it as <name>.real.
+ * The rg and fd wrappers an earlier sandbox put in pi's tools folder, taken
+ * out: grep and find now run whole as the chat's own agent (exec.ts,
+ * runToolAsAgent), which a wrapper shared by every chat could not know. A
+ * binary pi had downloaded there goes back in its place.
  */
-function toolWrappers(ids: Ids, report: ApplyReport) {
+function removeToolWrappers(report: ApplyReport) {
   const dir = path.join(piAgentDir(), "bin");
-  mkdirSync(dir, { recursive: true });
-  for (const [tool, system] of [["rg", "/usr/bin/rg"], ["fd", "/usr/bin/fdfind"]] as const) {
+  for (const tool of ["rg", "fd"]) {
     const file = path.join(dir, tool);
-    if (existsSync(file) && !isOurs(file)) renameSync(file, `${file}.real`);
-    const script = `#!/bin/sh\n${WRAPPER_MARK}: ${tool} as the sandbox user while ${ON_FLAG} exists.\n` +
-      `real=${system}; [ -x "$real" ] || real="$(dirname "$0")/${tool}.real"\n` +
-      `if [ -e ${ON_FLAG} ]; then exec ${asAgent(ids).join(" ")} "$real" "$@"; fi\nexec "$real" "$@"\n`;
-    writeFileSync(file, script, { mode: 0o755 });
-    report.done.push(`${tool}: searches as the sandbox user`);
+    if (!isOurs(file)) continue;
+    rmSync(file);
+    if (existsSync(`${file}.real`)) renameSync(`${file}.real`, file);
+    report.done.push(`${tool}: the old search wrapper removed`);
+  }
+}
+
+/**
+ * One agent's folders, its own: its home and its HOME in the sandbox belong to
+ * its group, with nothing for anyone else, and folders hand the group on to
+ * what is made in them. `deep` walks the home, for what was made in it before
+ * (by the portal, or by another user).
+ */
+async function applyAgent(agent: Agent, support: SandboxSupport, report: ApplyReport, deep: boolean) {
+  const who = identityOf(agent, support);
+  for (const dir of [who.home, who.tmp]) {
+    mkdirSync(dir, { recursive: true });
+    chownSync(dir, 0, who.gid);
+    chmodSync(dir, 0o2770);
+  }
+  if (!existsSync(agent.home)) return;
+  if (deep) {
+    await recursive(["chown", "-R", "--no-dereference", `:${who.gid}`, agent.home], report);
+    await recursive(["chmod", "-R", "g+rwX,o-rwx", agent.home], report);
+    await recursive(["find", agent.home, "-type", "d", "-exec", "chmod", "g+s", "{}", "+"], report);
+  }
+  chownSync(agent.home, 0, who.gid);
+  chmodSync(agent.home, 0o2770);
+  report.done.push(`${agent.home}: ${who.user}'s only`);
+}
+
+/** Every agent's folders, and the folders that hold them: passed through, not listed. */
+async function applyAgents(support: SandboxSupport, report: ApplyReport, deep: boolean) {
+  for (const dir of [SANDBOX_HOME, agentsRoot()]) {
+    mkdirSync(dir, { recursive: true });
+    chownSync(dir, 0, 0);
+    chmodSync(dir, 0o711);
+  }
+  // What the earlier sandbox user, shared by all, left in the sandbox HOME is nobody's now.
+  for (const name of readdirSync(SANDBOX_HOME)) {
+    if (listAgents().some((a) => a.id === name)) continue;
+    const old = path.join(SANDBOX_HOME, name);
+    chownSync(old, 0, 0);
+    chmodSync(old, lstatSync(old).isDirectory() ? 0o700 : 0o600);
+  }
+  for (const agent of listAgents()) {
+    try {
+      await applyAgent(agent, support, report, deep);
+    } catch (e) {
+      report.ok = false;
+      report.warnings.push(`${agent.name}: ${(e as Error).message}`);
+    }
   }
 }
 
@@ -266,14 +323,14 @@ export async function applySandbox(policy: SandboxPolicy, support: SandboxSuppor
   }
   try {
     await applyRules(policy, support.ids, report, deep);
+    await applyAgents(support, report, deep);
     await applyTrusted(policy, support.ids, report);
-    toolWrappers(support.ids, report);
+    removeToolWrappers(report);
   } catch (e) {
     report.ok = false;
     report.warnings.push((e as Error).message);
   }
-  // The search wrappers follow the switch, whatever else went wrong: a rule that did not go on must not put
-  // search back on the portal's user. Only a whole apply counts as applied, so the next start tries again.
+  // Only a whole apply counts as applied, so the next start tries again.
   writeFileSync(ON_FLAG, "on\n", { mode: 0o644 });
   if (report.ok && deep) putSetting("sandbox_applied", rulesHash(policy));
   return report;
@@ -287,8 +344,16 @@ export async function applySandbox(policy: SandboxPolicy, support: SandboxSuppor
  * so a start does not walk every project.
  */
 export async function prepareFolder(policy: SandboxPolicy, support: SandboxSupport, folder: string): Promise<void> {
-  if (!policy.enabled || !support.ids || ruleFor(policy, folder)?.access !== "write" || !existsSync(folder)) return;
+  if (!policy.enabled || !support.ids || !existsSync(folder)) return;
   const report: ApplyReport = { ok: true, done: [], warnings: [] };
+  // An agent's home is that agent's: made its group's again, whatever was put in it since.
+  const owner = agentOf(folder);
+  if (owner) {
+    await applyAgent(owner, support, report, true);
+    if (report.warnings.length) console.log(`[sandbox] ${folder}: ${report.warnings.join("; ")}`);
+    return;
+  }
+  if (ruleFor(policy, folder)?.access !== "write") return;
   await recursive(["chown", "-R", "--no-dereference", `:${support.ids.group}`, folder], report);
   await recursive(["chmod", "-R", "g+rwX", folder], report);
   await recursive(["find", folder, "-type", "d", "-exec", "chmod", "g+s", "{}", "+"], report);
