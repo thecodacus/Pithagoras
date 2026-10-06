@@ -36,6 +36,23 @@ function users() {
   if (!exists("passwd", "pi-tools")) execFileSync("useradd", ["--uid", "10002", "--user-group", "--no-create-home", "--shell", "/usr/sbin/nologin", "pi-tools"]);
 }
 
+test("an agent's user name is valid for useradd and its own, however long its name", async () => {
+  const { userFor } = await import("../dist/sandbox/identity.js");
+  const { slugOf } = await import("../dist/agents.js");
+  const valid = /^[a-z_][a-z0-9_-]*[a-z0-9_]$/;
+  assert.equal(userFor("home"), "pi-agent-home");
+  assert.equal(userFor("test"), "pi-agent-test");
+  const long = slugOf("My research assistant for the garden");
+  const ids = [long, `${long}-2`, slugOf("My research assistant for the garage"), slugOf("Ünïcödé — ✨ 東京"), "a".repeat(23), "a".repeat(24), "abcdefghijklmnop-qrstuv-wxyz"];
+  const users = ids.map(userFor);
+  for (const u of users) {
+    assert.ok(u.length <= 32, u);
+    assert.match(u, valid);
+  }
+  assert.equal(new Set(users).size, ids.length, users.join(" "));
+  assert.equal(userFor(long), users[0], "the same id gives the same user each time");
+});
+
 const why = !linuxRoot ? "needs root on Linux, as the portal runs in its image" : !has("setpriv") || !has("sudo") || !has("visudo") ? "needs setpriv and sudo" : false;
 
 test("the sandbox holds against the ways round it", { skip: why }, async (t) => {

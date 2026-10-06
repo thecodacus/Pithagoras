@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { getSetting, putSetting } from "../db.js";
 import type { Agent } from "../agents.js";
@@ -30,8 +31,21 @@ export interface Identity {
 const FIRST_ID = 10100;
 const IDS_SETTING = "sandbox_agent_ids";
 
-/** A user name for an agent: valid for useradd, at most 32 characters. */
-export const userFor = (agentId: string) => `pi-agent-${agentId.toLowerCase().replace(/[^a-z0-9_-]/g, "-")}`.slice(0, 32);
+const PREFIX = "pi-agent-";
+const MAX_USER = 32;
+
+/**
+ * A user name for an agent, from its id, which its name gave it: valid for
+ * useradd and at most 32 characters. An id too long for that is cut, with a
+ * hash of the whole of it after, so two agents whose ids begin alike are not
+ * made the same user.
+ */
+export function userFor(agentId: string): string {
+  const id = agentId.toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+  if (PREFIX.length + id.length <= MAX_USER) return PREFIX + id;
+  const hash = createHash("sha256").update(agentId).digest("hex").slice(0, 6);
+  return `${PREFIX}${id.slice(0, MAX_USER - PREFIX.length - hash.length - 1).replace(/-+$/, "")}-${hash}`;
+}
 
 function ids(): Record<string, number> {
   try {
@@ -55,6 +69,10 @@ function idFor(agentId: string): number {
 
 /** The user and its group as the system has them, made where they are missing. */
 function ensureUser(user: string, id: number, shared: number, home: string) {
+  for (const kind of ["user", "group"] as const) {
+    const has = idOf(kind, user);
+    if (has !== null && has !== id) throw new Error(`The ${kind} ${user} is already on this system with the id ${has}, not ${id}`);
+  }
   if (idOf("group", user) === null) execFileSync("groupadd", ["--gid", String(id), user]);
   if (idOf("user", user) === null) {
     execFileSync("useradd", ["--uid", String(id), "--gid", String(id), "--groups", String(shared), "--no-create-home", "--home-dir", home, "--shell", "/bin/bash", user]);
