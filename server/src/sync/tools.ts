@@ -4,8 +4,8 @@ import path from "node:path";
 import { Type } from "typebox";
 import { taintedNow } from "../pi/guard.js";
 import { grantsOf, devicePath, grantedByName, trackCall, type Grant } from "./grants.js";
-import { hub, linkOf, type DeviceLink, type Waiting } from "./hub.js";
-import { CODE, DEVICE_TOOLS_SOURCE, DeviceError, PI_TOOLS, type ApprovalInfo, type Choice, type Ctx, type PiTool } from "./protocol.js";
+import { linkOf, type DeviceLink, type Waiting } from "./hub.js";
+import { CODE, DEVICE_TOOLS_SOURCE, DeviceError, PI_TOOLS, type Ctx, type PiTool } from "./protocol.js";
 import { devicesEnabled, getDevice, type DeviceRecord } from "./store.js";
 
 /**
@@ -77,59 +77,6 @@ function imageType(data: Buffer): string | undefined {
   if (data.subarray(0, 4).toString("latin1") === "RIFF" && data.subarray(8, 12).toString("latin1") === "WEBP") return "image/webp";
   if (data.subarray(0, 2).toString("latin1") === "BM" && data.length > 14) return "image/bmp";
   return undefined;
-}
-
-const MINUTES = [15, 30, 60, 240, 480];
-
-/** The answers the chat offers for an approval, as the device allows them, with what each sends. */
-export function approvalOptions(approval: ApprovalInfo): { label: string; answer: Choice; minutes?: number }[] {
-  const out: { label: string; answer: Choice; minutes?: number }[] = [];
-  for (const choice of approval.choices) {
-    if (choice === "once") out.push({ label: "Allow once", answer: "once" });
-    if (choice === "chat") out.push({ label: "Allow for this chat", answer: "chat" });
-    if (choice === "time" && approval.max_minutes >= 1) {
-      const fits = MINUTES.filter((m) => m <= approval.max_minutes);
-      for (const m of fits.length ? fits : [approval.max_minutes]) out.push({ label: `Allow for ${m} minutes`, answer: "time", minutes: m });
-    }
-  }
-  if (approval.choices.includes("deny")) out.push({ label: "Deny", answer: "deny" });
-  return out;
-}
-
-/**
- * Asks in the chat what the device asks its owner, while the call waits; the
- * answer goes to the device. Taken back when the approval ends another way
- * (the Devices page, the device itself, its time running out) or the call ends.
- */
-function askInChat(link: DeviceLink, deviceName: string, approval: ApprovalInfo, ui: any, ended: AbortSignal, onUpdate?: (u: any) => void): void {
-  onUpdate?.({ content: [{ type: "text", text: `Waiting for approval on ${deviceName}…` }], details: undefined });
-  if (typeof ui?.select !== "function") return;
-  const options = approvalOptions(approval);
-  if (!options.length) return;
-  const stop = new AbortController();
-  const resolved = (deviceId: string, a: ApprovalInfo) => {
-    if (deviceId === link.deviceId && a.id === approval.id) stop.abort();
-  };
-  const callEnded = () => stop.abort();
-  hub.on("approval-resolved", resolved);
-  ended.addEventListener("abort", callEnded, { once: true });
-  const target = approval.target.length > 300 ? `${approval.target.slice(0, 300)}…` : approval.target;
-  const title = `${deviceName} asks before ${approval.tool}: ${target}${approval.reasons.length ? `\n${approval.reasons.join("; ")}` : ""}${approval.preview ? `\n\n${approval.preview.slice(0, 1000)}` : ""}`;
-  // As long as the device waits, within reason. Its clock is not the portal's (a laptop with the wrong time zone is hours off),
-  // so its own span is used, from now: the question arrived just now.
-  const timeout = Math.min(65 * 60_000, Math.max(5_000, approval.expires_ms - approval.created_ms));
-  Promise.resolve(ui.select(title, options.map((o) => o.label), { signal: stop.signal, timeout }))
-    .then((label: unknown) => {
-      const picked = options.find((o) => o.label === label);
-      if (picked && !stop.signal.aborted) return link.answerApproval(approval.id, picked.answer, picked.minutes);
-    })
-    .catch(() => {
-      // Answered elsewhere first, or gone: the device says what came of it.
-    })
-    .finally(() => {
-      hub.off("approval-resolved", resolved);
-      ended.removeEventListener("abort", callEnded);
-    });
 }
 
 /** The extension factory: see the comment at the top. */
@@ -266,16 +213,14 @@ export function deviceTools(opts: DeviceToolsOptions) {
       return abs;
     };
     const call = (): Ctx => ({ chat: opts.sessionId, tainted: taintedNow(opts.sessionId), tool: name });
-    // Approvals the device asks for while a call waits go into the chat, and are taken back when the call ends.
-    const ended = new AbortController();
-    const waiting: Waiting = { signal, onApproval: (a) => askInChat(link, device.name, a, ctx?.ui, ended.signal, onUpdate) };
+    // What the device asks its owner while a call waits is a card in the chat's page, read from the device's open approvals (see
+    // api/devices.ts); here the call only says that it waits. The card goes when the approval does: answered anywhere, or the call ended.
+    const waiting: Waiting = { signal, onApproval: () => onUpdate?.({ content: [{ type: "text", text: `Waiting for approval on ${device.name}…` }], details: undefined }) };
     const guarded = async <T,>(work: () => Promise<T>): Promise<T> => {
       try {
         return await work();
       } catch (e) {
         throw failure(e, device.name);
-      } finally {
-        ended.abort();
       }
     };
 
@@ -361,7 +306,6 @@ export function deviceTools(opts: DeviceToolsOptions) {
           if (e instanceof Error) e.message = withoutPath(e.message, logs);
           throw e;
         } finally {
-          ended.abort();
           for (const log of logs) rmSync(log, { force: true });
         }
       }

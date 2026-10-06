@@ -269,6 +269,20 @@ export function devicesRouter(): Router {
     });
   });
 
+  /**
+   * The questions the chat's devices hold for it, which the chat shows as cards: the owner answers them where they are asked.
+   * Read anew each time, so a chat that is opened while one waits shows it, and one that was answered elsewhere is gone.
+   */
+  router.get("/sessions/:id/devices/approvals", (req, res) => {
+    const approvals = grantsOf(req.params.id).flatMap((grant) => {
+      const device = getDevice(grant.deviceId);
+      const link = linkOf(grant.deviceId);
+      if (!device || !link) return [];
+      return [...link.approvals.values()].filter((a) => a.chat === req.params.id && !link.isDenied(a.id)).map((approval) => ({ device: { id: device.id, name: device.name }, approval }));
+    });
+    res.json({ approvals });
+  });
+
   /** Grants the chat a device, in a folder there (its home, or its first folder, unless one is given), or moves the grant to another folder. */
   router.put("/sessions/:id/devices/:deviceId", async (req, res) => {
     const device = getDevice(req.params.deviceId);

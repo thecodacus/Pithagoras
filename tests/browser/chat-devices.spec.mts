@@ -75,3 +75,121 @@ test('the list fits a phone, opened from a chip near the left of the header', as
   expect(box.x + box.width).toBeLessThanOrEqual(375 - 16);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(375);
 });
+
+/** What the chat's devices hold for it, served as the portal does: it outlives a reload, and the test changes it as the device or the Devices page would. */
+async function asking(page: import('@playwright/test').Page) {
+  const approval = (id: number, over: Record<string, unknown> = {}) => ({
+    device: { id: 'd1', name: 'laptop' },
+    approval: { id, call: 4, chat: 'preview', tool: 'bash', target: 'make deploy-to-production-with-a-very-long-target-name-that-must-wrap', reasons: ['Ask mode: every call asks'], preview: null, choices: ['once', 'chat', 'time', 'deny'], max_minutes: 60, created_ms: 0, expires_ms: 0, ...over },
+  });
+  const state = { pending: [approval(7)], answers: [] as { path: string; body: any }[], asked: 0 };
+  await page.route('**/api/sessions/preview/devices/approvals', (route) => {
+    state.asked++;
+    return route.fulfill({ json: { approvals: state.pending } });
+  });
+  await page.route('**/api/devices/d1/approvals/*', (route) => {
+    const path = new URL(route.request().url()).pathname;
+    state.answers.push({ path, body: route.request().postDataJSON() });
+    state.pending = state.pending.filter((a) => !path.endsWith(`/${a.approval.id}`));
+    return route.fulfill({ json: { ok: true } });
+  });
+  return { state, approval };
+}
+
+test('a question a device asks for the chat is a card in the chat, answered there', async ({ page }) => {
+  await page.setViewportSize({ width: 1300, height: 800 });
+  const { state } = await asking(page);
+  await page.goto('/tests/chat.html?phase=devices');
+  const card = page.getByTestId('device-approval');
+  await expect(card.getByText('laptop asks: bash')).toBeVisible();
+  await expect(card.getByText(/^make deploy-to-production/)).toBeVisible();
+  await expect(card.getByText('Ask mode: every call asks')).toBeVisible();
+  // It is the chat's own: no link back to it. And it sits above the composer, not in a dialog.
+  await expect(card.getByRole('link', { name: 'from this chat' })).toHaveCount(0);
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  const above = (await card.boundingBox())!.y + (await card.boundingBox())!.height;
+  expect(above).toBeLessThanOrEqual((await page.getByRole('textbox', { name: 'Message' }).boundingBox())!.y);
+  // Only what the device offers, for as long as it allows.
+  await expect(card.getByRole('combobox', { name: 'Minutes' }).locator('option')).toHaveText(['15 minutes', '30 minutes', '60 minutes']);
+  await card.getByRole('combobox', { name: 'Minutes' }).selectOption('60');
+  await card.getByRole('button', { name: 'Allow for', exact: true }).click();
+  await expect(page.getByTestId('device-approval')).toHaveCount(0);
+  expect(state.answers).toEqual([{ path: '/api/devices/d1/approvals/7', body: { answer: 'time', minutes: 60 } }]);
+});
+
+test('Allow once and Deny in the chat answer the device with that choice', async ({ page }) => {
+  const { state, approval } = await asking(page);
+  await page.goto('/tests/chat.html?phase=devices');
+  await page.getByRole('button', { name: 'Allow once' }).click();
+  await expect(page.getByTestId('device-approval')).toHaveCount(0);
+  state.pending = [approval(8)];
+  await page.getByRole('button', { name: 'Deny' }).click({ timeout: 8000 });
+  await expect(page.getByTestId('device-approval')).toHaveCount(0);
+  expect(state.answers).toEqual([
+    { path: '/api/devices/d1/approvals/7', body: { answer: 'once' } },
+    { path: '/api/devices/d1/approvals/8', body: { answer: 'deny' } },
+  ]);
+});
+
+test('a question answered somewhere else goes from the chat, and a refused answer says so', async ({ page }) => {
+  const { state, approval } = await asking(page);
+  await page.goto('/tests/chat.html?phase=devices');
+  await expect(page.getByTestId('device-approval')).toBeVisible();
+  // On the device, on the Devices page, run out, or its call ended: the portal no longer lists it.
+  state.pending = [];
+  await expect(page.getByTestId('device-approval')).toHaveCount(0, { timeout: 8000 });
+
+  // An answer the portal refuses (the chat lost the device meanwhile) is said, and the card stays until the portal drops it.
+  state.pending = [approval(9)];
+  await page.route('**/api/devices/d1/approvals/9', (route) => route.fulfill({ status: 409, json: { error: 'That chat no longer has this device, so the question is denied' } }));
+  await page.getByRole('button', { name: 'Allow once' }).click({ timeout: 8000 });
+  await expect(page.getByRole('alert').filter({ hasText: 'no longer has this device' })).toBeVisible();
+  await expect(page.getByTestId('device-approval')).toBeVisible();
+});
+
+test('a chat opened or reloaded while a question waits shows it', async ({ page }) => {
+  await asking(page);
+  await page.goto('/tests/chat.html?phase=devices');
+  await expect(page.getByTestId('device-approval')).toBeVisible();
+  await page.reload();
+  await expect(page.getByTestId('device-approval')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Allow once' })).toBeVisible();
+});
+
+test('the question is looked up when its call says it waits, not only at the next turn of the poll', async ({ page }) => {
+  const { state } = await asking(page);
+  const waiting = state.pending;
+  state.pending = [];
+  await page.goto('/tests/chat.html?phase=devices');
+  await expect.poll(() => state.asked).toBeGreaterThan(0);
+  await expect(page.getByTestId('device-approval')).toHaveCount(0);
+  state.pending = waiting;
+  await page.evaluate(() => (window as any).emit('tool_execution_update', { toolCallId: 'd1', partialResult: { content: [{ type: 'text', text: 'Waiting for approval on laptop…' }] } }));
+  await expect(page.getByTestId('device-approval')).toBeVisible({ timeout: 2000 });
+});
+
+test('a chat that is not running holds no question to ask for', async ({ page }) => {
+  const { state } = await asking(page);
+  await page.goto('/tests/chat.html?phase=interrupted');
+  await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
+  await page.waitForTimeout(500);
+  expect(state.asked).toBe(0);
+  await expect(page.getByTestId('device-approval')).toHaveCount(0);
+});
+
+test('the card fits a phone, with every choice reachable', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 800 });
+  await asking(page);
+  await page.goto('/tests/chat.html?phase=devices');
+  const card = page.getByTestId('device-approval');
+  await expect(card).toBeVisible();
+  const box = (await card.boundingBox())!;
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(390);
+  for (const name of ['Allow once', 'Allow for this chat', 'Allow for', 'Deny']) {
+    const b = (await card.getByRole('button', { name, exact: true }).boundingBox())!;
+    expect(b.x).toBeGreaterThanOrEqual(0);
+    expect(b.x + b.width).toBeLessThanOrEqual(390);
+  }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});

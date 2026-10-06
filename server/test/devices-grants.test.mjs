@@ -22,7 +22,7 @@ const { pairRouter } = await import("../dist/sync/pair.js");
 const { attachSyncUpgrade, linkOf, dropDevice, TIMING } = await import("../dist/sync/hub.js");
 const store = await import("../dist/sync/store.js");
 const grants = await import("../dist/sync/grants.js");
-const { deviceTools, approvalOptions, deviceToolConflicts } = await import("../dist/sync/tools.js");
+const { deviceTools, deviceToolConflicts } = await import("../dist/sync/tools.js");
 const { devicesRouter } = await import("../dist/api/devices.js");
 const { createSession, deleteSession } = await import("../dist/db.js");
 const { guardExtension, taintSession } = await import("../dist/pi/guard.js");
@@ -535,7 +535,7 @@ test("a chat whose tools another extension owns is refused a device, and says so
   assert.equal((await api("GET", `/sessions/${plain}/devices`)).body.devices.find((d) => d.id === id).blocked, null);
 });
 
-test("an approval the device asks for is asked in the chat and answered from there, and taken back when it is answered elsewhere", async () => {
+test("an approval the device asks for is listed for the chat, which shows it as a card; the call says it waits, and nothing is asked through pi's dialog", async () => {
   let approvals = 0;
   const { id, device } = await online("tower", {
     "fs.list": (params, rid, d) => {
@@ -557,31 +557,64 @@ test("an approval the device asks for is asked in the chat and answered from the
   grants.grantDevice(mine, id, "/home/alice");
   const ext = extensionApi();
   deviceTools({ sessionId: mine, cwd: home, pi, serverTool: () => undefined })(ext);
+  const listed = async (chatId = mine) => (await api("GET", `/sessions/${chatId}/devices/approvals`)).body.approvals;
 
-  const asked = [];
-  const ui = { select: (title, options, opts) => new Promise((resolve) => asked.push({ title, options, opts, resolve })) };
+  // pi's own dialog is no longer used: a UI that is offered is never asked.
+  const dialogs = [];
+  const ui = { select: (...args) => (dialogs.push(args), new Promise(() => {})) };
+  assert.deepEqual(await listed(), []);
   const updates = [];
   const listing = ext.tools.get("ls").execute("a1", { device: "tower" }, undefined, (u) => updates.push(u), { ui });
-  await until(() => asked.length === 1, "the question in the chat");
-  assert.match(asked[0].title, /^tower asks before ls: \/home\/alice\nAsk mode: every call asks$/);
-  assert.deepEqual(asked[0].options, ["Allow once", "Allow for this chat", "Allow for 15 minutes", "Allow for 30 minutes", "Deny"]);
-  assert.equal(asked[0].opts.timeout, 120_000);
+  await until(() => updates.length === 1, "the call saying that it waits");
   assert.match(textOf(updates[0]), /Waiting for approval on tower/);
-  asked[0].resolve("Allow for 30 minutes");
+  const [card] = await listed();
+  assert.deepEqual(card.device, { id, name: "tower" });
+  assert.deepEqual({ id: card.approval.id, chat: card.approval.chat, tool: card.approval.tool, target: card.approval.target, choices: card.approval.choices, max_minutes: card.approval.max_minutes }, { id: 1, chat: mine, tool: "ls", target: "/home/alice", choices: ["once", "chat", "time", "deny"], max_minutes: 30 });
+  assert.deepEqual(dialogs, []);
+  // Answered from the card: the same answer the Devices page sends.
+  assert.equal((await api("POST", `/devices/${id}/approvals/1`, { answer: "time", minutes: 30 })).status, 200);
   assert.equal(textOf(await listing), "(empty directory)");
   assert.deepEqual(device.asked("approval.answer")[0].params, { id: 1, answer: "time", minutes: 30 });
+  assert.deepEqual(await listed(), []);
 
-  // Answered on the device (or the Devices page) instead: the question goes from the chat.
+  // Answered on the device (or the Devices page) instead: the card goes from the chat's list.
   const second = ext.tools.get("ls").execute("a2", { device: "tower" }, undefined, undefined, { ui });
-  await until(() => asked.length === 2, "the second question");
+  await until(() => linkOf(id).approvals.size === 1, "the second question");
+  assert.equal((await listed()).length, 1);
   device.release();
   await second;
-  await until(() => asked[1].opts.signal.aborted, "the question taken back");
+  await until(() => linkOf(id).approvals.size === 0, "the question closed");
+  assert.deepEqual(await listed(), []);
   assert.equal(device.asked("approval.answer").length, 1);
+  assert.deepEqual(dialogs, []);
+});
 
-  // Only the choices the device offers, and no longer than it allows.
-  assert.deepEqual(approvalOptions({ choices: ["once", "deny"], max_minutes: 480 }).map((o) => o.label), ["Allow once", "Deny"]);
-  assert.deepEqual(approvalOptions({ choices: ["time", "deny"], max_minutes: 10 }).map((o) => [o.label, o.minutes]), [["Allow for 10 minutes", 10], ["Deny", undefined]]);
+test("the questions listed for a chat are its own, on a device it has, and not one that is being denied", async () => {
+  const { id, device } = await online("lister", { "approval.answer": {} });
+  const mine = chat();
+  const other = chat();
+  const channel = chat("channel");
+  grants.grantDevice(mine, id, "/home/alice");
+  grants.grantDevice(other, id, "/home/alice");
+  const ask = (n, chatId) => device.notify("approval.requested", { id: n, call: null, chat: chatId, tool: "exec", target: `make ${n}`, reasons: [], preview: null, choices: ["once", "deny"], max_minutes: 0, created_ms: 1, expires_ms: 2 });
+  ask(81, mine);
+  ask(82, other);
+  ask(83, "the-devices-own-chat");
+  await until(() => linkOf(id).approvals.size === 3, "three questions");
+  const listed = async (chatId) => (await api("GET", `/sessions/${chatId}/devices/approvals`)).body.approvals.map((a) => a.approval.id);
+  assert.deepEqual(await listed(mine), [81]);
+  assert.deepEqual(await listed(other), [82]);
+  // A chat without the device sees none of its questions, even one it asked before.
+  const stranger = chat();
+  assert.deepEqual(await listed(stranger), []);
+  // A question that is being denied (its grant ended, or its call) is not offered for an answer any more.
+  grants.endGrant(mine, id);
+  await device.waitFor("approval.answer");
+  grants.grantDevice(mine, id, "/home/alice");
+  assert.deepEqual(await listed(mine), [], "the denied question");
+  // Channels have no cards: the route is the portal's own chats'.
+  assert.equal((await api("GET", `/sessions/${channel}/devices/approvals`)).status, 409);
+  assert.equal((await api("GET", `/sessions/no-such-chat/devices/approvals`)).status, 404);
 });
 
 /** What a test waits for, failing rather than hanging when it does not come. */
@@ -632,14 +665,12 @@ test("taking a device back from a chat stops what the chat runs there and denies
 
   // A call that waits for the owner: its question goes from the chat, the device is told to deny it, and the call ends.
   grants.grantDevice(mine, id, "/home/alice");
-  const asked = [];
-  const ui = { select: (title, options, opts) => new Promise((resolve) => asked.push({ opts, resolve })) };
-  const listing = ext.tools.get("ls").execute("l1", { device: "runner" }, undefined, undefined, { ui });
+  const listing = ext.tools.get("ls").execute("l1", { device: "runner" }, undefined, undefined, {});
   listing.catch(() => {});
-  await until(() => asked.length === 1, "the question in the chat");
+  await until(() => linkOf(id).approvals.size === 1, "the question the call waits on");
+  assert.equal((await api("GET", `/sessions/${mine}/devices/approvals`)).body.approvals.length, 1);
   grants.endGrant(mine, id);
   await assert.rejects(within(listing), /taken back/);
-  assert.equal(asked[0].opts.signal.aborted, true, "the question is taken back");
   const answers = await device.waitFor("approval.answer");
   assert.deepEqual(answers[0].params, { id: 1, answer: "deny" });
   assert.equal(answers.length, 1, "denied once");

@@ -183,8 +183,12 @@ was given before the chat was loaded.
 ## Approvals
 
 A call that the device holds for your answer is asked in the chat that made it,
-as a question over the chat, and shown under the device on the **Devices**
-page, with what it wants to do and why the device asks:
+as a card above the message box (the call itself says "Waiting for approval on
+*device*…"), and shown under the device on the **Devices** page, with what it
+wants to do and why the device asks. A chat that you open or reload while the
+question waits shows the card again, and it goes as soon as the question is
+answered anywhere, runs out, or its call ends. On a phone the card takes the
+width of the chat and its buttons wrap:
 
 - **Allow once**: this call.
 - **Allow for this chat**: this call and more of its kind from the same chat,
@@ -228,10 +232,13 @@ client's `portal_policy` allows:
   and the text opens by itself so that it can be fixed. Where the portal may
   only read, the form and the text are shown and cannot be changed.
 
-`portal_policy` itself, the pairing, the shell, sudo's path and the elevation
-password are never in the document, and only the device's owner changes them,
-on the device. The client's settings are described in its
-`docs/permissions.md`. The portal keeps a device's settings only when they nest
+The shell, sudo's path and where the elevation password is kept are in the
+document but are the device's own (**Only the device changes**): the portal
+shows them and cannot change them. `portal_policy` itself, the client's
+profile and the pairing are not in the document at all, and the elevation
+password is no setting: it is typed on the device and never goes through the
+portal. Only the device's owner changes any of these, on the device. The
+client's settings are described in its `docs/permissions.md`. The portal keeps a device's settings only when they nest
 at most 32 levels deep and take at most 256 KiB as text, which the client's own
 never come near: a document past that is left out, and the portal goes on with
 the ones it had. A device that does not share its settings (`policy` is not in

@@ -250,7 +250,8 @@ if (phase === 'devices' || phase === 'devices-blocked') {
         { id: 'd2', name: 'desk', os: 'windows', online: false, granted: false, cwd: null, home: null, mode: null, folders: [], offered: false, why: 'desk is not connected', blocked: null },
       ];
   mockFetch((u, init) => {
-    if (!u.includes('/api/sessions/preview/devices')) return undefined;
+    // The questions a device holds for the chat are the test's own: what it serves outlives a reload, as the portal's would.
+    if (!u.includes('/api/sessions/preview/devices') || u.includes('/devices/approvals')) return undefined;
     const method = init?.method ?? 'GET';
     if (method === 'GET') return { devices };
     const id = decodeURIComponent(u.split('/').pop()!);

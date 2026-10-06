@@ -692,6 +692,8 @@ export const api = {
     json<{ policy: DevicePolicy | null }>(`/api/devices/${encodeURIComponent(id)}/policy`, { method: "PUT", body: JSON.stringify({ settings, ifVersion }) }),
   /** The paired devices as one chat sees them: which it has, in which folder, and which it could have. */
   chatDevices: (id: string) => json<{ devices: ChatDevice[] }>(`/api/sessions/${encodeURIComponent(id)}/devices`),
+  /** The questions the chat's devices hold for it, for the chat to show: read anew, so one answered elsewhere is gone. */
+  chatDeviceApprovals: (id: string) => json<{ approvals: ChatDeviceApproval[] }>(`/api/sessions/${encodeURIComponent(id)}/devices/approvals`),
   /** Grants a chat a device, in a folder there (its home, or its first folder, unless one is given). */
   grantDevice: (id: string, deviceId: string, cwd?: string) =>
     json<{ ok: true; cwd: string; reload: GrantReload }>(`/api/sessions/${encodeURIComponent(id)}/devices/${encodeURIComponent(deviceId)}`, { method: "PUT", body: JSON.stringify(cwd ? { cwd } : {}) }),
@@ -1426,6 +1428,12 @@ export interface ChatDevice {
   why: string | null;
   /** Another extension owns the tools in this chat, so a device cannot be used in it, granted or not. */
   blocked: string | null;
+}
+
+/** A question a device holds for a chat, and the device that asks it. */
+export interface ChatDeviceApproval {
+  device: { id: string; name: string };
+  approval: DeviceApproval;
 }
 
 /** When a chat takes a grant up: at once, after its current run, or when it next starts. */

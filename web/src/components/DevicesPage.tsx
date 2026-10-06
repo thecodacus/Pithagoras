@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
 import { LuCheck, LuCopy, LuLaptop, LuPencil, LuPlus, LuRefreshCw, LuTrash2, LuTriangleAlert, LuX } from "react-icons/lu";
-import { api, type ApprovalChoice, type Device, type DeviceApproval, type DevicePolicy, type DevicesList, type PairingCode } from "../api";
+import { api, type Device, type DevicePolicy, type DevicesList, type PairingCode } from "../api";
 import { copyText } from "../clipboard";
 import { pollWhileVisible } from "../poll";
-import { formatDateTime, msg, t, tp } from "../i18n";
+import { formatDateTime, msg, t } from "../i18n";
 import { serverTime, sinceThen } from "../time";
 import { confirmDialog } from "./ConfirmDialog";
+import { DeviceApprovalCard } from "./DeviceApprovalCard";
 import { DevicePolicyForm } from "./DevicePolicyForm";
 import { PageHeader, Stat } from "./PageHeader";
 import { ErrorBanner, LoadFailed, codeAreaCls, ghostCls, inputSmCls, primaryCls, primarySmCls } from "./SettingsUi";
@@ -355,7 +355,7 @@ function DeviceCard({ device: d, onChanged, onError }: { device: Device; onChang
 
       {d.approvals.length > 0 && (
         <section className="mt-3 space-y-2" aria-label={t("Waiting for your answer")}>
-          {d.approvals.map((a) => <ApprovalCard key={a.id} device={d} approval={a} onAnswered={onChanged} onError={onError} />)}
+          {d.approvals.map((a) => <DeviceApprovalCard key={a.id} device={d} approval={a} onAnswered={onChanged} onError={onError} />)}
         </section>
       )}
 
@@ -376,50 +376,6 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
       <dt className="text-fg-subtle">{label}</dt>
       <dd className="min-w-0 break-words text-fg-muted">{children}</dd>
     </>
-  );
-}
-
-const MINUTES = [15, 30, 60, 120, 240, 480];
-
-/** A call the device holds until it is answered here, on the device, or it runs out. */
-export function ApprovalCard({ device, approval: a, onAnswered, onError }: { device: Pick<Device, "id" | "name">; approval: DeviceApproval; onAnswered: () => unknown; onError: (e: string) => void }) {
-  const choices = MINUTES.filter((m) => m <= a.max_minutes);
-  const [minutes, setMinutes] = useState(choices[choices.length > 1 ? 1 : 0] ?? 0);
-  const [busy, setBusy] = useState(false);
-  const answer = async (choice: ApprovalChoice) => {
-    setBusy(true);
-    try {
-      await api.answerDeviceApproval(device.id, a.id, choice, choice === "time" ? minutes : undefined);
-      await onAnswered();
-    } catch (e) {
-      onError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <div className="rounded-lg border border-warn/40 bg-warn/5 p-2" data-testid="device-approval">
-      <p className="text-xs text-fg">
-        {t("{device} asks: {tool}", { device: device.name, tool: a.tool })}
-        {a.chat && <> · <Link className="text-accent hover:underline" to={`/s/${encodeURIComponent(a.chat)}`}>{t("from this chat")}</Link></>}
-      </p>
-      <p className="mt-1 break-all font-mono text-xs text-fg-muted">{a.target}</p>
-      {a.reasons.length > 0 && <ul className="mt-1 list-disc pl-4 text-[11px] text-fg-subtle">{a.reasons.map((r, i) => <li key={i}>{r}</li>)}</ul>}
-      {a.preview && <pre className="mt-1 max-h-48 overflow-auto rounded bg-canvas/60 p-2 text-[11px] text-fg-muted">{a.preview}</pre>}
-      <div className="mt-2 flex flex-wrap items-center gap-1">
-        {a.choices.includes("once") && <button type="button" disabled={busy} className={primarySmCls} onClick={() => void answer("once")}>{t("Allow once")}</button>}
-        {a.choices.includes("chat") && <button type="button" disabled={busy} className={ghostCls} onClick={() => void answer("chat")}>{t("Allow for this chat")}</button>}
-        {a.choices.includes("time") && choices.length > 0 && (
-          <span className="inline-flex items-center gap-1">
-            <button type="button" disabled={busy} className={ghostCls} onClick={() => void answer("time")}>{t("Allow for")}</button>
-            <select aria-label={t("Minutes")} className="rounded border border-line bg-raised px-1 py-0.5 text-xs" value={minutes} onChange={(e) => setMinutes(Number(e.target.value))}>
-              {choices.map((m) => <option key={m} value={m}>{tp(m, "{n} minute", "{n} minutes")}</option>)}
-            </select>
-          </span>
-        )}
-        <button type="button" disabled={busy} className={`${ghostCls} !text-danger`} onClick={() => void answer("deny")}>{t("Deny")}</button>
-      </div>
-    </div>
   );
 }
 
