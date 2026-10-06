@@ -355,7 +355,7 @@ function DeviceCard({ device: d, onChanged, onError }: { device: Device; onChang
 
       {d.approvals.length > 0 && (
         <section className="mt-3 space-y-2" aria-label={t("Waiting for your answer")}>
-          {d.approvals.map((a) => <DeviceApprovalCard key={a.id} device={d} approval={a} onAnswered={onChanged} onError={onError} />)}
+          {d.approvals.map((a) => <DeviceApprovalCard key={`${a.id}:${a.created_ms}`} device={d} approval={a} onAnswered={onChanged} onError={onError} />)}
         </section>
       )}
 

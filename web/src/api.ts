@@ -685,8 +685,9 @@ export const api = {
     json<{ device: Device }>(`/api/devices/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify({ name }) }),
   removeDevice: (id: string) => json<{ ok: true }>(`/api/devices/${encodeURIComponent(id)}`, { method: "DELETE" }),
   clearDeviceAlert: (id: string) => json<{ ok: true }>(`/api/devices/${encodeURIComponent(id)}/alert`, { method: "DELETE" }),
-  answerDeviceApproval: (id: string, approval: number, answer: ApprovalChoice, minutes?: number) =>
-    json<{ ok: true }>(`/api/devices/${encodeURIComponent(id)}/approvals/${approval}`, { method: "POST", body: JSON.stringify({ answer, minutes }) }),
+  /** The answer to the question as it was shown: `created_ms` says which, since the device's numbers start again when its client restarts. */
+  answerDeviceApproval: (id: string, approval: Pick<DeviceApproval, "id" | "created_ms">, answer: ApprovalChoice, minutes?: number) =>
+    json<{ ok: true }>(`/api/devices/${encodeURIComponent(id)}/approvals/${approval.id}`, { method: "POST", body: JSON.stringify({ answer, minutes, created_ms: approval.created_ms }) }),
   devicePolicy: (id: string) => json<{ policy: DevicePolicy }>(`/api/devices/${encodeURIComponent(id)}/policy`),
   setDevicePolicy: (id: string, settings: DevicePolicy["settings"], ifVersion: string) =>
     json<{ policy: DevicePolicy | null }>(`/api/devices/${encodeURIComponent(id)}/policy`, { method: "PUT", body: JSON.stringify({ settings, ifVersion }) }),
@@ -1372,6 +1373,8 @@ export interface DeviceApproval {
   max_minutes: number;
   created_ms: number;
   expires_ms: number;
+  /** The command or path is cut: nobody could read all of it, so only Deny is offered. */
+  cut: boolean;
 }
 
 /** The device's settings as it shares them: `portal_policy` says whether the portal may change them. */

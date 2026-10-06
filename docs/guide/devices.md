@@ -134,9 +134,14 @@ name on its card in the chat.
   of the portal's environment goes along, and the command is the one the model
   wrote: what an installed extension rewrites in the portal's `bash` commands
   (a prefix such as `rtk`, which only the portal may have) is not applied to
-  it. The agent sees the end of a long
-  output (the last 2000 lines or 50 KB, as on the server); the full output is
-  not kept, so to see more it runs the command again, narrowed.
+  it. So a rewrite that another extension makes to be safer (`rm -r` turned
+  into a trash command, a `timeout` in front) does not reach devices either:
+  what protects a device is its own settings. (When a provider gives several
+  calls of one message the same id, the portal cannot tell which is which, and
+  runs each call's command as it came out of the extensions.) The agent sees
+  the end of a long output (the last 2000 lines or 50 KB, as on the server);
+  the full output is not kept, so to see more it runs the command again,
+  narrowed.
 - `edit` writes back only if the file did not change on the device since it
   was read; otherwise the agent is told to read it again.
 - Nothing falls back to the server: a device the chat does not have, one that
@@ -204,6 +209,18 @@ of the chat and its buttons wrap:
 - **Allow for** *n minutes*: the same, for a time; no longer than the device
   allows.
 - **Deny**.
+
+The command is shown as it is written: its line breaks stay, and a character
+that would hide or reorder it (a control character, a zero-width character, a
+right-to-left mark) is written out, as `\n` or `\u{202e}` in a highlight, the way
+the client's own prompt does. One that is too long for the client (64 KiB) is
+shown cut, says so, and can only be denied, here as on the device. A card's
+buttons come on a moment (under a second) after it appears, so that a double
+click, or a second click meant for the card before, does not answer the next
+question. An answer is for the question it was shown for: when the device's
+client has restarted, and numbers its questions from 1 again, an answer from a
+card that has not refreshed yet is refused ("That question is not open any
+more") and nothing is answered.
 
 The first answer wins, from the chat, the Devices page or the device itself
 (`pithagoras-sync approve 12`, `deny 12`). An approval that nobody answers is

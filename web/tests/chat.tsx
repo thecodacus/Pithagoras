@@ -280,6 +280,10 @@ function Fixture() {
   const [v, setV] = React.useState('b');
   const [which, setWhich] = React.useState(phase === 'switch' ? 'first' : session.id);
   const [shownEvents, setShownEvents] = React.useState(events);
+  // The run of the preview chat is over (`endRun()`), or another chat is open instead (`openChat('other')`), as in the app.
+  const [ended, setEnded] = React.useState(false);
+  (window as any).endRun = () => setEnded(true);
+  (window as any).openChat = setWhich;
   const paste = () => fillFrom(session.id, { seq: -now * 1000 - 10, type: 'extension_ui_request', at: now, payload: { method: 'setEditorText', text: 'the ', paste: true } });
   React.useEffect(() => { for (const ev of fills) fillFrom(session.id, ev); }, []);
   (window as any).think = (delta: string) => setShownEvents((list) => [...list, { seq: ++seq, type: 'message_update', at: Date.now(), payload: { streamId: 's', assistantMessageEvent: { type: 'thinking_delta', delta } } }]);
@@ -299,7 +303,7 @@ function Fixture() {
     }, 50);
     return () => clearInterval(t);
   }, []);
-  const shown = which === session.id ? session : { ...session, id: which, title: which === 'first' ? 'First chat' : 'Second chat', status: 'idle' as const };
+  const shown = which === session.id ? (ended ? { ...session, status: 'idle' as const } : session) : { ...session, id: which, title: which === 'first' ? 'First chat' : 'Second chat', status: 'idle' as const };
   return <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
     <div style={{ padding: 8, display: 'flex', gap: 8 }}><Select aria-label="Preview select" size="sm" className="w-64" value={v} onChange={setV} options={[{ value: 'a', label: 'Project notes' }, { value: 'b', label: 'Release plan', hint: 'Temporary — not stored' }, { value: 'c', label: 'Meeting summary' }]} /><label className="flex items-center gap-2 text-xs"><input type="checkbox" defaultChecked />Checkbox</label><input type="range" defaultValue={40} />{phase === 'switch' && <button onClick={() => setWhich('second')}>Open the second chat</button>}{phase === 'switch' && <button onClick={() => setWhich('first')}>Open the first chat</button>}{phase === 'paste' && <button onClick={paste}>Paste from the extension</button>}</div>
     <div style={{ flex: 1, minHeight: 0 }}><Chat session={shown} events={shownEvents} onSend={async (message) => { (window as any).sent = [...((window as any).sent ?? []), message]; }} onEditMessage={noop} onDeleteMessage={noop} onAbort={noop} onClientCommand={noop} onRename={noop} loading={new URLSearchParams(location.search).has('loading')} /></div>

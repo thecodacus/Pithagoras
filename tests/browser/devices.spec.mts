@@ -173,7 +173,16 @@ test('a device shows its state; an approval is answered from the page, for a tim
   await asks.getByRole('combobox', { name: 'Minutes' }).selectOption('60');
   await asks.getByRole('button', { name: 'Allow for', exact: true }).click();
   await expect(card.getByTestId('device-approval')).toHaveCount(0);
-  expect(sent).toEqual([{ method: 'POST', path: '/api/devices/d0123456789abcdef/approvals/12', body: { answer: 'time', minutes: 60 } }]);
+  expect(sent).toEqual([{ method: 'POST', path: '/api/devices/d0123456789abcdef/approvals/12', body: { answer: 'time', minutes: 60, created_ms: 0 } }]);
+});
+
+test('the Devices page shows the command of an approval as the chat does: its line breaks kept, a reordering control written out', async ({ page }) => {
+  const rlo = String.fromCodePoint(0x202e);
+  await portal(page, { devices: [device({ approvals: [{ ...approval, target: `echo "ok"\nrm -rf ~ ${rlo}` }] })] });
+  await page.goto('/devices');
+  const target = page.getByTestId('device-approval').getByTestId('device-approval-target');
+  expect(await target.evaluate((el) => (el as HTMLElement).innerText)).toBe('echo "ok"\nrm -rf ~ \\u{202e}');
+  await expect(target.locator('[data-escape]')).toHaveText('\\u{202e}');
 });
 
 /** What a device shares: every setting with its value, and a key and a section a newer client might add. */

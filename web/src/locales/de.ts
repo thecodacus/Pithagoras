@@ -2460,6 +2460,7 @@ const de: Locale = {
     "Minutes": "Minuten",
     "{n} minutes": { one: "{n} Minute", other: "{n} Minuten" },
     "Deny": "Ablehnen",
+    "Too long to read whole, so it can only be denied.": "Zu lang, um es ganz zu lesen: Es kann nur abgelehnt werden.",
     "Ask": "Fragen",
     "Full": "Voll",
     "The settings are not valid JSON.": "Die Einstellungen sind kein gültiges JSON.",

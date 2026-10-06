@@ -1,11 +1,27 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, type ApprovalChoice, type ChatDeviceApproval, type Device, type DeviceApproval, type PortalEvent } from "../api";
+import { api, ApiError, type ApprovalChoice, type ChatDeviceApproval, type Device, type DeviceApproval, type PortalEvent } from "../api";
 import { t, tp } from "../i18n";
-import { pollWhileVisible } from "../poll";
+import { pollWhileVisible, reconnectDelay } from "../poll";
+import { visible, visibleParts } from "../visible";
 import { ghostCls, primarySmCls } from "./SettingsUi";
 
 const MINUTES = [15, 30, 60, 120, 240, 480];
+
+/**
+ * How long a card's buttons stay off after it appears. The next question takes the place of the one just answered, with its buttons
+ * where the others were, so a second click meant for the first (a double click, an impatient one) would answer a question that
+ * nobody has read. The way a browser holds a permission prompt back, for a moment.
+ */
+const INPUT_DELAY_MS = 700;
+
+/** What the model or a device wrote, with every character that would hide or reorder what is read written out (see visible.ts). */
+function Visible({ text, lines }: { text: string; lines?: boolean }) {
+  return <>{visibleParts(text, lines).map((p, i) => (p.escaped ? <span key={i} className="rounded bg-warn/20 px-0.5 text-warn" data-escape="">{p.text}</span> : p.text))}</>;
+}
+
+/** The start of a long text, for a list that shows a line of each. */
+const brief = (s: string) => (s.length > 200 ? `${s.slice(0, 200)}…` : s);
 
 /**
  * A call the device holds until it is answered here, on the device, or it runs
@@ -16,10 +32,18 @@ export function DeviceApprovalCard({ device, approval: a, here, onAnswered, onEr
   const choices = MINUTES.filter((m) => m <= a.max_minutes);
   const [minutes, setMinutes] = useState(choices[choices.length > 1 ? 1 : 0] ?? 0);
   const [busy, setBusy] = useState(false);
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setArmed(true), INPUT_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, []);
+  const off = busy || !armed;
+  // What was cut is only denied, whatever the list says.
+  const offered = (c: ApprovalChoice) => !a.cut && a.choices.includes(c);
   const answer = async (choice: ApprovalChoice) => {
     setBusy(true);
     try {
-      await api.answerDeviceApproval(device.id, a.id, choice, choice === "time" ? minutes : undefined);
+      await api.answerDeviceApproval(device.id, a, choice, choice === "time" ? minutes : undefined);
       await onAnswered();
     } catch (e) {
       onError((e as Error).message);
@@ -30,24 +54,26 @@ export function DeviceApprovalCard({ device, approval: a, here, onAnswered, onEr
   return (
     <div className="rounded-lg border border-warn/40 bg-warn/5 p-2" data-testid="device-approval">
       <p className="text-xs text-fg">
-        {t("{device} asks: {tool}", { device: device.name, tool: a.tool })}
+        <Visible text={t("{device} asks: {tool}", { device: device.name, tool: a.tool })} />
         {a.chat && !here && <> · <Link className="text-accent hover:underline" to={`/s/${encodeURIComponent(a.chat)}`}>{t("from this chat")}</Link></>}
       </p>
-      <p className="mt-1 break-all font-mono text-xs text-fg-muted">{a.target}</p>
-      {a.reasons.length > 0 && <ul className="mt-1 list-disc pl-4 text-[11px] text-fg-subtle">{a.reasons.map((r, i) => <li key={i}>{r}</li>)}</ul>}
-      {a.preview && <pre className="mt-1 max-h-48 overflow-auto rounded bg-canvas/60 p-2 text-[11px] text-fg-muted">{a.preview}</pre>}
+      {/* Its line breaks stay (pre-wrap), and a long one scrolls, so the buttons under it stay where they are. */}
+      <p className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all font-mono text-xs text-fg-muted" data-testid="device-approval-target"><Visible text={a.target} lines /></p>
+      {a.cut && <p className="mt-1 text-[11px] text-warn" data-testid="device-approval-cut">{t("Too long to read whole, so it can only be denied.")}</p>}
+      {a.reasons.length > 0 && <ul className="mt-1 list-disc pl-4 text-[11px] text-fg-subtle">{a.reasons.map((r, i) => <li key={i}><Visible text={r} /></li>)}</ul>}
+      {a.preview && <pre className="mt-1 max-h-48 overflow-auto rounded bg-canvas/60 p-2 text-[11px] text-fg-muted"><Visible text={a.preview} lines /></pre>}
       <div className="mt-2 flex flex-wrap items-center gap-1">
-        {a.choices.includes("once") && <button type="button" disabled={busy} className={primarySmCls} onClick={() => void answer("once")}>{t("Allow once")}</button>}
-        {a.choices.includes("chat") && <button type="button" disabled={busy} className={ghostCls} onClick={() => void answer("chat")}>{t("Allow for this chat")}</button>}
-        {a.choices.includes("time") && choices.length > 0 && (
+        {offered("once") && <button type="button" disabled={off} className={primarySmCls} onClick={() => void answer("once")}>{t("Allow once")}</button>}
+        {offered("chat") && <button type="button" disabled={off} className={ghostCls} onClick={() => void answer("chat")}>{t("Allow for this chat")}</button>}
+        {offered("time") && choices.length > 0 && (
           <span className="inline-flex items-center gap-1">
-            <button type="button" disabled={busy} className={ghostCls} onClick={() => void answer("time")}>{t("Allow for")}</button>
+            <button type="button" disabled={off} className={ghostCls} onClick={() => void answer("time")}>{t("Allow for")}</button>
             <select aria-label={t("Minutes")} className="rounded border border-line bg-raised px-1 py-0.5 text-xs" value={minutes} onChange={(e) => setMinutes(Number(e.target.value))}>
               {choices.map((m) => <option key={m} value={m}>{tp(m, "{n} minute", "{n} minutes")}</option>)}
             </select>
           </span>
         )}
-        <button type="button" disabled={busy} className={`${ghostCls} !text-danger`} onClick={() => void answer("deny")}>{t("Deny")}</button>
+        <button type="button" disabled={off} className={`${ghostCls} !text-danger`} onClick={() => void answer("deny")}>{t("Deny")}</button>
       </div>
     </div>
   );
@@ -67,37 +93,59 @@ const waitsForApproval = (e: PortalEvent | undefined): boolean => {
  * A question exists only while a call waits for it, so the chat asks only
  * while it runs, and anew when a call says that it waits. What the server
  * lists is what is shown: a question answered elsewhere, or whose call ended,
- * is gone from the next answer. A portal without the Devices add-on answers
- * with an error, and then nothing is asked again until the add-on is switched.
+ * is gone from the next answer. A portal without the Devices add-on (or a chat
+ * that cannot have devices) answers 404 or 409, and then nothing is asked again
+ * until the add-on is switched, or a call says it waits. Any other failure is a
+ * blip: the list stays as it was, and the poll goes on, a little later each time.
  */
 export function ChatDeviceApprovals({ sessionId, running, events }: { sessionId: string; running: boolean; events: PortalEvent[] }) {
   const [list, setList] = useState<ChatDeviceApproval[]>([]);
   const [error, setError] = useState("");
-  const off = useRef(false);
-  const load = useCallback(() => {
-    if (off.current) return Promise.resolve();
-    return api.chatDeviceApprovals(sessionId).then(
-      (r) => setList((was) => (JSON.stringify(was) === JSON.stringify(r.approvals) ? was : r.approvals)),
-      () => {
-        off.current = true;
-        setList([]);
-      },
-    );
-  }, [sessionId]);
+  // The poll that is on now. An answer to a request of an earlier one (the chat was changed, or its run ended, while it was on its way) is not the list of this chat's now.
+  const run = useRef<{ sessionId: string; off: boolean; failed: number; retryAt: number } | null>(null);
+  // `now` asks whatever the poll's backoff says: the owner has just answered, or a call says that it waits.
+  const load = useCallback(
+    (now = false) => {
+      const mine = run.current;
+      if (!mine || mine.sessionId !== sessionId || mine.off || (!now && Date.now() < mine.retryAt)) return Promise.resolve();
+      return api.chatDeviceApprovals(sessionId).then(
+        (r) => {
+          if (run.current !== mine) return;
+          mine.failed = 0;
+          setList((was) => (JSON.stringify(was) === JSON.stringify(r.approvals) ? was : r.approvals));
+        },
+        (e) => {
+          if (run.current !== mine) return;
+          if (e instanceof ApiError && (e.status === 404 || e.status === 409)) {
+            mine.off = true;
+            setList([]);
+          } else {
+            mine.retryAt = Date.now() + reconnectDelay(++mine.failed);
+          }
+        },
+      );
+    },
+    [sessionId],
+  );
 
   useEffect(() => {
     setList([]);
     setError("");
-    off.current = false;
-    if (!running) return;
-    void load();
+    if (!running) {
+      run.current = null;
+      return;
+    }
+    const mine = { sessionId, off: false, failed: 0, retryAt: 0 };
+    run.current = mine;
+    void load(true);
     const again = () => {
-      off.current = false;
-      void load();
+      mine.off = false;
+      void load(true);
     };
     window.addEventListener("features-changed", again);
     const stop = pollWhileVisible(() => void load(), 3000);
     return () => {
+      run.current = null;
       window.removeEventListener("features-changed", again);
       stop();
     };
@@ -106,7 +154,10 @@ export function ChatDeviceApprovals({ sessionId, running, events }: { sessionId:
   const last = events[events.length - 1];
   const waiting = running && waitsForApproval(last);
   useEffect(() => {
-    if (waiting) void load();
+    if (!waiting) return;
+    // A call that waits for an answer means the add-on is on, whatever an earlier answer said.
+    if (run.current) run.current.off = false;
+    void load(true);
   }, [waiting, last?.seq, load]);
 
   if (!list.length) return null;
@@ -120,21 +171,29 @@ export function ChatDeviceApprovals({ sessionId, running, events }: { sessionId:
         {rest.length > 0 && t("Approval {n} of {total}", { n: 1, total: queue.length })}
       </p>
       <DeviceApprovalCard
-        key={`${device.id}:${approval.id}`}
+        key={`${device.id}:${approval.id}:${approval.created_ms}`}
         device={device}
         approval={approval}
         here
         onAnswered={() => {
           setError("");
-          return load();
+          return load(true);
         }}
-        onError={setError}
+        onError={(e) => {
+          setError(e);
+          // The question may be gone (answered elsewhere, or another one now): the list says.
+          void load(true);
+        }}
       />
       {rest.length > 0 && (
         <details className="px-1 text-xs text-fg-subtle" data-testid="device-approval-next">
           <summary className="cursor-pointer">{t("Waiting next")}</summary>
           <ul className="mt-1 space-y-0.5">
-            {rest.map((r) => <li key={`${r.device.id}:${r.approval.id}`} className="truncate" title={r.approval.target}>{r.device.name}: {r.approval.tool} · <span className="font-mono">{r.approval.target}</span></li>)}
+            {rest.map((r) => (
+              <li key={`${r.device.id}:${r.approval.id}:${r.approval.created_ms}`} className="truncate" title={visible(brief(r.approval.target))}>
+                {r.device.name}: {r.approval.tool} · <span className="font-mono"><Visible text={brief(r.approval.target)} /></span>
+              </li>
+            ))}
           </ul>
         </details>
       )}

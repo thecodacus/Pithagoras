@@ -118,9 +118,14 @@ test("pairing, the list, rename, approvals, settings, and removal that cuts the 
   assert.equal((await api(`/api/devices/${id}`, { method: "PUT", body: { name: "Not Valid" } })).status, 400);
   assert.equal((await api(`/api/devices/${id}`, { method: "PUT", body: { name: "desk" } })).body.device.name, "desk");
 
-  assert.equal((await api(`/api/devices/${id}/approvals/3`, { method: "POST", body: { answer: "always" } })).status, 400);
-  assert.equal((await api(`/api/devices/${id}/approvals/3`, { method: "POST", body: { answer: "time" } })).status, 400);
-  assert.equal((await api(`/api/devices/${id}/approvals/3`, { method: "POST", body: { answer: "time", minutes: 30 } })).status, 200);
+  assert.equal((await api(`/api/devices/${id}/approvals/3`, { method: "POST", body: { answer: "always", created_ms: 1 } })).status, 400);
+  assert.equal((await api(`/api/devices/${id}/approvals/3`, { method: "POST", body: { answer: "time", created_ms: 1 } })).status, 400);
+  // The answer names the question it was shown for: without that, for another one with the number, or for one the portal does not hold, nothing is sent.
+  assert.equal((await api(`/api/devices/${id}/approvals/3`, { method: "POST", body: { answer: "once" } })).status, 400);
+  assert.equal((await api(`/api/devices/${id}/approvals/3`, { method: "POST", body: { answer: "once", created_ms: 2 } })).status, 409);
+  assert.equal((await api(`/api/devices/${id}/approvals/99`, { method: "POST", body: { answer: "once", created_ms: 1 } })).status, 409);
+  assert.deepEqual(dev.got.filter((m) => m.method === "approval.answer"), []);
+  assert.equal((await api(`/api/devices/${id}/approvals/3`, { method: "POST", body: { answer: "time", minutes: 30, created_ms: 1 } })).status, 200);
   assert.deepEqual(dev.got.find((m) => m.method === "approval.answer").params, { id: 3, answer: "time", minutes: 30 });
 
   assert.equal((await api(`/api/devices/${id}/policy`)).body.policy.version, "v1");
@@ -150,7 +155,7 @@ test("a device's settings that are too deep to be written out are not kept, and 
   const deep = (version) => `{"jsonrpc":"2.0","method":"policy.changed","params":{"portal_policy":"read","version":"${version}","settings":{"x":${"[".repeat(5000)}${"]".repeat(5000)}},"device_only":[]}}`;
   dev.sock.send(deep("deep"));
   // The portal has read it once it has the device's answer to a call that comes after it (not one that asks for the settings anew).
-  assert.equal((await api(`/api/devices/${id}/approvals/3`, { method: "POST", body: { answer: "deny" } })).status, 200);
+  assert.equal((await api(`/api/devices/${id}/approvals/3`, { method: "POST", body: { answer: "deny", created_ms: 1 } })).status, 200);
   const list = await api("/api/devices");
   assert.equal(list.status, 200);
   assert.equal(list.body.devices[0].policy.version, "v1", "the settings it had before");

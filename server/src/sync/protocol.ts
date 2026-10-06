@@ -220,6 +220,13 @@ export function readDeviceInfo(v: unknown): DeviceInfo | undefined {
 export type Choice = "once" | "chat" | "time" | "deny";
 const CHOICES: readonly Choice[] = ["once", "chat", "time", "deny"];
 
+/**
+ * The longest command or path of an approval, in characters: the client's own limit (its `MAX_APPROVAL_TEXT` is 64 KiB, and a
+ * character is at least a byte). The client cuts what is longer, says `cut` and offers only a deny, since nobody could read
+ * whole what they would allow. The portal does the same with what it has to cut itself.
+ */
+const MAX_APPROVAL_TARGET = 64 * 1024;
+
 export interface ApprovalInfo {
   id: number;
   call: number | string | null;
@@ -232,6 +239,8 @@ export interface ApprovalInfo {
   max_minutes: number;
   created_ms: number;
   expires_ms: number;
+  /** The command or path is not all there (the device cut it, or the portal did): it can only be denied. */
+  cut: boolean;
 }
 
 /** An approval the device asks for (`approval.requested`, or one of `approval.list`), or undefined. */
@@ -241,7 +250,7 @@ export function readApproval(v: unknown): ApprovalInfo | undefined {
   const call = v.call === null || v.call === undefined ? null : typeof v.call === "string" ? text(v.call, 128) : int(v.call);
   const chat = text(v.chat, 128);
   const tool = text(v.tool, 32);
-  const target = typeof v.target === "string" ? v.target.slice(0, 4096) : undefined;
+  const target = typeof v.target === "string" ? v.target : undefined;
   const reasons = textList(v.reasons, 16, 500);
   const preview = v.preview === null || v.preview === undefined ? null : typeof v.preview === "string" ? v.preview.slice(0, 4000) : undefined;
   const choices = Array.isArray(v.choices) && v.choices.every((c) => CHOICES.includes(c as Choice)) ? (v.choices as Choice[]) : undefined;
@@ -249,7 +258,22 @@ export function readApproval(v: unknown): ApprovalInfo | undefined {
   const created_ms = int(v.created_ms);
   const expires_ms = int(v.expires_ms);
   if ([id, call, chat, tool, target, reasons, preview, choices, max_minutes, created_ms, expires_ms].some((x) => x === undefined)) return undefined;
-  return { id: id!, call: call!, chat: chat!, tool: tool!, target: target!, reasons: reasons!, preview: preview!, choices: choices!, max_minutes: max_minutes!, created_ms: created_ms!, expires_ms: expires_ms! };
+  const cut = v.cut === true || target!.length > MAX_APPROVAL_TARGET;
+  return {
+    id: id!,
+    call: call!,
+    chat: chat!,
+    tool: tool!,
+    target: target!.length > MAX_APPROVAL_TARGET ? `${target!.slice(0, MAX_APPROVAL_TARGET - 1)}…` : target!,
+    reasons: reasons!,
+    preview: preview!,
+    // Whatever the device offers for it: a cut one takes only a deny, here as on the device.
+    choices: cut ? ["deny"] : choices!,
+    max_minutes: max_minutes!,
+    created_ms: created_ms!,
+    expires_ms: expires_ms!,
+    cut,
+  };
 }
 
 export interface ExecExit {

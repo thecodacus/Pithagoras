@@ -390,8 +390,8 @@ export function deviceTools(opts: DeviceToolsOptions) {
  * that name: a command optimiser that puts `rtk` in front of it checked for rtk on the portal, and the device has none. The
  * rewrite is made on a copy that pi validates the params into; the assistant message pi keeps in the session still has what the
  * model wrote, and it is there before any tool runs. That, and not a handler of ours, because which handler runs first is not
- * ours to say (installed packages' extensions go before the portal's). Without a session to read (a call outside pi), the
- * params stay as they are.
+ * ours to say (installed packages' extensions go before the portal's). Without a session to read (a call outside pi), or when
+ * the message has more than one call with this id (which one this is cannot be told), the params stay as they are.
  */
 function asWritten(params: Record<string, unknown>, toolCallId: string, ctx: any): Record<string, unknown> {
   try {
@@ -401,8 +401,10 @@ function asWritten(params: Record<string, unknown>, toolCallId: string, ctx: any
     while (entry && !(entry.type === "message" && entry.message?.role === "assistant")) {
       entry = entry.parentId ? sessions.getEntry(entry.parentId) : undefined;
     }
-    const call = (entry?.message?.content ?? []).find((c: any) => c?.type === "toolCall" && c.id === toolCallId && c.name === "bash");
-    const command = call?.arguments?.command;
+    // Only a call that the message names once: a provider that sends no ids, or repeats one, gives two calls the same, and the first's
+    // command must not run for the second.
+    const named = (entry?.message?.content ?? []).filter((c: any) => c?.type === "toolCall" && c.id === toolCallId && c.name === "bash");
+    const command = named.length === 1 ? named[0].arguments?.command : undefined;
     return typeof command === "string" ? { ...params, command } : params;
   } catch {
     return params;

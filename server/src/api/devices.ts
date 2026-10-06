@@ -171,13 +171,20 @@ export function devicesRouter(): Router {
     const link = linkOf(req.params.id);
     if (!link) return res.status(409).json({ error: "The device is not connected" });
     const id = Number(req.params.approval);
-    const { answer, minutes } = req.body ?? {};
+    const { answer, minutes, created_ms } = req.body ?? {};
     if (!Number.isInteger(id) || !CHOICES.includes(answer)) return res.status(400).json({ error: "answer must be once, chat, time or deny" });
     if (answer === "time" && !(Number.isInteger(minutes) && minutes >= 1)) return res.status(400).json({ error: "minutes must be a whole number of at least 1" });
+    if (!Number.isInteger(created_ms)) return res.status(400).json({ error: "created_ms must be the one the question was listed with" });
+    // The answer is for the question the owner was shown, not for whatever has that number now: a client that restarted numbers from
+    // 1 again, and a card that has not refreshed yet would answer another chat's question. A question the portal does not hold (any
+    // more) cannot be told from one that the device has opened since, so nothing is sent for it.
+    const asked = link.approvals.get(id);
+    if (!asked || asked.created_ms !== created_ms) return res.status(409).json({ error: "That question is not open any more, or it is another one now. Nothing was answered" });
+    // What was cut cannot be read whole, so it is not allowed from here, whatever the device would take.
+    if (answer !== "deny" && asked.cut) return res.status(409).json({ error: "That command is too long to read whole, so it can only be denied" });
     // A question of a chat that no longer has the device (or that was denied for it) is only ever denied: a late Allow, from a page
     // that was open when the grant ended, would let the device run what the chat has no right to any more.
-    const asked = link.approvals.get(id);
-    if (answer !== "deny" && asked && (link.isDenied(id) || (getSession(asked.chat) && !grantOf(asked.chat, req.params.id)))) {
+    if (answer !== "deny" && (link.isDenied(id) || (getSession(asked.chat) && !grantOf(asked.chat, req.params.id)))) {
       link.deny(id);
       return res.status(409).json({ error: "That chat no longer has this device, so the question is denied" });
     }

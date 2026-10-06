@@ -61,29 +61,12 @@ const optimiser = (api) => {
   });
 };
 
-test("a command for a device is run there as the model wrote it, and a command for the server can still be rewritten", async () => {
-  const { id, device } = await online("laptop", {
-    "exec.start": (params, _id, d) => {
-      setTimeout(() => {
-        d.frame(FRAME.execOutput, params.stream, 0, "on the device\n");
-        d.notify("exec.exit", { stream: params.stream, code: 0, signal: null, timed_out: false, truncated: false });
-      }, 5);
-      return {};
-    },
-  });
-  const sessionId = "rewrite-chat";
+/** A real pi session of the chat, with the faux model answering `responses`, and the device tools of the portal (and the optimiser first, if asked). */
+async function runSession(sessionId, id, responses, { optimise = false } = {}) {
   createSession({ id: sessionId, title: sessionId, workspace: home, executor: "host", kind: "task" });
   grants.grantDevice(sessionId, id, "/home/alice/src");
-
   const faux = piAi.fauxProvider({});
-  const calls = (...c) => piAi.fauxAssistantMessage(c.map(([args, i]) => piAi.fauxToolCall("bash", args, { id: i })));
-  faux.setResponses([
-    // Two calls at once, one for the device and one for the server, then a call for the device alone.
-    calls([{ command: "git status | head -3", device: "laptop" }, "d1"], [{ command: "echo on the server" }, "s1"]),
-    calls([{ command: "ls -la", device: "laptop", timeout: 30 }, "d2"]),
-    piAi.fauxAssistantMessage("done"),
-  ]);
-
+  faux.setResponses(responses);
   const modelRuntime = await pi.ModelRuntime.create();
   modelRuntime.registerNativeProvider(faux.provider);
   const { provider, id: modelId } = faux.getModel();
@@ -93,7 +76,7 @@ test("a command for a device is run there as the model wrote it, and a command f
     noExtensions: true,
     // The optimiser first, as a package's extensions are loaded before the portal's own.
     extensionFactories: [
-      { name: "optimiser", factory: optimiser },
+      ...(optimise ? [{ name: "optimiser", factory: optimiser }] : []),
       { name: "devices", factory: deviceTools({ sessionId, cwd: home, pi, serverTool: () => undefined }) },
     ],
   });
@@ -109,6 +92,36 @@ test("a command for a device is run there as the model wrote it, and a command f
   const results = [];
   session.subscribe((e) => e.type === "tool_execution_end" && results.push(e));
   await session.prompt("go");
+  return results;
+}
+
+const calls = (...c) => piAi.fauxAssistantMessage(c.map(([args, i]) => piAi.fauxToolCall("bash", args, { id: i })));
+
+/** A device that runs a command: it answers with one line of output naming it. */
+const runner = (name) =>
+  online(name, {
+    "exec.start": (params, _id, d) => {
+      setTimeout(() => {
+        d.frame(FRAME.execOutput, params.stream, 0, "on the device\n");
+        d.notify("exec.exit", { stream: params.stream, code: 0, signal: null, timed_out: false, truncated: false });
+      }, 5);
+      return {};
+    },
+  });
+
+test("a command for a device is run there as the model wrote it, and a command for the server can still be rewritten", async () => {
+  const { id, device } = await runner("laptop");
+  const results = await runSession(
+    "rewrite-chat",
+    id,
+    [
+      // Two calls at once, one for the device and one for the server, then a call for the device alone.
+      calls([{ command: "git status | head -3", device: "laptop" }, "d1"], [{ command: "echo on the server" }, "s1"]),
+      calls([{ command: "ls -la", device: "laptop", timeout: 30 }, "d2"]),
+      piAi.fauxAssistantMessage("done"),
+    ],
+    { optimise: true },
+  );
 
   const ran = device.asked("exec.start").map((m) => m.params.command);
   assert.deepEqual(ran, ["git status | head -3", "ls -la"]);
@@ -116,4 +129,27 @@ test("a command for a device is run there as the model wrote it, and a command f
   const server = results.find((r) => r.toolCallId === "s1");
   assert.match(JSON.stringify(server.result), /optimised/, "the portal's own bash is rewritten as before");
   assert.match(JSON.stringify(results.find((r) => r.toolCallId === "d1").result), /on the device/);
+});
+
+test("calls of one message that share an id each run their own command: the id says which command only when it is the one", async () => {
+  const { id, device } = await runner("twin");
+  // A provider that sends no ids, or repeats one: pi keeps the calls apart by their place, and both are called "dup".
+  await runSession("twin-chat", id, [
+    calls([{ command: "echo FIRST", device: "twin" }, "dup"], [{ command: "echo SECOND", device: "twin" }, "dup"]),
+    // One for the server and one for the device: the device never runs the server's.
+    calls([{ command: "echo meant-for-the-server" }, "dup"], [{ command: "echo meant-for-the-device", device: "twin" }, "dup"]),
+    piAi.fauxAssistantMessage("done"),
+  ]);
+  const ran = device.asked("exec.start").map((m) => m.params.command).sort();
+  assert.deepEqual(ran, ["echo FIRST", "echo SECOND", "echo meant-for-the-device"]);
+
+  // And with the optimiser that rewrites everything: what runs is then the rewrite of each call's own command, never another's.
+  const { id: other, device: second } = await runner("twin-rewritten");
+  await runSession(
+    "twin-rewritten-chat",
+    other,
+    [calls([{ command: "echo FIRST", device: "twin-rewritten" }, "dup"], [{ command: "echo SECOND", device: "twin-rewritten" }, "dup"]), piAi.fauxAssistantMessage("done")],
+    { optimise: true },
+  );
+  assert.deepEqual(second.asked("exec.start").map((m) => m.params.command).sort(), ["echo optimised; echo FIRST", "echo optimised; echo SECOND"]);
 });

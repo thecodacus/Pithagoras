@@ -76,20 +76,35 @@ test('the list fits a phone, opened from a chip near the left of the header', as
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(375);
 });
 
-/** What the chat's devices hold for it, served as the portal does: it outlives a reload, and the test changes it as the device or the Devices page would. */
+/**
+ * What the chat's devices hold for it, served as the portal does: it outlives a reload, and the test changes it as the device or the Devices page would.
+ * Also what makes a look-up go wrong or late: `fail` answers 502 that many times, `off` answers as a portal without the add-on, `hold` keeps a look-up
+ * on its way until the test lets it go (what it answers is what was pending when it was asked), and `latency` slows an answer to a card.
+ */
 async function asking(page: import('@playwright/test').Page) {
   const approval = (id: number, over: Record<string, unknown> = {}) => ({
     device: { id: 'd1', name: 'laptop' },
-    approval: { id, call: 4, chat: 'preview', tool: 'bash', target: 'make deploy-to-production-with-a-very-long-target-name-that-must-wrap', reasons: ['Ask mode: every call asks'], preview: null, choices: ['once', 'chat', 'time', 'deny'], max_minutes: 60, created_ms: 0, expires_ms: 0, ...over },
+    approval: { id, call: 4, chat: 'preview', tool: 'bash', target: 'make deploy-to-production-with-a-very-long-target-name-that-must-wrap', reasons: ['Ask mode: every call asks'], preview: null, choices: ['once', 'chat', 'time', 'deny'], max_minutes: 60, created_ms: 0, expires_ms: 0, cut: false, ...over },
   });
-  const state = { pending: [approval(7)], answers: [] as { path: string; body: any }[], asked: 0 };
-  await page.route('**/api/sessions/preview/devices/approvals', (route) => {
+  const state = { pending: [approval(7)], answers: [] as { path: string; body: any }[], asked: 0, held: 0, fail: 0, off: false, hold: null as Promise<void> | null, latency: 0 };
+  await page.route('**/api/sessions/preview/devices/approvals', async (route) => {
     state.asked++;
-    return route.fulfill({ json: { approvals: state.pending } });
+    if (state.off) return route.fulfill({ status: 404, json: { error: 'Devices are switched off in this portal' } });
+    if (state.fail > 0) {
+      state.fail--;
+      return route.fulfill({ status: 502, json: { error: 'Bad gateway' } });
+    }
+    const approvals = state.pending;
+    if (state.hold) {
+      state.held++;
+      await state.hold;
+    }
+    return route.fulfill({ json: { approvals } });
   });
-  await page.route('**/api/devices/d1/approvals/*', (route) => {
+  await page.route('**/api/devices/d1/approvals/*', async (route) => {
     const path = new URL(route.request().url()).pathname;
     state.answers.push({ path, body: route.request().postDataJSON() });
+    if (state.latency) await new Promise((r) => setTimeout(r, state.latency));
     state.pending = state.pending.filter((a) => !path.endsWith(`/${a.approval.id}`));
     return route.fulfill({ json: { ok: true } });
   });
@@ -114,7 +129,7 @@ test('a question a device asks for the chat is a card in the chat, answered ther
   await card.getByRole('combobox', { name: 'Minutes' }).selectOption('60');
   await card.getByRole('button', { name: 'Allow for', exact: true }).click();
   await expect(page.getByTestId('device-approval')).toHaveCount(0);
-  expect(state.answers).toEqual([{ path: '/api/devices/d1/approvals/7', body: { answer: 'time', minutes: 60 } }]);
+  expect(state.answers).toEqual([{ path: '/api/devices/d1/approvals/7', body: { answer: 'time', minutes: 60, created_ms: 0 } }]);
 });
 
 test('Allow once and Deny in the chat answer the device with that choice', async ({ page }) => {
@@ -126,8 +141,8 @@ test('Allow once and Deny in the chat answer the device with that choice', async
   await page.getByRole('button', { name: 'Deny' }).click({ timeout: 8000 });
   await expect(page.getByTestId('device-approval')).toHaveCount(0);
   expect(state.answers).toEqual([
-    { path: '/api/devices/d1/approvals/7', body: { answer: 'once' } },
-    { path: '/api/devices/d1/approvals/8', body: { answer: 'deny' } },
+    { path: '/api/devices/d1/approvals/7', body: { answer: 'once', created_ms: 0 } },
+    { path: '/api/devices/d1/approvals/8', body: { answer: 'deny', created_ms: 0 } },
   ]);
 });
 
@@ -240,9 +255,9 @@ test('answering a question moves the next one up, each decided on its own', asyn
   await card.getByRole('button', { name: 'Allow for this chat' }).click();
   await expect(card).toHaveCount(0);
   expect(state.answers).toEqual([
-    { path: '/api/devices/d1/approvals/7', body: { answer: 'deny' } },
-    { path: '/api/devices/d1/approvals/8', body: { answer: 'once' } },
-    { path: '/api/devices/d1/approvals/9', body: { answer: 'chat' } },
+    { path: '/api/devices/d1/approvals/7', body: { answer: 'deny', created_ms: 1000 } },
+    { path: '/api/devices/d1/approvals/8', body: { answer: 'once', created_ms: 2000 } },
+    { path: '/api/devices/d1/approvals/9', body: { answer: 'chat', created_ms: 3000 } },
   ]);
 });
 
@@ -282,4 +297,176 @@ test('with several questions the card and its list fit a phone', async ({ page }
     expect(box.x + box.width).toBeLessThanOrEqual(390);
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});
+
+// Characters that reorder or hide text, written as code points so that none sits in this file.
+const RLO = String.fromCodePoint(0x202e);
+const PDF = String.fromCodePoint(0x202c);
+const ZWSP = String.fromCodePoint(0x200b);
+
+test('a command is shown with its line breaks, and what would reorder or hide it is written out', async ({ page }) => {
+  const { state, approval } = await asking(page);
+  state.pending = [
+    approval(7, { target: 'echo "build ok"\nrm -rf ~/projects', reasons: [`matches a${RLO}rule`], preview: `a\tb${RLO}c\nsecond line` }),
+    approval(8, { created_ms: 1, target: `echo "${RLO}" ; rm -rf ~ ; echo "${PDF}" ok` }),
+    approval(9, { created_ms: 2, target: `ls\nrm${ZWSP} -rf ~` }),
+  ];
+  await page.goto('/tests/chat.html?phase=devices');
+  const card = page.getByTestId('device-approval');
+  const target = card.getByTestId('device-approval-target');
+  // Two lines, not one that reads as an echo: the break is there, and so is its shape on the page.
+  await expect(target).toHaveCSS('white-space', 'pre-wrap');
+  expect(await target.evaluate((el) => (el as HTMLElement).innerText)).toBe('echo "build ok"\nrm -rf ~/projects');
+  const line = await target.evaluate((el) => parseFloat(getComputedStyle(el).lineHeight));
+  expect((await target.boundingBox())!.height).toBeGreaterThan(line * 1.5);
+  // Everything else the device or the model wrote: a control is its escape, shown as one.
+  await expect(card.getByText('matches a\\u{202e}rule')).toBeVisible();
+  await expect(card.locator('pre')).toHaveText('a\\tb\\u{202e}c\nsecond line');
+  const text = await card.evaluate((el) => el.textContent ?? '');
+  expect(text).not.toContain(RLO);
+
+  // The next ones, in the list of what waits: on one line each, with the break and the controls written out.
+  await page.getByTestId('device-approval-next').getByText('Waiting next').click();
+  const next = page.getByTestId('device-approval-next').getByRole('listitem');
+  await expect(next).toHaveText(['laptop: bash · echo "\\u{202e}" ; rm -rf ~ ; echo "\\u{202c}" ok', 'laptop: bash · ls\\nrm\\u{200b} -rf ~']);
+  await expect(next.first().locator('[data-escape]')).toHaveCount(2);
+  expect(await page.getByTestId('device-approval-next').evaluate((el) => el.textContent ?? '')).not.toMatch(new RegExp(`[${RLO}${PDF}${ZWSP}]`));
+});
+
+test('a command that is cut can only be denied, and says so', async ({ page }) => {
+  const { state, approval } = await asking(page);
+  // The portal lists it with Deny only; the card does not take Allow from what else it was told.
+  state.pending = [approval(7, { target: `echo ${'a'.repeat(100)}…`, cut: true, choices: ['once', 'chat', 'time', 'deny'] })];
+  await page.goto('/tests/chat.html?phase=devices');
+  const card = page.getByTestId('device-approval');
+  await expect(card.getByTestId('device-approval-cut')).toHaveText('Too long to read whole, so it can only be denied.');
+  await expect(card.getByRole('button')).toHaveText(['Deny']);
+  await expect(card.getByRole('combobox', { name: 'Minutes' })).toHaveCount(0);
+  await card.getByRole('button', { name: 'Deny' }).click();
+  await expect(card).toHaveCount(0);
+  expect(state.answers).toEqual([{ path: '/api/devices/d1/approvals/7', body: { answer: 'deny', created_ms: 0 } }]);
+});
+
+test('a long command scrolls in its own box, so the buttons stay in reach', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 700 });
+  const { state, approval } = await asking(page);
+  state.pending = [approval(7, { target: Array.from({ length: 400 }, (_, i) => `echo line ${i}`).join('\n') })];
+  await page.goto('/tests/chat.html?phase=devices');
+  const card = page.getByTestId('device-approval');
+  await expect(card.getByRole('button', { name: 'Deny' })).toBeInViewport();
+  const target = card.getByTestId('device-approval-target');
+  expect(await target.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+  expect((await target.boundingBox())!.height).toBeLessThan(250);
+});
+
+test('a second click on the same spot soon after an answer does not answer the next question', async ({ page }) => {
+  const { state, approval } = await asking(page);
+  state.pending = threeAsked(approval);
+  state.latency = 30;
+  await page.goto('/tests/chat.html?phase=devices');
+  const card = page.getByTestId('device-approval');
+  const once = card.getByRole('button', { name: 'Allow once' });
+  await expect(card.getByText('first-target')).toBeVisible();
+  // A card holds its buttons back for a moment when it appears.
+  await expect(once).toBeDisabled();
+  await expect(once).toBeEnabled();
+  const box = (await once.boundingBox())!;
+  const spot = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  await page.mouse.click(spot.x, spot.y);
+  // A double click's second half, and an impatient third: the next card is there by then, with its button where the first one was.
+  await page.waitForTimeout(120);
+  await page.mouse.click(spot.x, spot.y);
+  await page.waitForTimeout(130);
+  await page.mouse.click(spot.x, spot.y);
+  await expect(card.getByText('second-target')).toBeVisible();
+  expect(state.answers).toEqual([{ path: '/api/devices/d1/approvals/7', body: { answer: 'once', created_ms: 1000 } }]);
+  // Read, and then answered: the next card works once its moment is over.
+  await expect(once).toBeEnabled();
+  await once.click();
+  await expect(card.getByText('third-target')).toBeVisible();
+  expect(state.answers.map((a) => a.path)).toEqual(['/api/devices/d1/approvals/7', '/api/devices/d1/approvals/8']);
+});
+
+test('one look-up that fails does not stop the chat from asking: the poll goes on and shows the question', async ({ page }) => {
+  const { state } = await asking(page);
+  state.fail = 1;
+  await page.goto('/tests/chat.html?phase=devices');
+  await expect.poll(() => state.asked).toBeGreaterThan(0);
+  // The first one was a 502: the next turn of the poll (a little later, not at once) finds the question.
+  await expect(page.getByTestId('device-approval')).toBeVisible({ timeout: 9000 });
+  expect(state.asked).toBeGreaterThanOrEqual(2);
+});
+
+test('a call that says it waits is looked up again after a failed look-up', async ({ page }) => {
+  const { state } = await asking(page);
+  const waiting = state.pending;
+  state.pending = [];
+  state.fail = 1;
+  await page.goto('/tests/chat.html?phase=devices');
+  await expect.poll(() => state.asked).toBeGreaterThan(0);
+  await expect(page.getByTestId('device-approval')).toHaveCount(0);
+  state.pending = waiting;
+  await page.evaluate(() => (window as any).emit('tool_execution_update', { toolCallId: 'd1', partialResult: { content: [{ type: 'text', text: 'Waiting for approval on laptop…' }] } }));
+  await expect(page.getByTestId('device-approval')).toBeVisible({ timeout: 2000 });
+});
+
+test('a portal without the add-on is not asked again, until a call says it waits', async ({ page }) => {
+  const { state } = await asking(page);
+  state.off = true;
+  await page.goto('/tests/chat.html?phase=devices');
+  await expect.poll(() => state.asked).toBe(1);
+  // More than a turn of the poll: nothing more is asked of a portal that answered it has no such thing.
+  await page.waitForTimeout(3600);
+  expect(state.asked).toBe(1);
+  await expect(page.getByTestId('device-approval')).toHaveCount(0);
+  state.off = false;
+  await page.evaluate(() => (window as any).emit('tool_execution_update', { toolCallId: 'd1', partialResult: { content: [{ type: 'text', text: 'Waiting for approval on laptop…' }] } }));
+  await expect(page.getByTestId('device-approval')).toBeVisible({ timeout: 2000 });
+});
+
+/** Lets a look-up that is on its way go, for the test to end with. */
+function holding(state: { hold: Promise<void> | null }) {
+  let release = () => {};
+  state.hold = new Promise<void>((r) => (release = r));
+  return () => {
+    state.hold = null;
+    release();
+  };
+}
+
+test('a look-up still on its way when another chat is opened does not put its questions in that chat', async ({ page }) => {
+  const { state } = await asking(page);
+  await page.goto('/tests/chat.html?phase=devices');
+  await expect(page.getByTestId('device-approval')).toBeVisible();
+  const release = holding(state);
+  try {
+    // The next turn of the poll is on its way (and will answer with this chat's question) when the other chat is opened.
+    await expect.poll(() => state.held, { timeout: 8000 }).toBeGreaterThan(0);
+    await page.evaluate(() => (window as any).openChat('other'));
+    await expect(page.getByText('Second chat').first()).toBeVisible();
+    await expect(page.getByTestId('device-approval')).toHaveCount(0);
+  } finally {
+    release();
+  }
+  await page.waitForTimeout(500);
+  await expect(page.getByTestId('device-approval')).toHaveCount(0);
+  const asked = state.asked;
+  await page.waitForTimeout(3600);
+  expect(state.asked, 'the other chat is not running: nothing is asked for it').toBe(asked);
+});
+
+test('a look-up still on its way when the run ends does not leave the question of a call that is over', async ({ page }) => {
+  const { state } = await asking(page);
+  await page.goto('/tests/chat.html?phase=devices');
+  await expect(page.getByTestId('device-approval')).toBeVisible();
+  const release = holding(state);
+  try {
+    await expect.poll(() => state.held, { timeout: 8000 }).toBeGreaterThan(0);
+    await page.evaluate(() => (window as any).endRun());
+    await expect(page.getByTestId('device-approval')).toHaveCount(0);
+  } finally {
+    release();
+  }
+  await page.waitForTimeout(500);
+  await expect(page.getByTestId('device-approval')).toHaveCount(0);
 });
