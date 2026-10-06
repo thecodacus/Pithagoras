@@ -7,8 +7,7 @@ import { inlineBrowserScreenshot } from "./browser-screenshot.js";
 import { cleanBrowserSnapshot, isBrowserSnapshot } from "./browser-snapshot-format.js";
 import { bareRef } from "../browser/ref.js";
 import { listToolRules, recordAudit, useGrant, type ToolRule } from "../db.js";
-import { UNDERSTORY } from "../features.js";
-import { EDIT_IMAGE_TOOL, GENERATE_IMAGE_TOOL } from "../image-generation.js";
+import { EDIT_IMAGE_TOOL } from "../image-generation.js";
 import { PORTAL_BROWSER_TOOLS } from "../tool-policy.js";
 import { isWithinText, pathBelow, realPath, realPathAhead } from "../within.js";
 import { agentsRoot, listAgents } from "../agents.js";
@@ -49,37 +48,15 @@ import { runsAsPrimary } from "./runs-as-primary.js";
 const UNTRUSTED_COMMAND = /\b(himalaya|mutt|neomutt|notmuch|offlineimap|mbsync|curl|wget|lynx|w3m|ssh|scp)\b|\bgit\s+(?:clone|fetch|pull)\b|\b(?:npm|pnpm|yarn|pip3?|uv)\s+(?:install|add|sync)\b/;
 
 /**
- * The tools whose results are not somebody else's words: pi's own, which read
- * and change what is in the folder the person works in, and the portal's own,
- * which answer from the portal. Every other result is untrusted.
- *
- * That way round on purpose. A list of the sources that carry other people's
- * words — mail, the web, an MCP server, a subagent that read any of them — is
- * never complete: the tools of a package installed tomorrow are not on it, and
- * a missing name leaves the envelope off and the session untainted, silently.
- * A tool missing from this list costs a session its push, and says so.
- *
- * routine_run is not on it: what a routine's run answers with is what it read.
+ * Does what this call returned carry somebody else's words? Mail and the web
+ * read through a command, an MCP server the portal does not control, and the
+ * browser, which reads pages anyone can write. The agent's own tools, a
+ * subagent's answer and a routine's included, do not mark the conversation.
  */
-const TRUSTED_TOOLS = new Set([
-  "read", "write", "edit", "grep", "find", "ls",
-  "ask_primary", NOTE_TOOL, "report", "show_image", GENERATE_IMAGE_TOOL, EDIT_IMAGE_TOOL,
-  "routines_list", "routine_create", "routine_update",
-  "canvas_list", "canvas_create", "canvas_read", "canvas_write", "canvas_delete",
-]);
-
-/**
- * The agent's own memory, which the portal runs and writes to as the agent
- * itself: not another's words, and a session that used it would otherwise never
- * be free of the taint.
- */
-const MEMORY_TOOL = new RegExp(`^${UNDERSTORY}_memory_`);
-
-/** Does what this call returned carry somebody else's words? */
 function untrustedResult(toolName: string, input: Record<string, unknown>): boolean {
   if (toolName === "bash") return UNTRUSTED_COMMAND.test(cmd(input));
   if (browserCall(toolName, input).isBrowser) return true;
-  return !TRUSTED_TOOLS.has(toolName) && !MEMORY_TOOL.test(toolName);
+  return /^mcp(_|$)/.test(toolName);
 }
 
 interface Rule {
@@ -747,9 +724,6 @@ export function approvalCannotHelp(toolName: string, action: string, workspace: 
   return rule ? `this conversation has read content from outside, and what it asks for is ${rule.why}` : undefined;
 }
 
-/** The opening of an envelope, as every one of them begins: a fresh id of eight bytes. */
-const ENVELOPE_OPEN = /<<<untrusted:[0-9a-f]{16}>>>/;
-
 /** The text parts of a message's content, whichever way pi holds them. */
 const textsOf = (content: unknown): string[] =>
   typeof content === "string"
@@ -760,16 +734,15 @@ const textsOf = (content: unknown): string[] =>
 
 /**
  * What a session's entries say it has read: a result that came wrapped as
- * somebody else's words, or a message of the portal's own that carried some
- * (see wrapUntrusted), which is where a routine's report comes in.
+ * somebody else's words. A note of the portal's own, such as a routine's
+ * report, is wrapped as data (see wrapUntrusted) but does not mark the
+ * conversation.
  */
 function sawUntrusted(entries: unknown): boolean {
   if (!Array.isArray(entries)) return false;
   return entries.some((entry: any) => {
     if (entry?.type !== "message") return false;
-    if (entry.message?.role === "toolResult") return textsOf(entry.message.content).some((text) => /^<<<untrusted:[0-9a-f]{16}>>>/.test(text));
-    // Mid-message too: a note rides in a message with other words around it.
-    return entry.message?.role === "user" && textsOf(entry.message.content).some((text) => ENVELOPE_OPEN.test(text));
+    return entry.message?.role === "toolResult" && textsOf(entry.message.content).some((text) => /^<<<untrusted:[0-9a-f]{16}>>>/.test(text));
   });
 }
 
@@ -880,10 +853,6 @@ export function guardExtension(
       const formatted = compact ? (event.content ?? []).map((part: any) =>
         part?.type === 'text' && typeof part.text === 'string' ? { ...part, text: cleanBrowserSnapshot(part.text) } : part,
       ) : event.content;
-      // Whatever is not known to be the portal's own or the folder's: an MCP
-      // server, a web search, a subagent that read either, and the browser,
-      // which reads pages anyone can write, are all treated as mail is:
-      // someone else's words.
       const untrusted = untrustedResult(String(event.toolName ?? ""), event.input ?? {});
       if (!untrusted) return compact ? { content: formatted } : undefined;
 

@@ -34,25 +34,22 @@ The browser's tools read a page after nearly every click, so their results carry
 a shorter envelope: the same random closing id, with the warning above said once
 in the agent's instructions instead of on every result.
 
-The default is untrusted. pi's own file tools, the portal's inline tools and the
-portal's memory are trusted by name; the result of any other tool is wrapped, so
-a package's web search or fetch and what a subagent reports back are as well. A
-new tool starts outside the list. The taint is read from the conversation again
-whenever pi reloads, so reopening a chat does not clear it.
+What is wrapped, and taints the conversation: mail and the web read through a
+command (`curl`, `wget`, `ssh`, `git clone` and the like), the tools of an MCP
+server, and the browser. The agent's own tools, a subagent's answer and a
+routine's are not. The taint is read from the conversation again whenever pi
+reloads, so reopening a chat does not clear it.
 
-Not everything untrusted arrives as a tool result. What a routine reported into a
-chat while it sat idle comes in with the next message in a block that says what it
-is, and the words themselves are wrapped in the same marker: another run wrote them
-after reading whatever it read. A message that carries one taints the conversation
-as a result would, and `routine_run`, which hands a run's output back, is untrusted
-for the same reason. An urgent note from the agent's heartbeat is such a note too:
-it is sent to the channel routines report to and comes in with the next message
-there in the same block, since the look read whatever its `WATCH.md` names. What the portal itself says to you, such as the word that a
-stranger got in touch or that it restarted, is not kept as a note and taints
-nothing. Nor is a question that a colleague or guest puts to you through the agent:
-it reaches you as a message, your answer goes back to them, and your own chat keeps
-no note of it. An outsider who writes to a bot cannot make your own chat refuse a
-routine or a push.
+What a routine reported into a chat while it sat idle comes in with the next
+message in a block that says what it is, and the words themselves are wrapped in
+the same marker, as data: another run wrote them after reading whatever it read.
+They do not taint the conversation, so a report does not stop that chat from
+pushing or managing routines. An urgent note from the agent's heartbeat comes in
+the same way. What the portal itself says to you, such as the word that a
+stranger got in touch or that it restarted, is not kept as a note. Nor is a
+question that a colleague or guest puts to you through the agent: it reaches you
+as a message, your answer goes back to them, and your own chat keeps no note of
+it.
 
 Your answer is not a note either, in the conversation of the person who asked. It
 is relayed to them, and the agent is handed it as the answer to its question; the
