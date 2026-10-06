@@ -72,7 +72,8 @@ export function AgentSkills({ agent }: { agent: { id: string; name: string } }) 
                     <p className="text-xs text-fg-faint">{t("Loading…")}</p>
                   ) : (
                     <div className="prose prose-sm max-w-none">
-                      <Streamdown>{content[s.id]}</Streamdown>
+                      {/* The frontmatter is what the card's header already says; as Markdown it reads as a heading. */}
+                      <Streamdown>{content[s.id].replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "")}</Streamdown>
                     </div>
                   )}
                   {s.files.length > 0 && (
