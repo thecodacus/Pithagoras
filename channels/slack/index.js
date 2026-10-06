@@ -65,6 +65,10 @@ export async function start(ctx) {
 
   let socket = null;
   let stopped = false;
+  // A mention in a channel the app also reads arrives twice, as `message` and as
+  // `app_mention`, and Slack redelivers what it thinks was not acknowledged. The
+  // same message is one turn: remembered by where and when it was sent.
+  const handled = new Set();
 
   const connect = async () => {
     if (stopped || ctx.signal.aborted) return;
@@ -110,7 +114,17 @@ export async function start(ctx) {
 
       // Without this the app answers itself, forever.
       if (event.bot_id || event.subtype === "bot_message" || event.user === selfId) return;
+      // Somebody joining, a message edited or deleted: events about the channel,
+      // not something said to the agent. A person's own words, even with a file
+      // or shared back into the channel from a thread, have no other subtype.
+      if (event.subtype && event.subtype !== "thread_broadcast" && event.subtype !== "file_share") return;
       if (channelId && event.channel !== channelId) return;
+      if (event.ts) {
+        const once = `${event.channel}:${event.ts}`;
+        if (handled.has(once)) return;
+        handled.add(once);
+        if (handled.size > 500) handled.delete(handled.values().next().value);
+      }
 
       const text = stripMention(event.text || "", selfId).trim();
       if (!text) return;
@@ -131,8 +145,10 @@ export async function start(ctx) {
           }
         };
         // Relayed as the agent produces it, so the thread shows progress
-        // rather than one wall of text at the end.
-        await ctx.ask(text, {
+        // rather than one wall of text at the end. What comes back is the rest:
+        // the whole answer when nothing is relayed, and always the portal's own
+        // words ("Stopped.", the refusal a stranger gets).
+        const reply = await ctx.ask(text, {
           session: `channel:${event.channel}`,
           title: channelTitle(event),
           channel: event.channel,
@@ -142,6 +158,7 @@ export async function start(ctx) {
           user: event.user,
           onReply: say,
         });
+        if (reply) await say(reply);
       } catch (e) {
         ctx.log(`failed to answer in ${event.channel}: ${e.message}`);
         await web(botToken, "chat.postMessage", {

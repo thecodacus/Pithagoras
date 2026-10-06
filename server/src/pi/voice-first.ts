@@ -1,3 +1,4 @@
+import { isLlamaProvider } from "../providers.js";
 import { isUser, textOf } from "./entries.js";
 
 export const AUDIO_MESSAGE_PREFIX = "[Audio mode]\n";
@@ -111,10 +112,12 @@ export class AudioRule {
 }
 
 /**
- * The providers whose first call of a spoken turn goes without thinking, unless
- * the voice settings name others: the ways a llama.cpp server shows up. Thinking
- * is switched off through the chat template (`enable_thinking`), which only a
- * llama.cpp server reads.
+ * The providers the voice settings show for the first call of a spoken turn
+ * going without thinking, and the list to go back to: the ways a llama.cpp
+ * server shows up. Thinking is switched off through the chat template
+ * (`enable_thinking`), which only a llama.cpp server reads. Where no list is
+ * saved the portal asks isLlamaProvider instead, which also follows the kind
+ * saved on the Providers page, so these names are its usual cases.
  */
 export const DEFAULT_SKIP_THINKING_PROVIDERS: readonly string[] = ["llama.cpp", "llama-server", "llama-swap"];
 
@@ -127,14 +130,15 @@ export function listsProvider(list: readonly string[], provider: string | undefi
 export class VoiceFirstTurn {
   private active = false;
   private first = false;
-  /** `providers`: the list saved in the voice settings, read at each call; none saved means the default one. */
+  /** `providers`: the list saved in the voice settings, read at each call; none saved means every llama.cpp server, as the portal knows them. */
   constructor(private readonly providers: () => readonly string[] | undefined = () => undefined) {}
   arm(first = true) { this.active = true; this.first = first; }
   reset() { this.active = false; this.first = false; }
   extension = (pi: any) => {
     pi.on('before_provider_request', (event: any, ctx: any) => {
       if (process.env.VOICE_SKIP_FIRST_THINKING === 'false') return;
-      if (!this.active || !this.first || !listsProvider(this.providers() ?? DEFAULT_SKIP_THINKING_PROVIDERS, ctx.model?.provider)) return;
+      const saved = this.providers(), provider = ctx.model?.provider as string | undefined;
+      if (!this.active || !this.first || !(saved === undefined ? isLlamaProvider(provider) : listsProvider(saved, provider))) return;
       const payload = { ...event.payload, chat_template_kwargs: { ...event.payload.chat_template_kwargs, enable_thinking: false } };
       delete payload.thinking_budget_tokens;
       return payload;

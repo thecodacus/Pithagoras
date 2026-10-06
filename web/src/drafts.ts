@@ -13,21 +13,21 @@ const PREFIX = "pithagoras.draft.";
  * is open.
  *
  * `tell` hears each change, for the portal: an extension can ask what is in
- * the box.
+ * the box. `prefix` keeps one store's entries apart from another's.
  */
-export function createDrafts(store: SafeStorage = session, tell?: (id: string, text: string) => void) {
+export function createDrafts(store: SafeStorage = session, tell?: (id: string, text: string) => void, prefix = PREFIX) {
   const memory = new Map<string, string>();
   return {
     get(id: string): string {
-      return memory.get(id) ?? store.get(PREFIX + id) ?? "";
+      return memory.get(id) ?? store.get(prefix + id) ?? "";
     },
     set(id: string, text: string): void {
       if (text) {
         memory.set(id, text);
-        store.set(PREFIX + id, text);
+        store.set(prefix + id, text);
       } else {
         memory.delete(id);
-        store.remove(PREFIX + id);
+        store.remove(prefix + id);
       }
       tell?.(id, text);
     },
@@ -46,17 +46,17 @@ export function caretFrom(read: typeof caretOf): void {
 }
 
 /**
- * The portal told what is in a chat's box once typing pauses. Emptied — sent,
- * most often — at once, ahead of the message: a command that read the box
- * would otherwise find itself in it.
- */
-/**
  * The chats whose pi is up, as their background list last said: only then can
  * an extension ask what is in the box. Told of every pause and cursor move
  * otherwise, the portal kept text nothing would read.
  */
 const piUp = new Set<string>();
 
+/**
+ * The portal told what is in a chat's box once typing pauses. Emptied — sent,
+ * most often — at once, ahead of the message: a command that read the box
+ * would otherwise find itself in it.
+ */
 function tellPortal(): (id: string, text: string) => void {
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
   const send = (id: string, text: string) => void api.draft(id, text, text ? caretOf(id) : undefined).catch(() => {});
@@ -70,6 +70,13 @@ function tellPortal(): (id: string, text: string) => void {
 }
 
 export const drafts = createDrafts(session, tellPortal());
+
+/**
+ * What is typed into the Git panel and not yet sent: a commit message, a pull
+ * request being opened, a comment. Kept apart from the message box's drafts, and
+ * never told to the portal: no extension reads them.
+ */
+export const gitDrafts = createDrafts(session, undefined, "pithagoras.git-draft.");
 
 /** Whether a chat's pi is up. Once it is, what is in the box is told at once: it may have been typed before. */
 export function piRunning(id: string, up: boolean): void {

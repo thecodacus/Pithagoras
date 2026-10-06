@@ -1,11 +1,8 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import test from 'node:test';
+import { inProcessHome } from './server-harness.mjs';
 
-const dataDir = mkdtempSync(join(tmpdir(), 'pithagoras-audit-'));
-process.env.DATA_DIR = dataDir;
+const dataDir = inProcessHome('pithagoras-audit-');
 
 const { default: express } = await import('express');
 const { peopleRouter } = await import('../dist/api/people.js');
@@ -16,7 +13,7 @@ app.use(express.json());
 app.use('/api', peopleRouter());
 const server = app.listen(0);
 const base = `http://127.0.0.1:${server.address().port}/api`;
-test.after(() => { server.close(); getDb().close(); rmSync(dataDir, { recursive: true, force: true }); });
+test.after(() => { server.close(); getDb().close(); });
 
 const reset = () => getDb().prepare('DELETE FROM audit').run();
 const entries = () => fetch(`${base}/audit`).then((r) => r.json()).then((r) => r.entries);

@@ -1,4 +1,6 @@
-import { test, expect, type Page } from '@playwright/test';
+import { type Page } from '@playwright/test';
+import { test, expect, mockPortal } from './portal-mock';
+import { settled } from './settled';
 
 /**
  * The extra animations (web/src/motion.ts): on by default, one switch to turn
@@ -43,46 +45,43 @@ async function portal(page: Page, { off = false, confirms = true, places, many =
   const state = { removeDelay: 80, sessions: [chat('a', 'First chat'), chat('b', 'Second chat'), chat('c', 'Third chat'), chat('d', 'Fourth chat'), ...extra], events: { a: conversation('A', bigTurn), b: conversation('B'), c: [] as any[], d: [] as any[], r: conversation('R') } as Record<string, any[]> };
   // A routine's chat: opened by its address, and not in the list of chats.
   const routine = chat('r', 'Routine chat', { kind: 'routine' });
-  await page.route('**/api/**', async (route) => {
-    const p = new URL(route.request().url()).pathname;
-    const method = route.request().method();
-    let reply: unknown = {};
+  await mockPortal(page, async ({ path: p, method, json }) => {
     let m: RegExpMatchArray | null;
-    if (p === '/api/auth/status') reply = { authed: true, authRequired: false };
-    else if (p === '/api/sessions' && method === 'GET') reply = { sessions: state.sessions, executor: 'host' };
-    else if (p === '/api/sessions' && method === 'POST') {
+    if (p === '/api/sessions' && method === 'GET') return { sessions: state.sessions, executor: 'host' };
+    if (p === '/api/sessions' && method === 'POST') {
       const made = chat(`n${state.sessions.length}`, 'A new chat');
       state.sessions = [made, ...state.sessions];
       state.events[made.id] = [];
-      reply = made;
-    } else if (p === '/api/sessions/r') reply = routine;
-    else if ((m = p.match(/^\/api\/sessions\/(\w+)\/messages\/(\d+)$/)) && method === 'DELETE') {
+      return made;
+    }
+    if (p === '/api/sessions/r') return routine;
+    if ((m = p.match(/^\/api\/sessions\/(\w+)\/messages\/(\d+)$/)) && method === 'DELETE') {
       const [id, seq] = [m[1], Number(m[2])];
       const next = state.events[id].find((e) => e.seq > seq && e.type === 'portal_prompt');
       const to = next?.seq ?? null;
       state.events[id] = state.events[id].filter((e) => !(e.seq >= seq && (to === null || e.seq < to)));
       // The server says so a moment after it has answered.
       setTimeout(() => page.evaluate(([id, from, to]) => (window as any).emit(id, { seq: 9000 + from, type: 'portal_removed', payload: { from, to } }), [id, seq, to] as const).catch(() => {}), state.removeDelay);
-      reply = { ok: true };
-    } else if ((m = p.match(/^\/api\/sessions\/(\w+)$/)) && method === 'DELETE') {
+      return { ok: true };
+    }
+    if ((m = p.match(/^\/api\/sessions\/(\w+)$/)) && method === 'DELETE') {
       state.sessions = state.sessions.filter((s) => s.id !== m![1]);
-      reply = { ok: true };
-    } else if ((m = p.match(/^\/api\/sessions\/(\w+)$/))) reply = state.sessions.find((s) => s.id === m![1]) ?? {};
-    else if (/^\/api\/sessions\/\w+\/(config|models)$/.test(p)) reply = { live: false, state: { model: { id: 'm', name: 'Model', provider: 'x' }, thinkingLevel: 'medium' }, stats: null, thinking: { levels: ['off', 'medium'] }, models: { models: [] }, named: { provider: null, model: null } };
-    else if (/^\/api\/sessions\/\w+\/files$/.test(p)) reply = { path: '', entries: [], truncated: false };
-    else if (p.endsWith('/canvases')) reply = [];
-    else if (p.endsWith('/background')) reply = { jobs: [], statuses: [] };
-    else if (p === '/api/projects') reply = { root: '/w', home: '/w', projects: [] };
-    else if (p === '/api/workspaces') reply = { root: '/w', workspaces: [] };
-    else if (p === '/api/models') reply = { models: [], providers: {} };
-    else if (p === '/api/features/flags') reply = { subagent: { enabled: false }, understory: { enabled: false } };
-    else if (p === '/api/settings') reply = { settings: {}, defaults: {}, stored: {}, executor: 'host', workspaceRoot: '/w', piSettingsPath: '/p/settings.json', compaction: { keepRecentTokens: 20000 }, contextDefault: null };
-    else if (p === '/api/extensions') reply = { extensions: [], settingsPath: '/p/settings.json' };
-    else if (/report/.test(p)) reply = { targets: [], default: null };
-    await route.fulfill({ json: reply });
-  });
+      return { ok: true };
+    }
+    if ((m = p.match(/^\/api\/sessions\/(\w+)$/))) return state.sessions.find((s) => s.id === m![1]) ?? {};
+    if (/^\/api\/sessions\/\w+\/(config|models)$/.test(p)) return { live: false, state: { model: { id: 'm', name: 'Model', provider: 'x' }, thinkingLevel: 'medium' }, stats: null, thinking: { levels: ['off', 'medium'] }, models: { models: [] }, named: { provider: null, model: null } };
+    if (/^\/api\/sessions\/\w+\/files$/.test(p)) return { path: '', entries: [], truncated: false };
+    if (p.endsWith('/canvases')) return [];
+    if (p.endsWith('/background')) return { jobs: [], statuses: [] };
+    if (p === '/api/projects') return { root: '/w', home: '/w', projects: [] };
+    if (p === '/api/workspaces') return { root: '/w', workspaces: [] };
+    if (p === '/api/models') return { models: [], providers: {} };
+    if (p === '/api/features/flags') return { subagent: { enabled: false }, understory: { enabled: false } };
+    if (p === '/api/settings') return { settings: {}, defaults: {}, stored: {}, executor: 'host', workspaceRoot: '/w', piSettingsPath: '/p/settings.json', compaction: { keepRecentTokens: 20000 }, contextDefault: null };
+    if (p === '/api/extensions') return { extensions: [], settingsPath: '/p/settings.json' };
+    if (/report/.test(p)) return { targets: [], default: null };
+  }, { streams: 'none', settings: true });
   await page.addInitScript(([events, off, confirms, places]) => {
-    localStorage.setItem('pithagoras.setup', 'done');
     if (off) localStorage.setItem('animations', 'off');
     if (!confirms) localStorage.setItem('confirmDeletes', 'off');
     if (places) localStorage.setItem('panelPlaces', JSON.stringify(places));
@@ -142,7 +141,7 @@ const row = (page: Page, title: string) => sidebar(page).locator('.session-row',
 
 async function deleteChat(page: Page, title: string) {
   await row(page, title).hover();
-  await row(page, title).getByRole('button', { name: 'Delete session' }).click();
+  await row(page, title).getByRole('button', { name: `Delete ${title}` }).click();
   await page.getByRole('alertdialog').getByRole('button', { name: 'Delete', exact: true }).click();
 }
 
@@ -217,7 +216,8 @@ test('a chat that is left drifts away as a picture, and the one that opens plays
   await portal(page);
   await page.goto('/s/a');
   await expect(page.getByText('A answer 5')).toBeVisible();
-  const list = page.locator('.chat-list');
+  // The picture of the chat that is left is a copy of its list, with the class too: the real list is the one outside the picture's frame.
+  const list = page.locator('.chat-list:not([data-ghost] *)');
 
   await row(page, 'Second chat').click();
   await expect(list).toHaveClass(/is-opening/);
@@ -252,7 +252,7 @@ test('a dialog sinks away as a picture of itself that is not a dialog', async ({
   await page.goto('/s/a');
   await sidebar(page).getByRole('button', { name: 'Settings' }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
-  await page.waitForTimeout(400);
+  await settled(page);
   await page.keyboard.press('Escape');
 
   await expect(page.getByRole('dialog')).toHaveCount(0);
@@ -283,6 +283,7 @@ test('a deleted message breaks apart, the ones below slide up, and the way back 
   // What is below it slid up from where it was.
   expect((await played(page)).some((p) => !p.ghost && p.on.startsWith('div') && p.keys.includes('translate'))).toBe(true);
   // The rows that start below the end made the box scroll further than it does, and it took itself for scrolled away from the end.
+  // Nothing is to happen after the scroll: the box is not to take itself for scrolled away, which only waiting shows.
   await page.waitForTimeout(1200);
   await expect(page.locator('.jump-to-end')).toHaveCount(0);
 });
@@ -294,7 +295,7 @@ test('a panel drops away when it is closed, and a carried one flies to its new p
   await page.getByRole('button', { name: 'Terminal', exact: true }).click();
   const aside = page.locator('aside[data-dock="right"]');
   await expect(aside).toBeVisible();
-  await page.waitForTimeout(900);
+  await settled(page);
 
   // Carried by its header to the left edge.
   const head = (await aside.locator('.chat-aside-head').boundingBox())!;
@@ -308,7 +309,7 @@ test('a panel drops away when it is closed, and a carried one flies to its new p
   expect(flown).toHaveLength(1);
   // Not also left behind and closed.
   expect((await played(page)).filter((p) => p.ghost)).toEqual([]);
-  await page.waitForTimeout(900);
+  await settled(page);
 
   await page.getByRole('button', { name: 'Close the terminal' }).click();
   await expect(page.locator('aside[data-dock]')).toHaveCount(0);
@@ -337,9 +338,10 @@ test('with the switch off none of it is made: no doors, no pictures, no animatio
   await expect(page.getByText('B answer 5')).toBeVisible();
   await expect(page.locator('.chat-list')).not.toHaveClass(/is-opening/);
   await sidebar(page).getByRole('button', { name: 'Settings' }).click();
-  await page.waitForTimeout(400);
+  await settled(page);
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog')).toHaveCount(0);
+  // Nothing is to happen from here, which only waiting for as long as it would take shows.
   await page.waitForTimeout(600);
 
   expect(await played(page)).toEqual([]);
@@ -356,14 +358,14 @@ test('closing one of two places plays that place, not the other that stays', asy
   await page.getByRole('button', { name: 'Files', exact: true }).click();
   await expect(page.locator('aside[data-dock="right"]')).toBeVisible();
   await expect(page.locator('aside[data-dock="left"]')).toBeVisible();
-  await page.waitForTimeout(900);
+  await settled(page);
 
   await page.getByRole('button', { name: 'Close the terminal' }).click();
   await expect(page.locator('aside[data-dock="right"]')).toHaveCount(0);
   // What went was the terminal's place; the files stay where they are.
   await expect.poll(async () => (await pictures(page)).map((p) => p.dock)).toEqual(['right']);
   await expect(page.locator('aside[data-dock="left"]')).toBeVisible();
-  await page.waitForTimeout(600);
+  await settled(page);
 
   // And the one that stayed drops away in its turn when it goes.
   await page.getByRole('button', { name: 'Close the files' }).click();
@@ -387,7 +389,7 @@ test('two messages deleted close together leave the list as it was', async ({ pa
     del('A question 3');
   });
   await expect(page.getByText('A question 3')).toHaveCount(0);
-  await page.waitForTimeout(1500);
+  await settled(page);
   // Cut off at its edge only while they slide: a long reply still scrolls sideways, and the next message comes in whole.
   expect(await page.locator('.chat-list').evaluate((el: HTMLElement) => [el.style.overflow, el.style.overflowClipMargin])).toEqual(['', '']);
   expect((await pictures(page)).filter((p) => p.text.includes('A question')).length).toBeGreaterThan(1);
@@ -412,7 +414,7 @@ test('nothing comes in from the right of the box that scrolls it', async ({ page
     };
     tick();
   }, selector);
-  const widest = async () => { await page.waitForTimeout(1200); return page.evaluate(() => (window as any).wider.most as number); };
+  const widest = async () => { await settled(page); return page.evaluate(() => (window as any).wider.most as number); };
 
   // What you say, coming in.
   await watch('[data-transcript]');
@@ -423,7 +425,7 @@ test('nothing comes in from the right of the box that scrolls it', async ({ page
   // A page of Settings, coming in.
   await sidebar(page).getByRole('button', { name: 'Settings' }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
-  await page.waitForTimeout(900);
+  await settled(page);
   await watch('div:has(> .settings-page)');
   await page.getByRole('dialog').getByRole('button', { name: 'This browser' }).click();
   await expect(page.getByRole('switch', { name: 'Fancy animations' })).toBeVisible();
@@ -490,6 +492,7 @@ test('a new chat is not shown its empty state twice', async ({ page }) => {
   await expect(page.getByText('Give pi a task.')).toBeVisible();
   // Past the second in which a chat that has just loaded plays its messages in (not the copy of the one that was left, which has the same list).
   await expect(page.locator('main .chat-list')).not.toHaveClass(/is-opening/);
+  // Nothing is to be running a moment after the entrance is over: the check is of what is still going, so it is not waited for with what waits for that.
   await page.waitForTimeout(150);
   expect(await page.locator('.chat-empty').evaluate((el) => el.getAnimations().filter((a) => a.playState === 'running').length)).toBe(0);
 });
@@ -501,7 +504,7 @@ test('a panel that has flown to its place does not come in again', async ({ page
   await page.getByRole('button', { name: 'Terminal', exact: true }).click();
   const aside = page.locator('aside[data-dock="right"]');
   await expect(aside).toBeVisible();
-  await page.waitForTimeout(900);
+  await settled(page);
   const head = (await aside.locator('.chat-aside-head').boundingBox())!;
   await page.mouse.move(head.x + head.width - 60, head.y + head.height / 2);
   await page.mouse.down();
@@ -511,6 +514,7 @@ test('a panel that has flown to its place does not come in again', async ({ page
   const there = page.locator('aside[data-dock="left"]');
   await expect(there).toBeVisible();
   // Its flight is 620 ms; a moment after it, nothing of the entrance a panel that opens has is going.
+  // Its flight is 620 ms; a moment after it, nothing of the entrance a panel that opens has is going. That is a check of what is still going, so it is waited for in time.
   await page.waitForTimeout(900);
   expect(await there.evaluate((el) => el.getAnimations({ subtree: true }).filter((a) => 'animationName' in a && a.playState === 'running').length)).toBe(0);
 });
@@ -519,15 +523,16 @@ test('a search that ends does not bring the rows it hid in as new ones', async (
   await portal(page, { many: true });
   await page.goto('/s/a');
   await expect(sidebar(page).getByRole('searchbox', { name: 'Search chats' })).toBeVisible();
-  await page.waitForTimeout(1500);
+  await settled(page);
   const search = sidebar(page).getByRole('searchbox', { name: 'Search chats' });
   await search.fill('Fourth');
   await expect(row(page, 'Extra chat 3')).toHaveCount(0);
-  await page.waitForTimeout(700);
+  await settled(page);
 
   const before = (await played(page)).length;
   await search.fill('');
   await expect(row(page, 'Extra chat 3')).toBeVisible();
+  // Nothing is to happen from here, which only waiting for as long as it would take shows.
   await page.waitForTimeout(900);
   expect((await played(page)).slice(before).filter((p) => p.on.includes('session-row'))).toEqual([]);
 });
@@ -538,7 +543,7 @@ test("Settings' rail is not drawn in again when its search ends", async ({ page 
   await sidebar(page).getByRole('button', { name: 'Settings' }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
   // Past the dialog's own entrance, rail included.
-  await page.waitForTimeout(1500);
+  await settled(page);
   const search = page.getByRole('combobox', { name: 'Search settings' });
   await search.fill('theme');
   await expect(page.getByRole('listbox', { name: 'Settings found' })).toBeVisible();
@@ -608,7 +613,7 @@ test("Settings' extension pages come in once, not again when the dialog stops be
     await route.fulfill({ json: { extensions: ['One', 'Two'].map((name) => ({ spec: `npm:ext-${name}`, name: `Ext ${name}`, version: '1', description: '', settings: [{ key: 'apiKey', value: '' }] })), settingsPath: '/p/settings.json' } });
   });
   await page.goto('/s/a');
-  await page.waitForTimeout(1500);
+  await settled(page);
   const names = page.evaluate(() => new Promise<string[]>((done) => {
     const seen = new Set<string>();
     const until = performance.now() + 2400;
@@ -632,7 +637,7 @@ test('the options of a list that fits do not make it scroll while they come in',
   await page.getByRole('dialog').getByRole('button', { name: 'This browser' }).click();
   const language = page.getByRole('combobox', { name: 'Language' });
   await expect(language).toBeVisible();
-  await page.waitForTimeout(900);
+  await settled(page);
 
   await page.evaluate(() => {
     const seen = ((window as any).taller = { most: 0 });
@@ -646,6 +651,7 @@ test('the options of a list that fits do not make it scroll while they come in',
   });
   await language.click();
   await expect(page.getByRole('listbox', { name: 'Language' })).toBeVisible();
+  // Nothing is to happen from here, which only waiting for as long as it would take shows.
   await page.waitForTimeout(1300);
   expect(await page.evaluate(() => (window as any).taller.most as number)).toBe(0);
 });
@@ -713,7 +719,7 @@ test('a chat that moves up the list does not play its entrance again, and does n
   const state = await portal(page);
   await page.goto('/s/b');
   await expect(page.getByText('B answer 5')).toBeVisible();
-  await page.waitForTimeout(1600);
+  await settled(page);
   const open = sidebar(page).locator('.session-row[aria-current="page"]');
   await expect(open).toHaveCount(1);
 
@@ -731,7 +737,7 @@ test('a page that is left is under the dialog that opens as it goes', async ({ p
   await portal(page);
   await page.goto('/sessions');
   await expect(page.getByRole('heading', { name: 'Sessions' })).toBeVisible();
-  await page.waitForTimeout(1500);
+  await settled(page);
   await sidebar(page).getByRole('button', { name: 'Settings' }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
   // Settings' backdrop is at 50; what is left of the page lies under it.
@@ -739,7 +745,7 @@ test('a page that is left is under the dialog that opens as it goes', async ({ p
   const left = (await pictures(page)).find((p) => p.text.includes('Every task you have handed'))!;
   expect(left.z).toBeLessThan(50);
   // And a dialog's own picture is over everything.
-  await page.waitForTimeout(500);
+  await settled(page);
   await page.keyboard.press('Escape');
   await expect.poll(async () => (await pictures(page)).some((p) => p.text.includes('Settings') && p.z >= 50)).toBe(true);
 });
@@ -767,9 +773,9 @@ test("deleting in the sidebar's list, scrolled to its end, slides the rows above
   await portal(page, { confirms: false, many: 8 });
   await page.goto('/s/a');
   await expect(row(page, 'Extra chat 7')).toBeVisible();
-  await page.waitForTimeout(1500);
+  await settled(page);
   await sidebar(page).locator('.sidebar-list').evaluate((el) => { el.scrollTop = el.scrollHeight; });
-  await page.waitForTimeout(200);
+  await settled(page);
 
   const drawn = await page.evaluate(() => new Promise<{ above: number[]; below: number[] }>((done) => {
     const find = (text: string) => [...document.querySelectorAll('aside .session-row')].find((r) => r.textContent?.includes(text))!;
@@ -830,7 +836,7 @@ test('a row deleted in the phone\'s drawer breaks apart over the drawer', async 
   await expect(page.getByText('A answer 5')).toBeVisible();
   await page.getByRole('button', { name: 'Open navigation' }).click();
   await expect(row(page, 'Fourth chat')).toBeVisible();
-  await page.waitForTimeout(600);
+  await settled(page);
   await page.evaluate(() => ([...document.querySelectorAll('aside .session-row')].find((r) => r.textContent?.includes('Fourth chat'))!.querySelector('button[title="Delete session"]') as HTMLElement).click());
   await expect.poll(async () => (await pictures(page)).filter((p) => p.text.includes('Fourth chat')).length).toBeGreaterThan(0);
   // The drawer is at 50: the picture of what was in it is over it, or it is not to be seen.
@@ -842,7 +848,7 @@ test('a menu that opens Settings as it closes drops away under the dialog', asyn
   await portal(page);
   await page.goto('/s/a');
   await expect(page.getByText('A answer 5')).toBeVisible();
-  await page.waitForTimeout(1200);
+  await settled(page);
   await page.locator('.composer-settings button').first().click();
   await page.getByRole('button', { name: 'Add or change providers…' }).click();
   // Settings' own page is not drawn here: what is asked is where the menu's picture lies, over the page and under what opens.
@@ -858,7 +864,7 @@ test('a conversation that is left is under the floating window that lies over it
   await expect(page.getByText('A answer 5')).toBeVisible();
   await page.getByRole('button', { name: 'Terminal', exact: true }).click();
   await expect(page.locator('aside[data-dock="float"]')).toBeVisible();
-  await page.waitForTimeout(900);
+  await settled(page);
 
   await row(page, 'Second chat').click();
   await expect.poll(async () => (await pictures(page)).filter((p) => p.text.includes('A answer 5')).length).toBeGreaterThan(0);
@@ -879,7 +885,7 @@ test('deleting a message with many rows in its turn still breaks the message its
   await message.getByRole('button', { name: /Delete this message/ }).click();
   await page.getByRole('alertdialog').getByRole('button', { name: 'Delete', exact: true }).click();
   await expect(page.getByText('A question 4')).toHaveCount(0);
-  await page.waitForTimeout(1500);
+  await settled(page);
 
   const all = await pictures(page);
   // The one that was deleted was seen, for as long as the others, and not taken off the page before it was drawn.
@@ -897,7 +903,7 @@ test('closing the window at the back of two does not bring it in front of the ot
   await page.getByRole('button', { name: 'Terminal', exact: true }).click();
   await page.getByRole('button', { name: 'Files', exact: true }).click();
   await expect(page.locator('aside[data-dock="float"]')).toHaveCount(2);
-  await page.waitForTimeout(900);
+  await settled(page);
   const files = page.locator('aside[data-dock="float"]', { hasText: 'Files' });
   const z = Number(await files.evaluate((el) => getComputedStyle(el).zIndex));
 
@@ -915,7 +921,7 @@ test("Settings' picture is not over a dialog that opens as it goes", async ({ pa
   await page.goto('/s/a');
   await sidebar(page).getByRole('button', { name: 'Settings' }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
-  await page.waitForTimeout(500);
+  await settled(page);
   await page.keyboard.press('Escape');
   await expect.poll(async () => (await pictures(page)).filter((p) => p.text.includes('Settings')).length).toBeGreaterThan(0);
   const seen = (await pictures(page)).find((p) => p.text.includes('Settings'))!;
@@ -934,11 +940,12 @@ test('the chat that is picked lights up, and the open one does not each time the
   await expect(page).toHaveURL(/\/s\/b$/);
   // Picked: it lit up.
   await expect.poll(async () => (await played(page)).some((p) => p.on.includes('session-row') && p.keys.includes('boxShadow'))).toBe(true);
-  await page.waitForTimeout(1200);
+  await settled(page);
 
   // The drawer shown again, a while after: the open chat's row is just there.
   await page.getByRole('button', { name: 'Open navigation' }).click();
   await expect(row(page, 'Second chat')).toBeVisible();
+  // The row is just there, with no animation of its own a moment after it is shown: a check of what is still going, so it is waited for in time.
   await page.waitForTimeout(150);
   expect(await row(page, 'Second chat').evaluate((el) => el.getAnimations().length)).toBe(0);
 });

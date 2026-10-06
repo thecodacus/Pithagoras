@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { api } from "./api";
 import { pollWhileVisible } from "./poll";
 import { local } from "./safe-storage";
+import { reconcile } from "./reconcile";
 import { moveFolder, readFolderOrder, readFolderSort, readOpenFolders, type FolderSort, type PlaceAgent, type Places } from "./session-folders";
 
 /**
@@ -139,7 +140,8 @@ export function usePlaces(sessions: readonly { id: string; workspace: string }[]
           projects: (Array.isArray(r.projects) ? r.projects : []).map((p) => ({ name: p.name, path: p.path })),
         };
         local.set("knownPlaces", JSON.stringify(now));
-        setPlaces(now);
+        // The one already held when it says the same: asked every half minute, it is rarely news.
+        setPlaces((known) => reconcile(known, now));
       },
       // What was known stays: a list that failed to load once has not changed.
       () => n === asked.current && setPlaces((known) => known ?? null),

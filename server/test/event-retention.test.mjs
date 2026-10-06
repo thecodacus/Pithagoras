@@ -1,13 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import test from 'node:test';
-const dataDir=mkdtempSync(join(tmpdir(),'pithagoras-event-retention-'));
-process.env.DATA_DIR=dataDir;
+import { inProcessHome } from './server-harness.mjs';
+inProcessHome('pithagoras-event-retention-');
 const {appendEvent,eventsSince,getDb}=await import('../dist/db.js');
 const {LiveEvents}=await import('../dist/live-events.js');
-test.after(()=>{getDb().close();rmSync(dataDir,{recursive:true,force:true});});
+test.after(()=>getDb().close());
 
 test('400 streaming deltas stay out of SQLite; completion saves one full message',()=>{
  const stream=new LiveEvents(appendEvent);let text='';const seen=new Set();let id;

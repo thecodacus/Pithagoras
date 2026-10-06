@@ -71,6 +71,12 @@ Four ship in the repo, between them covering every shape a transport takes:
 | `pithagoras-channel-discord` | WebSocket | The Gateway, with the heartbeat it demands. |
 | `pithagoras-channel-webhook` | A listener | POST a message, the reply comes back in the response. |
 
+Slack sends a mention in a channel the app also reads twice, once as a message
+and once as a mention, and the agent answers it once. People joining, and
+messages being edited or deleted, are not said to the agent. The webhook, when
+it is disabled or edited while a request is open, answers that request with a 503
+rather than waiting for the agent to finish.
+
 None of them needs a dependency: `fetch` and `WebSocket` are both globals on
 Node 22, which the portal requires anyway.
 
@@ -103,8 +109,8 @@ alongside its **instructions**.
 
 ## Per-channel instructions
 
-Each channel can carry standing instructions, appended to the agent's system
-prompt for every message that arrives through that door and no other. The agent
+Each channel can carry standing instructions, appended to every message that
+arrives through that door and no other, in a `<channel-instructions>` block. The agent
 is one conversation with one memory, but who is on the other end differs by
 channel, and so should the way it answers.
 
@@ -143,6 +149,14 @@ Each channel shows its real state on its page: `running`, `starting`,
 A channel enabled with a package that has no `start()` reports that rather than
 looking healthy.
 
+A restart can cut a conversation off: the run that was answering is gone, and a
+message sent into it never reached the agent. The platform has acknowledged those
+messages and will not send them again, so once the channels are up again the
+portal writes to each such conversation — *The portal restarted while I was
+working on this, so my answer was cut off. Please send your message again.* —
+through the channel's `send()`. A channel that cannot speak first is not written
+to.
+
 A channel whose `start()` fails — the network was not up yet when the portal
 booted, the platform had a bad minute — is tried again on its own: after 30
 seconds, then twice as long each time, up to every fifteen minutes. Saving it
@@ -151,11 +165,13 @@ before its package was there starts when the package arrives.
 
 ### What happens to a message
 
-1. The package receives it and calls `ctx.ask(text, { session, title })`.
+1. The package receives it and calls `ctx.ask(text, { session, title, from })`.
 2. The key is prefixed with the channel's slug and resolved to a session,
    created on first sight.
 3. The channel's [instructions](#per-channel-instructions) are appended to the
-   message in a `<channel-instructions>` block.
+   message in a `<channel-instructions>` block. For anybody but the primary user
+   the portal's note about who is speaking goes in front of their words; what they
+   wrote cannot make a block of its own.
 4. The session is prompted, and `ask` **waits** — unlike the portal's own
    prompting, which returns immediately, because somebody is sitting in a chat
    expecting an answer.
@@ -183,7 +199,7 @@ Models:
 1. model-a
 2. model-b
 
-Reply with a number, or "cancel".
+Reply with a number. Anything else cancels.
 ```
 
 Numbers work, so does typing the option. `confirm` takes yes or no; `input` and
@@ -195,6 +211,16 @@ something else gets the same prompt back.
 
 The answer jumps the queue — the run is stopped waiting for it, so it cannot be
 made to wait its turn behind itself.
+
+Only the person whose message raised the question, or the primary user, can
+answer it. In a group the next message is anybody's, and a question that asks the
+owner to confirm something is not for a guest to say yes to: theirs is answered
+with a note saying whom it waits for, and is not taken as the answer. Telegram's
+buttons check the person who pressed them in the same way.
+
+Slash commands are the primary user's alone. What anybody else writes reaches
+the agent after the portal's note about who they are, so `/bg ...` in a colleague's
+message is words, not a command.
 
 Questions are relayed whatever the progress toggles say. They are not chatter:
 the command hangs until somebody answers, and staying quiet would just leave it

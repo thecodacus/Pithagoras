@@ -1,7 +1,6 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync, readlinkSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
 import express, { type Router } from "express";
 import { getSession } from "../db.js";
 import { MARKER } from "../background.js";
@@ -35,18 +34,81 @@ const MAX_SCROLLBACK = 200_000;
  */
 const UNWATCHED_MS = 5 * 60_000;
 
+/**
+ * How long a client may sit on what it was sent before it is let go. A page
+ * whose network dropped, or that a phone suspended, keeps its connection and
+ * takes nothing from it, possibly for a quarter of an hour; its page opens a
+ * new one and is given the scrollback, which is all it would have missed.
+ */
+const STALL_MS = 10_000;
+
+/** What a client that is behind may have queued while another keeps up, before it is let go for it. */
+const MAX_BEHIND = 4_000_000;
+
+/** A client of the stream: takes what the shell wrote, and says whether it has room for more. */
+type Listener = (chunk: string) => boolean;
+
 interface Term {
   id: string;
   proc: ChildProcess;
-  /** Replayed to a client that connects late, so a reload keeps the screen. */
-  buffer: string;
-  listeners: Set<(chunk: string) => void>;
+  /**
+   * What was written last, replayed to a client that connects late, so a reload
+   * keeps the screen. In the pieces it came in, with their length: joining and
+   * cutting one string on every piece copied all of it for each.
+   */
+  scrollback: string[];
+  scrolled: number;
+  listeners: Set<Listener>;
+  /** The listeners that did not have room for what they were given, and have not said they have since. */
+  waiting: Set<Listener>;
   exited: boolean;
   /** Set while nobody is attached; ends the shell if nobody comes back. */
   reaper?: NodeJS.Timeout;
 }
 
 const terms = new Map<string, Term>();
+
+/** Keeps `text` as the last of the scrollback, which is cut to MAX_SCROLLBACK from the front. */
+function remember(term: Term, text: string): void {
+  term.scrollback.push(text);
+  term.scrolled += text.length;
+  while (term.scrollback.length > 1 && term.scrolled - term.scrollback[0].length >= MAX_SCROLLBACK) term.scrolled -= term.scrollback.shift()!.length;
+  if (term.scrolled > MAX_SCROLLBACK) {
+    const over = term.scrolled - MAX_SCROLLBACK;
+    term.scrollback[0] = term.scrollback[0].slice(over);
+    term.scrolled -= over;
+  }
+}
+
+/** Gives `text` to everyone watching, and holds the shell back for any that cannot take it yet. */
+function deliver(term: Term, text: string): void {
+  for (const listener of term.listeners) listener(text);
+}
+
+/**
+ * The shell is held while every client is behind: a command that writes faster
+ * than the connection takes it would otherwise be read as fast as it can write,
+ * and queued in the portal's memory, until there is no more of it. Not read,
+ * the pipe fills, and `script` and the command with it wait, as at a terminal.
+ * One that keeps up does not wait for one that does not: that one is let go
+ * when it has been behind too long or too far.
+ */
+function settle(term: Term): void {
+  const held = term.listeners.size > 0 && term.waiting.size >= term.listeners.size;
+  for (const out of [term.proc.stdout, term.proc.stderr]) {
+    if (held) out?.pause();
+    else out?.resume();
+  }
+}
+
+function hold(term: Term, listener: Listener): void {
+  term.waiting.add(listener);
+  settle(term);
+}
+
+function release(term: Term, listener: Listener): void {
+  if (term.waiting.delete(listener)) settle(term);
+}
 
 /**
  * Ends the shell, and whatever it started.
@@ -65,8 +127,9 @@ const terms = new Map<string, Term>();
  * terminated only after that: gone first, it takes the pty with it, and what
  * the walk is still looking for has been left to itself in the meantime.
  */
-function end(term: Term): void {
+function end(term: Term): Promise<void> {
   clearTimeout(term.reaper);
+  let done: Promise<void> = Promise.resolve();
   if (!term.exited) {
     // Read once: a second look could find the shell gone, and the two
     // answers disagree.
@@ -83,22 +146,38 @@ function end(term: Term): void {
     void members.then(() => {
       if (!term.exited) term.proc.kill("SIGTERM");
     });
-    setTimeout(() => {
-      if (!term.exited) term.proc.kill("SIGKILL");
-      void members.then((pids) => {
-        for (const pid of pids) {
-          // Still in that session: a pid given to something else since is not.
-          if (Number(statOf(pid)?.[3]) !== session) continue;
-          try {
-            process.kill(pid, "SIGKILL");
-          } catch {
-            // Gone in the meantime.
-          }
-        }
-      });
-    }, 2000).unref();
+    done = new Promise((resolve) => {
+      setTimeout(() => {
+        if (!term.exited) term.proc.kill("SIGKILL");
+        void members
+          .then((pids) => {
+            for (const pid of pids) {
+              // Still in that session: a pid given to something else since is not.
+              if (Number(statOf(pid)?.[3]) !== session) continue;
+              try {
+                process.kill(pid, "SIGKILL");
+              } catch {
+                // Gone in the meantime.
+              }
+            }
+          })
+          .then(resolve);
+      }, 2000).unref();
+    });
   }
   terms.delete(term.id);
+  return done;
+}
+
+/**
+ * Ends every shell, for a portal that is stopping. The shells are the portal's
+ * children but live on the pty in sessions of their own, so a stopped portal
+ * leaves them running for init, with whatever they started: a dev server or a
+ * build, holding its port and memory, with no panel left to close it. Resolves
+ * when the last has been given its two seconds.
+ */
+export function endAllTerminals(): Promise<void> {
+  return Promise.all([...terms.values()].map(end)).then(() => {});
 }
 
 /** The shell `script` started: the child that leads the session on the pty. */
@@ -164,28 +243,28 @@ function create(cwd: string): Term {
     stdio: ["pipe", "pipe", "pipe"],
   });
 
-  const term: Term = { id, proc, buffer: "", listeners: new Set(), exited: false };
+  const term: Term = { id, proc, scrollback: [], scrolled: 0, listeners: new Set(), waiting: new Set(), exited: false };
   // A folder that is gone, or no `script` on this machine. Unhandled, the
   // spawn failure is thrown from the process object and takes the portal down.
   proc.on("error", (e) => {
     term.exited = true;
     const text = `\r\nCould not start a shell: ${e.message}\r\n`;
-    term.buffer += text;
-    for (const l of term.listeners) l(text);
+    remember(term, text);
+    deliver(term, text);
   });
 
   const push = (chunk: Buffer) => {
     const text = chunk.toString("utf8");
-    term.buffer = (term.buffer + text).slice(-MAX_SCROLLBACK);
-    for (const l of term.listeners) l(text);
+    remember(term, text);
+    deliver(term, text);
   };
   proc.stdout?.on("data", push);
   proc.stderr?.on("data", push);
   proc.on("exit", () => {
     term.exited = true;
     const text = "\r\n[session ended]\r\n";
-    term.buffer += text;
-    for (const l of term.listeners) l(text);
+    remember(term, text);
+    deliver(term, text);
   });
 
   terms.set(id, term);
@@ -215,16 +294,39 @@ export function terminalRouter(): Router {
       "X-Accel-Buffering": "no",
     });
 
-    const send = (chunk: string) => res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-    // What is already on screen, so reconnecting does not show an empty shell.
-    if (term.buffer) send(term.buffer);
+    let stall: NodeJS.Timeout | undefined;
+    /** Ends this client's stream; its page opens a new one, and is given the scrollback to start over from. */
+    const drop = () => res.destroy();
+    const send: Listener = (chunk) => {
+      const room = res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+      if (room) return true;
+      if (!term.waiting.has(send)) {
+        hold(term, send);
+        stall = setTimeout(drop, STALL_MS);
+        res.once("drain", () => {
+          clearTimeout(stall);
+          release(term, send);
+        });
+      } else if (res.writableLength > MAX_BEHIND) {
+        drop();
+      }
+      return false;
+    };
     term.listeners.add(send);
+    // What is already on screen, so reconnecting does not show an empty shell. After a full reset (ESC c): a
+    // page that reconnects still has what it showed, and the replay, which can start in the middle of an
+    // escape sequence, is the whole screen, not more of it.
+    if (term.scrolled) send("\x1bc" + term.scrollback.join(""));
     watchUnattended(term);
     // Without traffic a proxy takes an idle shell for a dead connection.
     const heartbeat = setInterval(() => res.write(": ping\n\n"), 25_000);
     req.on("close", () => {
       clearInterval(heartbeat);
+      clearTimeout(stall);
       term.listeners.delete(send);
+      // Gone, it will not drain: the shell is not to wait for it.
+      release(term, send);
+      settle(term);
       watchUnattended(term);
     });
   });

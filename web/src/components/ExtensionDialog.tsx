@@ -3,6 +3,9 @@ import { LuCheck, LuTerminal, LuX } from "react-icons/lu";
 import { api } from "../api";
 import { isEnter, isEscape } from "../shortcuts";
 import { t } from "../i18n";
+import { useLeaveRef } from "../motion";
+import { useDialogFocus } from "../dialog-focus";
+import { codeAreaCls, inputCls, primarySmCls } from "./SettingsUi";
 
 export interface UiRequest {
   id: string;
@@ -31,6 +34,9 @@ export function ExtensionDialog({
   const [value, setValue] = useState(request.defaultValue ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // The same entrance, exit and keyboard as the portal's other dialogs.
+  const leaving = useLeaveRef<HTMLDivElement>("dialog");
+  const dialog = useDialogFocus<HTMLDivElement>();
 
   const respond = async (payload: { value?: unknown; cancelled?: boolean }) => {
     if (busy) return;
@@ -58,14 +64,22 @@ export function ExtensionDialog({
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-canvas/80 p-4 backdrop-blur-sm"
-      onMouseDown={(e) => e.target === e.currentTarget && respond({ cancelled: true })}
+      ref={leaving}
+      className="ui-backdrop fixed inset-0 z-[60] flex items-center justify-center bg-canvas/80 p-4 backdrop-blur-sm"
+      onMouseDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        // Once an answer has failed this closes at once, and the press would clear the focus that was just given back.
+        e.preventDefault();
+        void respond({ cancelled: true });
+      }}
     >
       <div
+        ref={dialog}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-label={request.title || t("Extension")}
-        className="w-full max-w-md overflow-hidden rounded-2xl border border-line bg-surface shadow-pop"
+        className="ui-dialog w-full max-w-md overflow-hidden outline-none rounded-2xl border border-line bg-surface shadow-pop"
       >
         <header className="flex items-start gap-3 border-b border-line px-4 py-3">
           <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent/12 text-accent">
@@ -80,6 +94,7 @@ export function ExtensionDialog({
           <button
             onClick={() => respond({ cancelled: true })}
             className="rounded-lg p-1 text-fg-subtle transition hover:bg-fg/10 hover:text-fg"
+            aria-label={t("Close")}
           >
             <LuX className="h-4 w-4" />
           </button>
@@ -112,9 +127,10 @@ export function ExtensionDialog({
                 <textarea
                   autoFocus
                   rows={10}
+                  aria-label={request.title || t("Extension")}
                   value={value}
                   onChange={(e) => setValue(e.target.value)}
-                  className="w-full resize-y rounded-lg border border-line bg-raised/60 px-3 py-2 font-mono text-xs text-fg outline-none focus:border-accent/60"
+                  className={`${codeAreaCls} resize-y text-fg`}
                 />
               ) : (
                 <input
@@ -122,8 +138,9 @@ export function ExtensionDialog({
                   value={value}
                   onChange={(e) => setValue(e.target.value)}
                   onKeyDown={(e) => isEnter(e) && respond({ value })}
+                  aria-label={request.title || t("Extension")}
                   placeholder={request.placeholder}
-                  className="w-full rounded-lg border border-line bg-raised/60 px-3 py-2 text-sm text-fg outline-none placeholder:text-fg-faint focus:border-accent/60"
+                  className={`${inputCls} text-fg`}
                 />
               )}
               <div className="mt-3 flex justify-end gap-2">
@@ -136,7 +153,7 @@ export function ExtensionDialog({
                 <button
                   disabled={busy}
                   onClick={() => respond({ value })}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-accent/12 px-3 py-1.5 text-sm text-accent ring-1 ring-inset ring-accent/25 hover:bg-accent/20 disabled:opacity-40"
+                  className={primarySmCls}
                 >
                   <LuCheck className="h-3.5 w-3.5" /> {t("Submit")}
                 </button>
@@ -156,7 +173,7 @@ export function ExtensionDialog({
               <button
                 disabled={busy}
                 onClick={() => respond({ value: true })}
-                className="rounded-lg bg-accent/12 px-3 py-1.5 text-sm text-accent ring-1 ring-inset ring-accent/25 hover:bg-accent/20"
+                className={primarySmCls}
               >
                 {t("Yes")}
               </button>

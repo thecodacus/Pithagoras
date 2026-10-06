@@ -1,11 +1,17 @@
+import { lstatSync } from "node:fs";
+import path from "node:path";
 import express, { type Router } from "express";
 import { agentSkillsDir, listAgentSkills, readAgentSkill } from "../agent-skills.js";
-import { AgentError, DEFAULT_AGENT, agentOf, channelsOf, createAgent, getAgent, listAgents, orbOf, renameAgent, setOrb, setVoice, type Agent } from "../agents.js";
+import { AgentError, DEFAULT_AGENT, agentOf, channelsOf, createAgent, defaultAgent, getAgent, listAgents, orbOf, renameAgent, setOrb, setVoice, type Agent } from "../agents.js";
 import { agentFileStatus, isInitialised, runWizard, writeAgentFile, type WizardInput } from "../agent-setup.js";
 import { listAgentSessions, listSessions } from "../db.js";
 import { deleteNote, listNotes, markNoteRead, markNotesRead, unreadNotes } from "../activity.js";
 import { heartbeat, setHeartbeat, watchList } from "../heartbeat.js";
-import { EXECUTOR_KIND } from "../session-manager.js";
+import { serverTimeZone } from "../time-zone.js";
+import { EXECUTOR_KIND } from "../executor-kind.js";
+import { FileError } from "../workspace-files.js";
+import { CONTEXT_FILES } from "../pi/context-files.js";
+import { fail } from "./files.js";
 import { userFor } from "../sandbox/identity.js";
 
 /**
@@ -34,6 +40,8 @@ export function agentToApi(a: Agent, chats = 0) {
       minutes: a.heartbeat_minutes ?? 0,
       quietStart: a.quiet_start ?? "",
       quietEnd: a.quiet_end ?? "",
+      // What those hours are read on: the server's clock, which is UTC in a container unless TZ says otherwise.
+      timeZone: serverTimeZone(),
       last: a.last_heartbeat,
       status: a.heartbeat_status,
       running: heartbeat.isRunning(a.id),
@@ -50,21 +58,26 @@ export function agentsRouter(): Router {
 
   router.get("/agents", (_req, res) => {
     // Read once, then counted per agent: every chat is read either way.
+    const agents = listAgents();
     const counts = new Map<string, number>();
     for (const s of [...listSessions(), ...listAgentSessions()]) {
-      const a = agentOf(s.workspace);
+      const a = agentOf(s.workspace, agents);
       if (a) counts.set(a.id, (counts.get(a.id) ?? 0) + 1);
     }
-    res.json({ agents: listAgents().map((a) => agentToApi(a, counts.get(a.id) ?? 0)) });
+    res.json({ agents: agents.map((a) => agentToApi(a, counts.get(a.id) ?? 0)) });
   });
 
   /** A new agent, with its home. Given the wizard's answers, it is set up as well. */
   router.post("/agents", (req, res) => {
     try {
       const agent = createAgent({ name: req.body?.name });
+      // `kept`: the agent's own files that its folder had already, as a folder kept from an agent of the same
+      // name does. The new agent takes them up as its own, with or without the wizard, which does not replace them.
+      // lstat, as the wizard does: a link that leads nowhere is something there.
+      const kept = CONTEXT_FILES.filter((name) => lstatSync(path.join(agent.home, name), { throwIfNoEntry: false }));
       const wizard = req.body?.setup as WizardInput | undefined;
       if (wizard && typeof wizard === "object") runWizard({ ...wizard, agentName: wizard.agentName || agent.name }, agent.home);
-      res.json(agentToApi(agent));
+      res.json({ ...agentToApi(agent), kept });
     } catch (e) {
       failed(res, e);
     }
@@ -167,33 +180,47 @@ export function agentsRouter(): Router {
     if (agent) res.json(agentFileStatus(agent.home));
   });
 
-  /** The setup wizard, for this agent's home. Refuses to overwrite an existing MEMORY.md. */
-  router.post("/agents/:id/setup", (req, res) => {
-    const agent = agentOr404(req.params.id, res);
-    if (!agent) return;
+  const setUp = (agent: Agent, req: express.Request, res: express.Response) => {
     const body = (req.body ?? {}) as WizardInput;
     if (typeof body.agentName !== "string" || !body.agentName.trim()) return res.status(400).json({ error: "The agent needs a name" });
     if (typeof body.userName !== "string" || !body.userName.trim()) return res.status(400).json({ error: "Who is it working for?" });
     try {
-      runWizard(body, agent.home);
-      res.json(agentFileStatus(agent.home));
+      const { kept } = runWizard(body, agent.home);
+      res.json({ ...agentFileStatus(agent.home), kept });
     } catch (e) {
       res.status(500).json({ error: (e as Error).message });
     }
-  });
+  };
 
-  router.put("/agents/:id/files/:name", (req, res) => {
-    const agent = agentOr404(req.params.id, res);
-    if (!agent) return;
-    const content = req.body?.content;
+  const saveFile = (agent: Agent, name: string, req: express.Request, res: express.Response) => {
+    const { content, mtime } = req.body ?? {};
     if (typeof content !== "string") return res.status(400).json({ error: "content required" });
+    if (mtime !== undefined && typeof mtime !== "number") return res.status(400).json({ error: "mtime must be a number" });
     try {
-      writeAgentFile(req.params.name, content, agent.home);
+      writeAgentFile(name, content, agent.home, mtime);
       res.json(agentFileStatus(agent.home));
     } catch (e) {
+      if (e instanceof FileError) return fail(res, e);
       res.status(400).json({ error: (e as Error).message });
     }
+  };
+
+  /** The setup wizard, for this agent's home. Writes the files that are not there and leaves the others, `kept` in the answer. */
+  router.post("/agents/:id/setup", (req, res) => {
+    const agent = agentOr404(req.params.id, res);
+    if (agent) setUp(agent, req, res);
   });
+
+  /** `{ content, mtime }`: `mtime` is the file's as the page read it; a file the agent has written since is not overwritten (409). */
+  router.put("/agents/:id/files/:name", (req, res) => {
+    const agent = agentOr404(req.params.id, res);
+    if (agent) saveFile(agent, req.params.name, req, res);
+  });
+
+  // The first agent's, at the addresses from before there were several: the same handlers, so the same answers.
+  router.get("/agent/setup", (_req, res) => res.json(agentFileStatus(defaultAgent().home)));
+  router.post("/agent/setup", (req, res) => setUp(defaultAgent(), req, res));
+  router.put("/agent/files/:name", (req, res) => saveFile(defaultAgent(), req.params.name, req, res));
 
   return router;
 }

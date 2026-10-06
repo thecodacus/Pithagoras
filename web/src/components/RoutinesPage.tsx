@@ -1,11 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Select } from "./Select";
 import {
   LuBot,
   LuCheck,
   LuChevronLeft,
   LuChevronRight,
-  LuCircleAlert,
   LuClock,
   LuFolder,
   LuHouse,
@@ -17,29 +16,29 @@ import {
 import { PageHeader, Stat } from "./PageHeader";
 import { RowsSkeleton } from "./Skeleton";
 import { api, type Agent, type ReportTarget, type ReportTo, type Routine, type Workspace } from "../api";
+import { ErrorBanner, Segments, Switch, SwitchTrack, btnCls, inputCls, primaryCls } from "./SettingsUi";
 import { confirmDialog } from "./ConfirmDialog";
 import { below } from "../paths";
 import { pollWhileVisible } from "../poll";
-import { formatDateTime, labelOf, msg, t, tx } from "../i18n";
+import { formatDateTime, labelOf, msg, t, tp, tx } from "../i18n";
+import { useFlash } from "../use-flash";
 import { serverTime, sinceThen } from "../time";
 
-const inputCls =
-  "w-full rounded-lg border border-line bg-raised/60 px-3 py-2 text-sm outline-none transition placeholder:text-fg-faint focus:border-accent/60";
-const primaryCls =
-  "inline-flex items-center gap-1.5 rounded-lg bg-accent/12 px-3 py-2 text-sm text-accent ring-1 ring-inset ring-accent/25 transition hover:bg-accent/20 disabled:opacity-40";
-const btnCls =
-  "inline-flex items-center gap-1.5 rounded-lg bg-fg/5 px-3 py-2 text-sm text-fg transition hover:bg-fg/10 disabled:opacity-40";
 
 const STATUS_STYLE: Record<string, string> = {
   ok: "text-ok",
   error: "text-danger",
   running: "text-accent",
+  interrupted: "text-warn",
+  stopped: "text-warn",
 };
 
 const STATUS_LABEL: Record<string, string> = {
   ok: msg("ok"),
   error: msg("error"),
   running: msg("running"),
+  interrupted: msg("interrupted"),
+  stopped: msg("stopped"),
 };
 const statusLabel = (status: string) => labelOf(STATUS_LABEL, status);
 
@@ -76,6 +75,11 @@ const until = (iso: string | null) => {
   return t("in {n}d", { n: Math.round(mins / 1440) });
 };
 
+const MODES: { id: "repeats" | "once"; label: string }[] = [
+  { id: "repeats", label: msg("Repeats") },
+  { id: "once", label: msg("Once") },
+];
+
 /**
  * Picking when. A routine either repeats or happens once, never both.
  *
@@ -99,22 +103,7 @@ function Timing({
 }) {
   return (
     <div>
-      <div className="mb-2 flex gap-1">
-        {(["repeats", "once"] as const).map((m) => (
-          <button
-            key={m}
-            type="button"
-            onClick={() => onMode(m)}
-            className={`rounded-lg px-2.5 py-1 text-xs transition ${
-              mode === m
-                ? "bg-accent/12 text-accent ring-1 ring-inset ring-accent/25"
-                : "bg-fg/5 text-fg-muted hover:bg-fg/10"
-            }`}
-          >
-            {m === "repeats" ? t("Repeats") : t("Once")}
-          </button>
-        ))}
-      </div>
+      <Segments label={t("Schedule")} className="mb-2 flex gap-1" value={mode} options={MODES} onChange={onMode} />
 
       {mode === "repeats" ? (
         <SchedulePicker value={schedule} onChange={onSchedule} />
@@ -125,8 +114,10 @@ function Timing({
             type="datetime-local"
             value={runAt}
             onChange={(e) => onRunAt(e.target.value)}
-            className={`${inputCls} mt-1 text-xs [color-scheme:dark]`}
+            aria-label={t("Run at")}
+            className={`${inputCls} mt-1 text-xs`}
           />
+          {!runAt && <p role="alert" className="mt-1 text-[11px] text-warn">{t("Pick a time to run it at.")}</p>}
           <p className="mt-1 text-[11px] text-fg-faint">
             {t("Your local time. It runs once and then switches itself off, keeping the result. A time that passed while the portal was down still runs when it comes back.")}
           </p>
@@ -136,13 +127,6 @@ function Timing({
   );
 }
 
-/**
- * Work that happens on a schedule rather than because somebody asked.
- *
- * A routine is a standing instruction and a cron expression: it fires, the
- * agent does the job, and it goes quiet again. What it did last time is kept,
- * because that is the only way to know a routine is working.
- */
 /** The select's value for a routine: "" inherits, "off" is silent. */
 function reportValue(r: Routine): string {
   if (r.reportChannel === "") return "off";
@@ -165,19 +149,32 @@ const reported = (r: Routine) =>
 const labelFor = (targets: ReportTarget[], to: ReportTo) =>
   targets.find((t) => t.channel === to.channel && t.target === to.target)?.label;
 
+/**
+ * Work that happens on a schedule rather than because somebody asked.
+ *
+ * A routine is a standing instruction and a cron expression: it fires, the
+ * agent does the job, and it goes quiet again. What it did last time is kept,
+ * because that is the only way to know a routine is working.
+ */
 export function RoutinesPage({ onOpenSession }: { onOpenSession: (id: string) => void }) {
   const [routines, setRoutines] = useState<Routine[]>([]);
   const [openId, setOpenId] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [loading, setLoading] = useState(true);
+  // What a save or a run was refused, kept until the next one; and what the poll could not read, which is only true
+  // until the next poll that can.
   const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const places = usePlaces();
 
   const load = () =>
     api
       .routines()
-      .then((r) => setRoutines(r.routines))
-      .catch((e) => setError((e as Error).message))
+      .then((r) => {
+        setRoutines(r.routines);
+        setLoadError(null);
+      })
+      .catch((e) => setLoadError((e as Error).message))
       .finally(() => setLoading(false));
 
   useEffect(() => {
@@ -187,13 +184,22 @@ export function RoutinesPage({ onOpenSession }: { onOpenSession: (id: string) =>
 
   const open = routines.find((r) => r.id === openId);
 
+  // Shown in the list and in a routine alike: a refused save or run is said where it was asked for.
+  const errorBox = (error || loadError) && (
+    <ErrorBanner className="mt-4" onClose={error ? () => setError(null) : undefined}>{error || loadError}</ErrorBanner>
+  );
+
   if (open) {
     return (
       <div className="h-full overflow-y-auto px-4 py-6">
         <div className="mx-auto w-full max-w-3xl">
+          {errorBox}
           <RoutineDetail
             routine={open}
-            onBack={() => setOpenId(null)}
+            onBack={() => {
+              setOpenId(null);
+              setError(null);
+            }}
             onChanged={load}
             onError={setError}
             onOpenSession={onOpenSession}
@@ -217,7 +223,7 @@ export function RoutinesPage({ onOpenSession }: { onOpenSession: (id: string) =>
           }
         >
           <div className="mt-4 flex flex-wrap items-center gap-2">
-            <Stat value={routines.length} label={t("routines")} />
+            <Stat value={routines.length} label={tp(routines.length, "routine", "routines")} />
             <Stat value={routines.filter((r) => r.enabled).length} label={t("enabled")} tone="text-accent" />
             <Stat
               value={routines.filter((r) => r.lastStatus === "error").length}
@@ -227,13 +233,7 @@ export function RoutinesPage({ onOpenSession }: { onOpenSession: (id: string) =>
           </div>
         </PageHeader>
 
-        {error && (
-          <div className="mt-4 flex items-start gap-2 rounded-xl border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
-            <LuCircleAlert className="mt-0.5 h-4 w-4 shrink-0" />
-            <span className="min-w-0 flex-1">{error}</span>
-            <button onClick={() => setError(null)}>✕</button>
-          </div>
-        )}
+        {errorBox}
 
         <div className="mt-4 flex items-center justify-between">
           <h3 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle">
@@ -423,7 +423,7 @@ function WorkspacePicker({
         {error && ` ${t("The projects could not be listed ({error}), so only Home is offered.", { error })}`}
       </p>
       {problem && value && (
-        <p className="mt-1 text-[11px] text-danger">
+        <p role="alert" className="mt-1 text-[11px] text-danger">
           {t("{place} is not there any more ({problem}). Its runs fail until another place is chosen.", { place: value, problem })}
         </p>
       )}
@@ -461,6 +461,7 @@ function SchedulePicker({
       <input
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        aria-label={t("Schedule")}
         placeholder="0 9 * * *"
         className={`${inputCls} mt-1 font-mono text-xs`}
       />
@@ -476,10 +477,10 @@ function SchedulePicker({
           </button>
         ))}
       </div>
-      {preview.error && <p className="mt-1.5 text-[11px] text-danger">{preview.error}</p>}
+      {preview.error && <p role="alert" className="mt-1.5 text-[11px] text-danger">{preview.error}</p>}
       {preview.runs && preview.runs.length > 0 && (
         <p className="mt-1.5 text-[11px] text-fg-subtle">
-          {t("Next: {when}", { when: preview.runs.slice(0, 3).map((r) => formatDateTime(r)).join(" · ") })}
+          {t("Next: {when}", { when: preview.runs.map((r) => formatDateTime(r)).join(" · ") })}
         </p>
       )}
     </div>
@@ -507,6 +508,7 @@ function NewRoutine({
 
   const create = async () => {
     setBusy(true);
+    onError("");
     try {
       await onCreated(
         await api.createRoutine(
@@ -558,7 +560,7 @@ function NewRoutine({
       <WorkspacePicker value={workspace} onChange={setWorkspace} places={places} />
 
       <div className="flex items-center gap-2">
-        <button disabled={!name.trim() || busy} onClick={create} className={primaryCls}>
+        <button disabled={!name.trim() || busy || (mode === "once" && !runAt)} onClick={create} className={primaryCls}>
           {busy ? <LuRefreshCw className="h-4 w-4 animate-spin" /> : <LuCheck className="h-4 w-4" />}
           {t("Create")}
         </button>
@@ -599,20 +601,50 @@ function RoutineDetail({
   const [targets, setTargets] = useState<ReportTarget[]>([]);
   const [fallback, setFallback] = useState<ReportTo | null>(null);
   const [busy, setBusy] = useState<null | "save" | "run">(null);
-  const [saved, setSaved] = useState(false);
+  const [saved, flashSaved] = useFlash();
   const [runs, setRuns] = useState<{ id: string; title: string }[]>([]);
 
+  // Whether the fields say something other than `from` does: a draft, against what they were filled from.
+  const differs = (from: Routine) =>
+    name !== from.name ||
+    mode !== from.mode ||
+    (mode === "repeats" ? schedule !== from.schedule : toLocalInput(from.runAt) !== runAt) ||
+    instructions !== from.instructions ||
+    fresh !== from.freshSession ||
+    guard !== from.guard ||
+    browser !== from.browser ||
+    workspace !== (from.workspace ?? "") ||
+    report !== reportValue(from);
+  const dirty = differs(r);
+
+  const fill = (from: Routine) => {
+    setName(from.name);
+    setMode(from.mode);
+    setSchedule(from.schedule || "0 9 * * *");
+    setRunAt(toLocalInput(from.runAt));
+    setInstructions(from.instructions);
+    setFresh(from.freshSession);
+    setGuard(from.guard);
+    setBrowser(from.browser);
+    setWorkspace(from.workspace ?? "");
+    setReport(reportValue(from));
+  };
+  // The fields as they are now, for a save that finishes after more was typed.
+  const live = useRef({ name, mode, schedule, runAt, instructions, fresh, guard, browser, workspace, report });
+  live.current = { name, mode, schedule, runAt, instructions, fresh, guard, browser, workspace, report };
+
+  // What the form was last filled from: the fields are filled again from the routine
+  // for another routine, after this form's own save (see the Save button), or when
+  // nothing typed would be lost, that is, when they still say what the routine said
+  // before. A change of the routine's `updatedAt` that is no save of this form (the
+  // enable switch saves at once, and the agent can change a routine) must not take a
+  // draft away, and must not be missed by a form that has none.
+  const filled = useRef({ id: r.id, from: r });
   useEffect(() => {
-    setName(r.name);
-    setMode(r.mode);
-    setSchedule(r.schedule || "0 9 * * *");
-    setRunAt(toLocalInput(r.runAt));
-    setInstructions(r.instructions);
-    setFresh(r.freshSession);
-    setGuard(r.guard);
-    setBrowser(r.browser);
-    setWorkspace(r.workspace ?? "");
-    setReport(reportValue(r));
+    const was = filled.current;
+    if (r.id === was.id && differs(was.from) && dirty) return;
+    filled.current = { id: r.id, from: r };
+    fill(r);
   }, [r.id, r.updatedAt]);
 
   useEffect(() => {
@@ -632,19 +664,9 @@ function RoutineDetail({
       .catch(() => {});
   }, [r.id, r.lastRun]);
 
-  const dirty =
-    name !== r.name ||
-    mode !== r.mode ||
-    (mode === "repeats" ? schedule !== r.schedule : toLocalInput(r.runAt) !== runAt) ||
-    instructions !== r.instructions ||
-    fresh !== r.freshSession ||
-    guard !== r.guard ||
-    browser !== r.browser ||
-    workspace !== (r.workspace ?? "") ||
-    report !== reportValue(r);
-
   const act = async (which: "save" | "run", fn: () => Promise<unknown>) => {
     setBusy(which);
+    onError("");
     try {
       await fn();
       await onChanged();
@@ -676,27 +698,22 @@ function RoutineDetail({
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="w-full bg-transparent text-sm font-medium text-fg outline-none"
+            aria-label={t("Routine name")}
+            className="w-full rounded bg-transparent text-sm font-medium text-fg outline-none focus-visible:ring-2 focus-visible:ring-accent"
           />
           <p className="truncate text-xs text-fg-subtle">
             {r.done ? t("already ran") : r.enabled ? until(r.nextRun) : t("disabled")} ·{" "}
             <span className="font-mono">{r.slug}</span>
           </p>
         </div>
-        <button
-          onClick={() => act("save", () => api.updateRoutine(r.id, { enabled: !r.enabled }))}
+        <Switch
+          on={r.enabled}
+          onChange={() => act("save", () => api.updateRoutine(r.id, { enabled: !r.enabled }))}
           disabled={busy !== null}
+          label={r.name}
           title={r.enabled ? t("Disable") : t("Enable")}
-          className={`relative mt-1 h-5 w-9 shrink-0 rounded-full transition disabled:opacity-40 ${
-            r.enabled ? "bg-accent" : "bg-raised"
-          }`}
-        >
-          <span
-            className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${
-              r.enabled ? "left-[1.125rem]" : "left-0.5"
-            }`}
-          />
-        </button>
+          className="mt-1"
+        />
       </div>
 
       <section className="mb-6 space-y-3">
@@ -731,6 +748,8 @@ function RoutineDetail({
 
         <button
           type="button"
+          role="switch"
+          aria-checked={fresh}
           onClick={() => setFresh(!fresh)}
           className="flex w-full items-center gap-3 rounded-lg px-1 py-1.5 text-left transition hover:bg-fg/5"
         >
@@ -740,21 +759,13 @@ function RoutineDetail({
               {t("Off: one session it keeps, so a run can see what the last one did. On: a clean start every time.")}
             </p>
           </div>
-          <span
-            className={`relative h-5 w-9 shrink-0 rounded-full transition ${
-              fresh ? "bg-accent" : "bg-raised"
-            }`}
-          >
-            <span
-              className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${
-                fresh ? "left-[1.125rem]" : "left-0.5"
-              }`}
-            />
-          </span>
+          <SwitchTrack on={fresh} />
         </button>
 
         <button
           type="button"
+          role="switch"
+          aria-checked={guard}
           onClick={() => setGuard(!guard)}
           className="flex w-full items-center gap-3 rounded-lg px-1 py-1.5 text-left transition hover:bg-fg/5"
         >
@@ -764,21 +775,13 @@ function RoutineDetail({
               {t("On: after reading anything untrusted — logs fetched over the network, a web page, mail — this run cannot push, write onto PATH, upload or read credentials. Turn it off for work that reads those things and then has to act on them. Content is still labelled as untrusted, and anything it does that the rules would have stopped is recorded in Audit.")}
             </p>
           </div>
-          <span
-            className={`relative h-5 w-9 shrink-0 rounded-full transition ${
-              guard ? "bg-accent" : "bg-raised"
-            }`}
-          >
-            <span
-              className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${
-                guard ? "left-[1.125rem]" : "left-0.5"
-              }`}
-            />
-          </span>
+          <SwitchTrack on={guard} />
         </button>
 
         <button
           type="button"
+          role="switch"
+          aria-checked={browser}
           onClick={() => setBrowser(!browser)}
           className="flex w-full items-center gap-3 rounded-lg px-1 py-1.5 text-left transition hover:bg-fg/5"
         >
@@ -788,17 +791,7 @@ function RoutineDetail({
               {t("Lets this routine drive the agent's browser, which is signed into the agent's own accounts. Off by default. Every page it opens is recorded in Audit.")}
             </p>
           </div>
-          <span
-            className={`relative h-5 w-9 shrink-0 rounded-full transition ${
-              browser ? "bg-accent" : "bg-raised"
-            }`}
-          >
-            <span
-              className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${
-                browser ? "left-[1.125rem]" : "left-0.5"
-              }`}
-            />
-          </span>
+          <SwitchTrack on={browser} />
         </button>
 
         {/* Not a label: it would pass a click on the hint to the Select's button. */}
@@ -879,7 +872,8 @@ function RoutineDetail({
         <button
           onClick={() =>
             act("save", async () => {
-              await api.updateRoutine(r.id, {
+              const sent = JSON.stringify(live.current);
+              const stored = await api.updateRoutine(r.id, {
                 name,
                 ...(mode === "repeats"
                   ? { schedule, runAt: "" }
@@ -892,11 +886,19 @@ function RoutineDetail({
                 ...(workspace !== (r.workspace ?? "") ? { workspace: workspace || null } : {}),
                 ...reportPatch(report),
               });
-              setSaved(true);
-              setTimeout(() => setSaved(false), 2000);
+              // What the server kept is what the form is filled from now: the server's clock
+              // counts seconds, so the reload that follows may carry the stamp it already had
+              // and have nothing new in it for the effect to see. Not for a routine the form
+              // has moved on from while this was on its way. The server trims, so unless more
+              // was typed since, the fields show what it kept.
+              if (filled.current.id === stored.id) {
+                filled.current = { id: stored.id, from: stored };
+                if (JSON.stringify(live.current) === sent) fill(stored);
+              }
+              flashSaved();
             })
           }
-          disabled={busy !== null || !dirty}
+          disabled={busy !== null || !dirty || (mode === "once" && !runAt)}
           className={primaryCls}
         >
           {busy === "save" ? (

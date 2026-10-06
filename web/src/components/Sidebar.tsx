@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { confirmDialog } from "./ConfirmDialog";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { SessionActions, sessionError } from "./SessionActions";
 import { TitleInput } from "./TitleInput";
 import { ThemeSwitcher } from "./ThemeSwitcher";
 import { StatusDot, workingText } from "./StatusDot";
@@ -8,36 +8,32 @@ import {
   LuBot,
   LuPanelLeftClose,
   LuPanelLeftOpen,
-  LuPencil,
   LuClock,
   LuFolderKanban,
   LuGlobe,
   LuBrain,
   LuImage,
   LuMessagesSquare,
-  LuPin,
-  LuPinOff,
   LuPlus,
   LuSearch,
   LuSettings,
   LuShield,
-  LuTrash2,
 } from "react-icons/lu";
 import type { Session } from "../api";
 import { local } from "../safe-storage";
 import { filterSessions } from "../session-filter";
 import { isEscape } from "../shortcuts";
-import { keep, pick, useFlip } from "../motion";
+import { pick, useFlip } from "../motion";
 import { HOME, folderKeys, folderName, groupByFolder, sortFolders, type Places } from "../session-folders";
 import { useFolderPrefs, useOpenFolders } from "../use-session-folders";
-import { t } from "../i18n";
+import { t, useLanguage } from "../i18n";
 
 /** How many unpinned sessions the sidebar shows before deferring to Sessions. */
 const RECENTS_LIMIT = 12;
 /** How many of a folder's chats the sidebar shows before deferring to Sessions, opened at that folder. */
 const FOLDER_LIMIT = 8;
 
-export function Sidebar({
+export const Sidebar = memo(function Sidebar({
   forceExpanded = false,
   sessions,
   executor,
@@ -81,6 +77,8 @@ export function Sidebar({
   /** The Sessions page, showing only the chats in the folder `key` (see session-folders). */
   onOpenFolder: (key: string) => void;
 }) {
+  // Not drawn again with every token of a chat, so the language is asked for here.
+  useLanguage();
   const [storedCollapsed, setCollapsed] = useState(() => local.get("sidebarCollapsed") === "true");
   const collapsed = forceExpanded ? false : storedCollapsed;
   const toggleSidebar = () => {
@@ -173,6 +171,7 @@ export function Sidebar({
       onRename={onRename}
       onDelete={onDelete}
       onPin={onPin}
+      onError={setStartError}
     />
   );
 
@@ -232,13 +231,13 @@ export function Sidebar({
       </div>
 
       {/* Destinations, above the session lists. */}
-      <nav className="px-2 pb-2">
+      <nav className="px-2 pb-2" aria-label={t("Destinations")}>
         <NavItem icon={<LuPlus />} label={t("New")} onClick={() => newChat()} active={starting} isNew />
         {destinations.map((d) => (
           <NavItem key={d.to} icon={d.icon} label={d.label} onClick={() => onNavigate(d.to)} active={view === d.to} />
         ))}
 
-        {startError && <p className="px-2.5 pt-1 text-xs text-danger">{startError}</p>}
+        {startError && <p role="alert" className="px-2.5 pt-1 text-xs text-danger">{startError}</p>}
       </nav>
 
       {searchable && (
@@ -344,7 +343,7 @@ export function Sidebar({
       </div>
     </aside>
   );
-}
+});
 
 const Divider = () => <div className="my-2 h-px bg-line" />;
 
@@ -394,6 +393,7 @@ function NavItem({
   return (
     <button
       onClick={onClick}
+      aria-current={active ? "page" : undefined}
       data-new={isNew || undefined}
       className={`nav-item group relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition ${
         active ? "bg-fg/[0.07] text-fg" : "text-fg-muted hover:bg-fg/5 hover:text-fg"
@@ -419,6 +419,7 @@ function SessionItem({
   onRename,
   onDelete,
   onPin,
+  onError,
 }: {
   session: Session;
   active: boolean;
@@ -426,14 +427,13 @@ function SessionItem({
   onRename: (id: string, title: string) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
   onPin: (id: string, pinned: boolean) => Promise<void>;
+  onError: (message: string | null) => void;
 }) {
   const [renaming, setRenaming] = useState(false);
-  const row = useRef<HTMLDivElement>(null);
   return (
     // A row with buttons in it, so not a button itself: reachable with Tab and
     // opened with Enter all the same, which a bare div with a click was not.
     <div
-      ref={row}
       data-flip={s.id}
       onClick={onSelect}
       tabIndex={0}
@@ -458,7 +458,8 @@ function SessionItem({
             className="flex-1 text-sm"
             onCommit={(next) => {
               setRenaming(false);
-              onRename(s.id, next);
+              onError(null);
+              onRename(s.id, next).catch((e) => onError(sessionError("rename", s.title, e)));
             }}
             onCancel={() => setRenaming(false)}
           />
@@ -476,48 +477,7 @@ function SessionItem({
 
         {/* Without a mouse there is no hover: the open chat's row keeps them. */}
         <div className={`ml-auto hidden shrink-0 items-center gap-0.5 group-focus-within:flex group-hover:flex ${active ? "[@media(hover:none)]:flex" : ""}`}>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onPin(s.id, !s.pinned);
-            }}
-            className="rounded p-1 text-fg-subtle hover:text-accent"
-            title={s.pinned ? t("Unpin") : t("Pin")}
-          >
-            {s.pinned ? <LuPinOff className="h-3 w-3" /> : <LuPin className="h-3 w-3" />}
-          </button>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              setRenaming(true);
-            }}
-            className="rounded p-1 text-fg-subtle hover:text-accent"
-            title={t("Rename")}
-          >
-            <LuPencil className="h-3 w-3" />
-          </button>
-          <button
-            onClick={async (e) => {
-              e.stopPropagation();
-              if (
-                await confirmDialog({
-                  title: t("Delete \"{name}\"?", { name: s.title }),
-                  message: t("It is stopped if it is running, and its transcript is removed."),
-                  confirmLabel: t("Delete"),
-                  danger: true,
-                  deletes: true,
-                })
-              ) {
-                // A picture of the row, to break apart where it was once it is gone (see motion.ts).
-                const gone = keep(row.current, row.current?.closest<HTMLElement>(".sidebar-list"));
-                onDelete(s.id).then(() => gone("row"));
-              }
-            }}
-            className="rounded p-1 text-fg-subtle hover:text-danger"
-            title={t("Delete session")}
-          >
-            <LuTrash2 className="h-3 w-3" />
-          </button>
+          <SessionActions session={s} small onPin={onPin} onStartRename={() => setRenaming(true)} onDelete={onDelete} onError={onError} />
         </div>
       </div>
       {/* Cut at the start, not the end: what tells chats apart is the last part of

@@ -1,15 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import express from 'express';
+import { inProcessHome } from './helpers.mts';
 
-const temp = mkdtempSync(join(tmpdir(), 'pitha-heartbeat-'));
-process.env.DATA_DIR = temp;
-process.env.AGENT_HOME = join(temp, 'agent-home');
-process.env.PI_CODING_AGENT_DIR = join(temp, 'agent');
-process.env.SESSION_DIR = join(temp, 'sessions');
+const temp = inProcessHome('pitha-heartbeat-');
 
 const { inQuietHours, heartbeatDue, setHeartbeat, heartbeat, WATCH_FILE } = await import('../server/src/heartbeat.ts');
 const { createAgent, getAgent } = await import('../server/src/agents.ts');
@@ -18,7 +14,7 @@ const { agentsRouter } = await import('../server/src/api/agents.ts');
 const { guardExtension } = await import('../server/src/pi/guard.ts');
 const { HEARTBEAT_ROLE, NOTE_TOOL } = await import('../server/src/pi/heartbeat-names.ts');
 const { addToolRule, createSession, getDb } = await import('../server/src/db.ts');
-test.after(() => { getDb().close(); rmSync(temp, { recursive: true, force: true }); });
+test.after(() => getDb().close());
 
 const at = (hhmm: string) => { const [h, m] = hhmm.split(':').map(Number); return new Date(2026, 9, 2, h, m); };
 
@@ -77,6 +73,17 @@ test('a look with nothing to watch says so, and waits its interval', async () =>
   assert.equal(heartbeatDue(after, new Date()), false);
 });
 
+test('a look cut off by a restart is no longer shown as looking once the portal is back', () => {
+  const cut = createAgent({ name: 'Cut off' });
+  const done = createAgent({ name: 'Finished' });
+  getDb().prepare("UPDATE agents SET heartbeat_status = 'Looking' WHERE id = ?").run(cut.id);
+  getDb().prepare("UPDATE agents SET heartbeat_status = 'Nothing new' WHERE id = ?").run(done.id);
+  heartbeat.start();
+  heartbeat.stop();
+  assert.equal(getAgent(cut.id)!.heartbeat_status, 'Interrupted by a restart');
+  assert.equal(getAgent(done.id)!.heartbeat_status, 'Nothing new', 'only a look that was under way');
+});
+
 test('the routes set the heartbeat and read, mark and delete its notes', async () => {
   const agent = createAgent({ name: 'Scout' });
   writeFileSync(join(agent.home, WATCH_FILE), 'The open PRs on the repo.\n');
@@ -97,6 +104,16 @@ test('the routes set the heartbeat and read, mark and delete its notes', async (
     assert.equal(set.status, 200);
     assert.deepEqual([set.body.heartbeat.minutes, set.body.heartbeat.quietStart, set.body.heartbeat.watching], [60, '22:00', true]);
     assert.equal(set.body.unread, 2);
+    // The hours are read on the server's clock, and the page says which: a container's is UTC unless TZ is set.
+    assert.equal(set.body.heartbeat.timeZone, Intl.DateTimeFormat().resolvedOptions().timeZone);
+    const had = process.env.TZ;
+    process.env.TZ = 'Pacific/Auckland';
+    try {
+      assert.equal((await call('PUT', '/heartbeat', { minutes: 60, quietStart: '22:00', quietEnd: '07:00' })).body.heartbeat.timeZone, 'Pacific/Auckland');
+    } finally {
+      if (had === undefined) delete process.env.TZ;
+      else process.env.TZ = had;
+    }
     assert.equal((await call('PUT', '/heartbeat', { minutes: 1 })).status, 400);
 
     // While a chat is working the model is taken: a look by hand waits, as one on its schedule does.

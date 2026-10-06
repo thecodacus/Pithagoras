@@ -1,15 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { copyFileSync, existsSync, mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { copyFileSync, existsSync } from "node:fs";
 import path from "node:path";
+import { inProcessHome } from "./server-harness.mjs";
 
 // A database from before the schema had a version (fixtures/portal-unversioned.db),
 // made by that code itself, at 0718375: two conversations, the event types the
 // newer indexes cover, and settings. An upgrade has to bring it to the current
 // schema without losing any of it, and the portal has to read and write it after.
-const home = mkdtempSync(path.join(tmpdir(), "pithagoras-unversioned-"));
-process.env.DATA_DIR = home;
+const home = inProcessHome("pithagoras-unversioned-");
 const file = path.join(home, "portal.db");
 copyFileSync(new URL("./fixtures/portal-unversioned.db", import.meta.url), file);
 
@@ -30,7 +29,7 @@ test("a database from before versions is upgraded, keeps everything, and works a
   const events = db.eventsSince("task1");
   assert.deepEqual(events.map((e) => e.type), ["portal_prompt", "portal_taken", "message_end", "portal_command", "portal_command_end"]);
   assert.equal(JSON.parse(db.eventsSince("agent1")[0].payload).message.content[0].text, "Hello from the agent.");
-  assert.equal(JSON.parse(db.getStoredSettings().voice).voice, "design");
+  assert.equal(JSON.parse(db.getSetting("voice")).voice, "design");
 
   db.appendEvent("task1", "message_end", { message: { role: "assistant", content: [{ type: "text", text: "after the upgrade" }] } });
   assert.equal(db.eventsSince("task1").length, 6);

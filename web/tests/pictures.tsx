@@ -38,7 +38,7 @@ const events: PortalEvent[] = [
   ev('tool_execution_start', { toolCallId: 'editing', toolName: 'edit_image', ...own, args: { path: 'photos/dog.png', prompt: 'Make it snow', title: 'The dog in the snow' } }, 5),
 ];
 
-const session = { id: 'preview', title: 'Pictures', workspace: '/workspaces/pithagoras', executor: 'host', status: 'running', created_at: '', updated_at: '', last_error: null, pinned: false, provider: 'llama-server', model: 'Qwen3.6 35B', thinking_level: 'medium' } as Session;
+const session = { id: 'preview', title: 'Pictures', workspace: '/workspaces/pithagoras', executor: 'host', status: 'running', created_at: '', updated_at: '', last_error: null, pinned: false, provider: 'llama-server', model: 'Model A', thinking_level: 'medium' } as Session;
 const noop = async () => {};
 
 function Fixture() {

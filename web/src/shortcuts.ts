@@ -15,7 +15,7 @@ export interface KeyInfo {
 const TEXT_ENTRY = new Set(["INPUT", "TEXTAREA", "SELECT"]);
 
 /** Whether typing here is meant for the thing that has focus. */
-export function isTyping(target: KeyInfo["target"]): boolean {
+function isTyping(target: KeyInfo["target"]): boolean {
   if (!target) return false;
   return Boolean(target.isContentEditable) || TEXT_ENTRY.has((target.tagName ?? "").toUpperCase());
 }

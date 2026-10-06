@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useNow } from '../use-now';
 import { LuCheck, LuCircleAlert, LuLoaderCircle, LuSparkles } from 'react-icons/lu';
 import { api, type PortalEvent } from '../api';
 import { describeCall, describeOutcome, elapsed, unwrap, type ToolCall, type ToolTarget } from '../tool-activity';
@@ -24,6 +25,16 @@ const STAYS = { done: 4500, failed: 7000 };
 /** How long a card takes to go, so it is taken out after its animation. */
 const LEAVING = 600;
 const SLOTS = 4;
+const SLOT_IDS = Array.from({ length: SLOTS }, (_, i) => i);
+
+/** Where a card leads, as its title names it. */
+const TARGET: Record<ToolTarget, string> = {
+  terminal: msg("the terminal"),
+  files: msg("the files"),
+  browser: msg("the browser"),
+  canvas: msg("the document"),
+  pictures: msg("the picture"),
+};
 
 /**
  * What the agent is doing, as cards flying out of the orb.
@@ -35,21 +46,11 @@ const SLOTS = 4;
  * the file in Files, the terminal, the browser, the document, the picture.
  * That is a role it takes on, not another element: see the card below.
  */
-/** Where a card leads, as its title names it. */
-const TARGET: Record<ToolTarget, string> = {
-  terminal: msg("the terminal"),
-  files: msg("the files"),
-  browser: msg("the browser"),
-  canvas: msg("the document"),
-  pictures: msg("the picture"),
-};
-
 export function VoiceToolActivity({ events, sessionId, folder, onOpen }: { events: PortalEvent[]; sessionId: string; folder: string; onOpen: (call: ToolCall) => void }) {
   const seen = useRef(events.reduce((n, e) => Math.max(n, e.seq), 0));
   const timers = useRef(new Set<ReturnType<typeof setTimeout>>());
   const cards = useRef<Card[]>([]);
   const [shown, setShown] = useState<Card[]>([]);
-  const [, setNow] = useState(0);
   const update = (next: Card[]) => { cards.current = next; setShown(next); };
   const later = (ms: number, run: () => void) => {
     const timer = setTimeout(() => { timers.current.delete(timer); run(); }, ms);
@@ -78,7 +79,7 @@ export function VoiceToolActivity({ events, sessionId, folder, onOpen }: { event
         // A slot a card is still leaving from is taken last, and that card then
         // goes at once rather than being flown over.
         const leavingFrom = new Set(next.filter(c => c.leaving).map(c => c.slot));
-        const slot = [0, 1, 2, 3].find(s => !taken.has(s) && !leavingFrom.has(s)) ?? [0, 1, 2, 3].find(s => !taken.has(s)) ?? 0;
+        const slot = SLOT_IDS.find(s => !taken.has(s) && !leavingFrom.has(s)) ?? SLOT_IDS.find(s => !taken.has(s)) ?? 0;
         next = next.filter(c => !(c.leaving && c.slot === slot));
         const call = unwrap(p);
         const look = isPictureTool(call.name) && p[GENERATED_PICTURE_MARK] === true ? pictureCall(call.name, call.input, folder) : undefined;
@@ -101,17 +102,12 @@ export function VoiceToolActivity({ events, sessionId, folder, onOpen }: { event
   }, [events, folder]);
 
   // A running card counts its time, so it is only redrawn while one is.
-  const running = shown.some(card => card.status === 'running');
-  useEffect(() => {
-    if (!running) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [running]);
+  const now = useNow(shown.some(card => card.status === 'running'));
   useEffect(() => () => { for (const timer of timers.current) clearTimeout(timer); }, []);
 
-  return <div className="voice-tool-activity" aria-label={t("Tool activity")} aria-live="polite" aria-relevant="additions">
+  return <div className="voice-tool-activity" role="log" aria-label={t("Tool activity")} aria-live="polite" aria-relevant="additions">
     {shown.map(card => {
-      const took = Date.now() - card.startedAt;
+      const took = Math.max(0, now - card.startedAt);
       const note = card.status === 'running' ? (took >= 3000 ? elapsed(took) : '') : card.outcome;
       const className = `voice-tool-float flies-${card.slot % 2 ? 'right' : 'left'} flight-lane-${Math.floor(card.slot / 2)} is-${card.status}${card.leaving ? ' is-leaving' : ''}`;
       // A picture being made, made or not made is the preview the chat shows, as a tile in the place of the mark; another extension's tool of that name, which ends with no picture, has the mark.

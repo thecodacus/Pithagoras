@@ -1,0 +1,17 @@
+# The build context is what `COPY` can see, and it goes to the Docker daemon
+# whole: leave out what the image builds for itself and what is local to a
+# checkout, so a build does not upload gigabytes or put a developer's database
+# into a layer.
+**/node_modules
+**/data
+.local-data
+.git
+.env*
+voice-runtime
+server/dist
+web/dist
+web/public/voice-assets
+docs/.vitepress/dist
+docs/.vitepress/cache
+playwright-report
+test-results

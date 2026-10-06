@@ -7,7 +7,7 @@ import { btnCls } from "./SettingsUi";
 
 const gib = (mib: number) => formatNumber(mib / 1024, { maximumFractionDigits: 1 });
 const asrKey = (c: Pick<VoiceChoice, "asr" | "asrModel">) => `${c.asr}:${c.asrModel}`;
-const tone = (level: Fit) => level === "fits" ? "text-fg-faint" : level === "tight" ? "text-warn" : "text-red-400";
+const tone = (level: Fit) => level === "fits" ? "text-fg-faint" : level === "tight" ? "text-warn" : "text-danger";
 
 /**
  * Which speech engine and which recognition model, on which device, the managed voice container is built for,

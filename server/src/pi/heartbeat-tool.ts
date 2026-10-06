@@ -4,6 +4,7 @@ import { addNote } from "../activity.js";
 import { getDefaultReportTo } from "../db.js";
 import { channelSupervisor } from "../channels/supervisor.js";
 import { NOTE_TOOL } from "./heartbeat-names.js";
+import { fail, say } from "./tool-result.js";
 
 /**
  * The one thing a heartbeat can do besides read: leave a note.
@@ -33,17 +34,17 @@ export function heartbeatTool(agentId: string, sessionId: string) {
       async execute(_id: string, p: any) {
         const title = String(p.title ?? "").trim();
         const detail = String(p.detail ?? "").trim();
-        if (!title) return { output: "A note needs a title.", isError: true };
+        if (!title) return fail("A note needs a title.");
         addNote(agentId, sessionId, title, detail);
-        if (!p.urgent) return { output: "Noted.", isError: false };
+        if (!p.urgent) return say("Noted.");
         const to = getDefaultReportTo();
-        if (!to) return { output: "Noted. There is no channel to message them through, so it waits in Activity.", isError: false };
+        if (!to) return say("Noted. There is no channel to message them through, so it waits in Activity.");
         try {
           const name = getAgent(agentId)?.name ?? "Your agent";
           await channelSupervisor.send(to.channel, to.target, `${name}: ${title}${detail ? `\n\n${detail}` : ""}`);
-          return { output: `Noted, and sent through ${to.channel}.`, isError: false };
+          return say(`Noted, and sent through ${to.channel}.`);
         } catch (e) {
-          return { output: `Noted, but the message could not be sent: ${(e as Error).message}`, isError: false };
+          return say(`Noted, but the message could not be sent: ${(e as Error).message}`);
         }
       },
     });

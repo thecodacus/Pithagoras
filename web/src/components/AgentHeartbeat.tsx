@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { LuCheckCheck, LuPlus, LuRefreshCw, LuTrash2 } from "react-icons/lu";
 import { api, type ActivityNote, type Agent, type ToolRule } from "../api";
 import { Select } from "./Select";
-import { inputCls } from "./SettingsUi";
+import { inputSmCls } from "./SettingsUi";
 import { pollWhileVisible } from "../poll";
 import { msg, t } from "../i18n";
 import { when } from "../time";
@@ -82,11 +82,11 @@ export function HeartbeatSettings({ agent, onChanged }: { agent: Agent; onChange
               />
             </div>
             <div className="text-xs text-fg-muted">
-              {t("Quiet hours")}
+              {t("Quiet hours")} <span className="text-[11px] text-fg-faint">{t("the portal's time ({zone})", { zone: hb.timeZone })}</span>
               <div className="mt-1 flex items-center gap-1.5">
-                <input type="time" aria-label={t("Quiet from")} value={quietStart} onChange={(e) => setQuietStart(e.target.value)} onBlur={() => saveQuiet(quietStart, quietEnd)} className={`${inputCls} w-32 py-1.5`} />
+                <input type="time" aria-label={t("Quiet from")} value={quietStart} onChange={(e) => setQuietStart(e.target.value)} onBlur={() => saveQuiet(quietStart, quietEnd)} className={`${inputSmCls} !w-32`} />
                 <span>{t("to")}</span>
-                <input type="time" aria-label={t("Quiet until")} value={quietEnd} onChange={(e) => setQuietEnd(e.target.value)} onBlur={() => saveQuiet(quietStart, quietEnd)} className={`${inputCls} w-32 py-1.5`} />
+                <input type="time" aria-label={t("Quiet until")} value={quietEnd} onChange={(e) => setQuietEnd(e.target.value)} onBlur={() => saveQuiet(quietStart, quietEnd)} className={`${inputSmCls} !w-32`} />
               </div>
             </div>
             <button
@@ -127,7 +127,7 @@ export function HeartbeatSettings({ agent, onChanged }: { agent: Agent; onChange
                 });
               }}
             >
-              <input value={command} onChange={(e) => setCommand(e.target.value)} placeholder="gh pr list*" aria-label={t("Command it may run")} className={`${inputCls} py-1.5 font-mono text-xs`} />
+              <input value={command} onChange={(e) => setCommand(e.target.value)} placeholder="gh pr list*" aria-label={t("Command it may run")} className={`${inputSmCls} font-mono text-xs`} />
               <button type="submit" disabled={!command.trim()} className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-fg/5 px-2.5 text-xs text-fg transition hover:bg-fg/10 disabled:opacity-40">
                 <LuPlus className="h-3.5 w-3.5" />
                 {t("Allow")}

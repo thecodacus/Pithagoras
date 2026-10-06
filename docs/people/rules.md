@@ -26,12 +26,29 @@ bash: himalaya envelope list*
 
 A tool and a pattern. `*` stands for the parts that vary; everything else is
 literal. For `bash` the pattern is matched against the command, for file tools
-against the path. A call that names several pictures (`edit_image` with
+against the path, and for a tool that names no path against the JSON of its
+arguments. A call that names several pictures (`edit_image` with
 [several pictures](/guide/features#several-pictures) switched on) is matched on
 each picture's path, and is allowed only if every one is.
 
 A bare `*` is rejected. That is not a rule, it is switching the thing off by
-accident.
+accident. So is a rule for `subagent`, `routine_create`, `routine_update` or
+`routine_run`: those would run what the person writes with your rights, so
+nothing opens them for anybody else (see
+[roles](/people/roles#what-a-colleague-may-do)).
+
+What **Always allow** writes is the command or path exactly as it was asked, so a
+`*` in it is a star and not a wildcard. To allow a family of commands, write the
+pattern yourself. A path is tidied before it is matched, so a `..` in it cannot
+reach out of the folder a rule names, and it is matched twice: as it was written
+and where it leads. A link inside the folder that leads out of it (a repository
+with `shared -> ../common`) does not carry the rule along: writing through it
+needs a rule that names where it leads. A folder the portal gives out that is
+itself reached through a link, such as a data disk linked in, is not that. A
+`write` or `edit` rule reaches what its pattern names and nothing more, apart
+from what the guard keeps from everybody who is not you (see
+[roles](/people/roles#what-a-colleague-may-do)): give it the folder it is for, not
+`*`.
 
 ## One command, never a pipeline
 
@@ -55,9 +72,12 @@ write them by reflex, and refusing over one is a rule nobody can act on.
 
 ## Scope
 
-A rule naming a person applies to them alone. Approving Priya's request must not
-quietly permit that command for every colleague, so the chip on the rule says
-whose it is — a name, or `all colleagues`.
+A rule naming a person applies to them alone, **whatever their role is**.
+Approving Priya's request must not quietly permit that command for every
+colleague, and promoting her must not make her rule stop working. It can also be
+given to a primary or a blocked person, which a role could not express: the page
+writes a person's rules for *all roles*, narrowed to them. A rule for a role
+applies to everybody who holds it, and the list behind the roster says so.
 
 ## Writing one by hand
 

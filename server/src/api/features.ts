@@ -7,7 +7,6 @@ import {
   bundledSubagentDir,
   isModelChoice,
   localPackagePath,
-  mcpAdapter,
   subagentModelOf,
   subagentState,
   understoryDefaultUrl,
@@ -20,10 +19,11 @@ import { ImageGenerationError, imageEditingMultiple, imageEditingReady, imageGen
 import { readPiSettings, updatePiSettings } from "../pi-settings.js";
 import { sessions } from "../session-manager.js";
 import { switchPackage } from "./extensions.js";
-import { ADAPTER_SPEC, readMcpFile, writeMcpFile } from "./mcp.js";
+import { ADAPTER_SPEC, mcpAdapter, readMcpFile, writeMcpFile } from "./mcp.js";
 import * as service from "../extensions/understory-service.js";
 import { readModelsJson } from "../providers.js";
 import { pi } from "./packages.js";
+import { serverTimeZone } from "../time-zone.js";
 
 const adapterEntry = () => mcpAdapter();
 
@@ -78,7 +78,7 @@ async function understoryState() {
       lastDream: service.lastDream(),
       nextDream: service.nextDreamAt()?.toISOString() ?? null,
       // What "03:00" means: the portal's clock.
-      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      timeZone: serverTimeZone(),
     },
     ...(error ? { configError: error } : {}),
   };

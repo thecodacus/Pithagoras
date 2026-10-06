@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Streamdown } from "streamdown";
+import { Markdown } from "./Markdown";
 import {
   LuBrain,
   LuChevronDown,
@@ -23,6 +23,7 @@ import {
 } from "react-icons/lu";
 import {
   api,
+  ApiError,
   type MemoryChange,
   type MemoryConcept,
   type MemoryGraph,
@@ -32,23 +33,17 @@ import {
   type MemoryTrace,
   type MemoryValidation,
 } from "../api";
-import { bounds, colours, layout } from "../memory-graph";
+import { bounds, colours, layoutKept } from "../memory-graph";
 import { NOTE_LINK, linkNotes } from "../memory-links";
+import { forgetNoteDraft, forgetNoteDrafts, keepNoteDraft, readNoteDraft, type NoteDraft } from "../note-drafts";
 import { confirmDialog } from "./ConfirmDialog";
 import { Modal } from "./Modal";
-import { inputCls } from "./SettingsUi";
+import { codeAreaCls, inputCls, primarySmCls } from "./SettingsUi";
 import { formatDateTime, msg, t, tp, tx } from "../i18n";
+import { SkeletonGroup } from "./Skeleton";
+import { formatTokens } from "../transcript";
 
-/**
- * The agent's memory in Understory, laid out as Understory's own page lays it
- * out: its folders and notes with a search down the side, and a note, the log
- * of changes or the graph of links beside them. Read only — the agent keeps
- * its memory, through its tools. Everything is asked through the portal (see
- * server/src/api/memory.ts), so it works wherever the portal does.
- *
- * What is open is in the address: `?note=<path>`, or `?view=log|graph|issues`,
- * so it can be linked to and Back goes back through it.
- */
+/** What the page shows in place of a note: the log of changes, the graph of links, or what the health check found. */
 type View = "log" | "graph" | "issues";
 
 /** The colour of each type of note, the same in the list, a note and the graph. */
@@ -68,14 +63,57 @@ function TypeBadge({ type, className = "" }: { type: string; className?: string 
   );
 }
 
+/** The tree and its health check: the check failing is not the tree failing. */
+const readTree = () => Promise.all([api.memoryTree(), api.memoryValidate().catch(() => null)]);
+
+/**
+ * The agent's memory in Understory, laid out as Understory's own page lays it
+ * out: its folders and notes with a search down the side, and a note, the log
+ * of changes or the graph of links beside them. Read only — the agent keeps
+ * its memory, through its tools. Everything is asked through the portal (see
+ * server/src/api/memory.ts), so it works wherever the portal does.
+ *
+ * What is open is in the address: `?note=<path>`, or `?view=log|graph|issues`,
+ * so it can be linked to and Back goes back through it.
+ */
 export function MemoryPage() {
   const [params, setParams] = useSearchParams();
   const note = params.get("note");
   const asView = params.get("view");
   const view: View | null = asView === "log" || asView === "graph" || asView === "issues" ? asView : null;
-  const openNote = (path: string) => setParams({ note: path });
-  const openView = (v: View) => setParams({ view: v });
-  const close = () => setParams({});
+  // Whether the open note is being edited, with something changed in it: it is told by the note.
+  const [editing, setEditing] = useState(false);
+  /**
+   * Said before what is open is left by one of the page's own buttons. Back and
+   * Forward, and the links to other pages, cannot be asked: the note keeps its
+   * edit for those, and brings it back when it is opened again.
+   */
+  const settled = async () => {
+    if (!editing) return true;
+    const ok = await confirmDialog({ title: t("Discard your changes?"), message: t("The note you are editing has changes that are not saved."), confirmLabel: t("Discard"), danger: true });
+    // Given up on purpose: nothing is to be brought back when the note is opened again.
+    if (ok && note) forgetNoteDraft(note);
+    return ok;
+  };
+  const openNote = async (path: string) => {
+    if (path !== note && (await settled())) setParams({ note: path });
+  };
+  const openView = async (v: View) => {
+    if (await settled()) setParams({ view: v });
+  };
+  const close = async () => {
+    if (await settled()) setParams({});
+  };
+  // A reload of the page, or leaving it, is asked about by the browser.
+  useEffect(() => {
+    if (!editing) return;
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [editing]);
 
   const [tree, setTree] = useState<MemoryNode | null>(null);
   const [validation, setValidation] = useState<MemoryValidation | null>(null);
@@ -86,6 +124,8 @@ export function MemoryPage() {
   const [query, setQuery] = useState("");
   const [asked, setAsked] = useState("");
   const [hits, setHits] = useState<MemoryHit[] | null>(null);
+  // Apart from `failed`, which a search must not set: nothing takes that back until the whole tree is read again.
+  const [searchFailed, setSearchFailed] = useState<string | null>(null);
 
   // Whether notes can be changed here, and what the last change left behind.
   const [writable, setWritable] = useState(false);
@@ -96,7 +136,7 @@ export function MemoryPage() {
 
   /** Reads what a change moved — the tree, the counts, what a search finds — without leaving what is open. */
   const refresh = () => {
-    Promise.all([api.memoryTree(), api.memoryValidate().catch(() => null)]).then(([t, v]) => {
+    readTree().then(([t, v]) => {
       setTree(t);
       setValidation(v);
     }, () => {});
@@ -116,7 +156,8 @@ export function MemoryPage() {
     setWiping(true);
     try {
       await api.wipeMemory();
-      close();
+      forgetNoteDrafts();
+      setParams({});
       // Nothing found is left to show: what it found is gone.
       setQuery("");
       load();
@@ -129,7 +170,7 @@ export function MemoryPage() {
 
   const changed = (what: "saved" | "deleted", health: MemoryHealth) => {
     // A deleted note is not there to show any more.
-    if (what === "deleted") close();
+    if (what === "deleted") setParams({});
     refresh();
     setAfter({ what, health });
   };
@@ -138,7 +179,7 @@ export function MemoryPage() {
     setLoading(true);
     setFailed(null);
     setRound((r) => r + 1);
-    Promise.all([api.memoryTree(), api.memoryValidate().catch(() => null)])
+    readTree()
       .then(([t, v]) => {
         setTree(t);
         setValidation(v);
@@ -154,6 +195,8 @@ export function MemoryPage() {
     return () => clearTimeout(t);
   }, [query]);
   useEffect(() => {
+    // A new question is not the old one's failure.
+    setSearchFailed(null);
     if (!asked) {
       setHits(null);
       return;
@@ -161,7 +204,7 @@ export function MemoryPage() {
     let current = true;
     api.memorySearch(asked).then(
       (found) => current && setHits(found),
-      (e: Error) => current && setFailed(e.message),
+      (e: Error) => current && setSearchFailed(e.message),
     );
     return () => {
       current = false;
@@ -223,7 +266,7 @@ export function MemoryPage() {
             )}
             <button
               type="button"
-              onClick={load}
+              onClick={async () => (await settled()) && load()}
               disabled={loading}
               aria-label={t("Read the memory again")}
               title={t("Read the memory again")}
@@ -252,14 +295,15 @@ export function MemoryPage() {
               </button>
             )}
           </div>
-          {failed && tree && <p className="px-3 pt-2 text-xs text-warn">{failed}</p>}
+          {failed && tree && <p role="alert" className="px-3 pt-2 text-xs text-warn">{failed}</p>}
+          {searchFailed && <p role="alert" className="px-3 pt-2 text-xs text-warn">{searchFailed}</p>}
           <nav aria-label={t("Notes")} className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
             {hits ? (
               <Hits hits={hits} asked={asked} open={note} onOpen={openNote} />
             ) : !tree ? (
-              <div className="skeleton-group space-y-1.5 px-1" aria-label={t("Loading the memory")}>
+              <SkeletonGroup className="space-y-1.5 px-1" label={t("Loading the memory")}>
                 {[0, 1, 2, 3].map((i) => <div key={i} className="skeleton h-6 w-full" />)}
-              </div>
+              </SkeletonGroup>
             ) : !tree.children?.length ? (
               <p className="px-2 py-6 text-center text-xs text-fg-subtle">{t("Nothing is in the memory yet. The agent adds to it as it learns.")}</p>
             ) : (
@@ -290,7 +334,7 @@ export function MemoryPage() {
 
         <main className={`${open ? "flex" : "hidden md:flex"} min-w-0 flex-1 flex-col`}>
           {note ? (
-            <Note key={`${note}#${round}`} path={note} writable={writable} onOpen={openNote} onBack={close} onChanged={changed} />
+            <Note key={`${note}#${round}`} path={note} writable={writable} onOpen={openNote} onBack={close} onChanged={changed} onEditing={setEditing} />
           ) : view === "log" ? (
             <LogView key={round} writable={writable} onOpen={openNote} onBack={close} onCleared={refresh} />
           ) : view === "graph" ? (
@@ -436,27 +480,40 @@ function MemoryMarkdown({ text, from, onOpen }: { text: string; from: string; on
     [],
   );
   const linked = useMemo(() => linkNotes(text, from), [text, from]);
-  return <Streamdown components={components}>{linked}</Streamdown>;
+  return <Markdown components={components}>{linked}</Markdown>;
 }
 
 /** Understory's own index and log: written by it, never by hand. */
 const reservedNote = (path: string) => /(^|\/)(index|log)\.md$/.test(path);
 
-/** What a note's form holds while it is edited. */
-interface NoteDraft {
-  title: string;
-  type: string;
-  description: string;
-  tags: string;
-  body: string;
-}
+/** The draft of a note as it starts, from the note as it is. */
+const startedFrom = (c: MemoryConcept): NoteDraft => ({
+  title: String(c.frontmatter?.title ?? ""),
+  type: String(c.frontmatter?.type ?? ""),
+  description: String(c.frontmatter?.description ?? ""),
+  tags: (Array.isArray(c.frontmatter?.tags) ? c.frontmatter.tags : []).map(String).join(", "),
+  body: c.body,
+});
 
+/** A note as an edit of it says it, for the form to be shown over a note that is no longer there. */
+const conceptOf = (path: string, d: NoteDraft): MemoryConcept => ({
+  path,
+  frontmatter: { title: d.title, type: d.type, description: d.description, tags: d.tags.split(",").map((x) => x.trim()).filter(Boolean) },
+  body: d.body,
+});
+
+/** What a draft is started from: the note's words, and the time Understory wrote them, which it sets on every write. */
+// The body without the newlines it ends in: the file a save writes ends in one that the answer to the save does not have.
+const baseOf = (c: MemoryConcept): string => JSON.stringify([{ ...startedFrom(c), body: c.body.replace(/\n+$/, "") }, c.frontmatter?.timestamp ?? null]);
+
+/** What a note's form holds while it is edited. */
 function Note({
   path,
   writable,
   onOpen,
   onBack,
   onChanged,
+  onEditing,
 }: {
   path: string;
   writable: boolean;
@@ -464,17 +521,50 @@ function Note({
   onBack: () => void;
   /** After it was saved or deleted, with what Understory said of the memory then. */
   onChanged: (what: "saved" | "deleted", health: MemoryHealth) => void;
+  /** Whether a draft with something changed in it is open: what the page asks about before it leaves. */
+  onEditing: (editing: boolean) => void;
 }) {
   const [concept, setConcept] = useState<MemoryConcept | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [draft, setDraft] = useState<NoteDraft | null>(null);
+  // What the draft was started from, and whether the note is something else by now.
+  const [base, setBase] = useState("");
+  const [changed, setChanged] = useState(false);
+  // The note is not there any more, rather than written differently.
+  const [gone, setGone] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // What the read said when the note was gone and only an edit it was left with is shown: giving the edit up goes back to that.
+  const missing = useRef<string | null>(null);
   useEffect(() => {
     let current = true;
+    missing.current = null;
     api.memoryConcept(path).then(
-      (c) => current && setConcept(c),
-      (e: Error) => current && setFailed(e.message),
+      (c) => {
+        if (!current) return;
+        setConcept(c);
+        // The edit this note was left with, if the page was taken away from it. The note may have been
+        // written meanwhile, by the agent: said, before a save puts the old text over what it learnt.
+        const left = readNoteDraft(path);
+        if (left) {
+          setDraft(left.draft);
+          setBase(left.base);
+          setChanged(left.base !== baseOf(c));
+        }
+      },
+      (e: Error) => {
+        if (!current) return;
+        // Deleted while the page was away from it, and an edit was left on it: the edit is not lost with the
+        // note. It is shown as one over a note that was deleted, and "Save mine anyway" writes the note again.
+        const left = e instanceof ApiError && e.status === 404 ? readNoteDraft(path) : null;
+        if (!left) return setFailed(e.message);
+        missing.current = e.message;
+        setConcept(conceptOf(path, left.draft));
+        setDraft(left.draft);
+        setBase(left.base);
+        setGone(true);
+        setChanged(true);
+      },
     );
     return () => {
       current = false;
@@ -485,29 +575,80 @@ function Note({
   const title = f?.title || path.split("/").pop();
   const canChange = writable && !reservedNote(path) && !!concept;
 
-  const edit = () =>
-    concept &&
-    setDraft({
-      title: String(f?.title ?? ""),
-      type: String(f?.type ?? ""),
-      description: String(f?.description ?? ""),
-      tags: (Array.isArray(f?.tags) ? f.tags : []).map(String).join(", "),
-      body: concept.body,
-    });
+  const edit = () => {
+    if (!concept) return;
+    setDraft(startedFrom(concept));
+    setBase(baseOf(concept));
+  };
+  // One over a note that is gone is the only copy of it, whatever the note it was started from says.
+  const changedDraft = !!draft && !!concept && (gone || JSON.stringify(draft) !== JSON.stringify(startedFrom(concept)));
+  useEffect(() => {
+    onEditing(changedDraft);
+    return () => onEditing(false);
+  }, [changedDraft]);
+  // Kept as it changes, for a note that goes away with it: Back, Forward, another page. Not before the note is read, which is when a draft left earlier is brought back.
+  useEffect(() => {
+    if (!draft || !concept) return;
+    if (changedDraft) keepNoteDraft(path, draft, base);
+    else forgetNoteDraft(path);
+  }, [path, draft, concept, changedDraft, base]);
+  /** The edit is over, saved or not: nothing of it is to come back. */
+  const endEdit = () => {
+    setDraft(null);
+    setChanged(false);
+    setGone(false);
+    forgetNoteDraft(path);
+  };
+  /** Cancel: over a note that is gone, what the edit stood in for is not there to be shown. */
+  const cancelEdit = () => {
+    endEdit();
+    if (missing.current === null) return;
+    setConcept(null);
+    setFailed(missing.current);
+    missing.current = null;
+  };
 
-  const save = async () => {
+  /** `anyway` puts the draft over a note that changed since it was started, as the person was told it would. */
+  const save = async (anyway = false) => {
     if (!draft || !concept) return;
     setBusy(true);
     setError(null);
     try {
+      let now = concept;
+      if (!anyway) {
+        // Read again: the agent may have written the note since the edit began, and nothing else would say so.
+        try {
+          now = await api.memoryConcept(path);
+        } catch (e) {
+          // Deleted meanwhile: the edit is not lost with it, and "Save mine anyway" writes the note again.
+          if (!(e instanceof ApiError && e.status === 404)) throw e;
+          // Given up, the edit goes back to what the read said: the note is not there to be shown.
+          missing.current = e.message;
+          setGone(true);
+          setChanged(true);
+          return;
+        }
+        // It is there: written again since it was found gone, or never gone.
+        missing.current = null;
+        setGone(false);
+        if (baseOf(now) !== base) {
+          missing.current = null;
+          setConcept(now);
+          setChanged(true);
+          return;
+        }
+      }
       const tags = draft.tags.split(",").map((t) => t.trim()).filter(Boolean);
       // Whatever else its frontmatter says is kept as it was; Understory sets the time.
-      const { timestamp: _t, ...rest } = concept.frontmatter;
+      const { timestamp: _t, ...rest } = now.frontmatter;
       const frontmatter = { ...rest, title: draft.title.trim(), type: draft.type.trim(), description: draft.description.trim(), ...(tags.length ? { tags } : {}) };
       if (!tags.length) delete (frontmatter as Record<string, unknown>).tags;
       const r = await api.saveMemoryNote(path, frontmatter, draft.body);
-      setConcept(r.concept);
-      setDraft(null);
+      // As a read has it, which the answer to the write is not quite: the file it made ends in a newline
+      // the answer does not, and the next edit is compared with what is read.
+      setConcept(await api.memoryConcept(path).catch(() => r.concept));
+      missing.current = null;
+      endEdit();
       onChanged("saved", r.health);
     } catch (e) {
       setError((e as Error).message);
@@ -553,13 +694,26 @@ function Note({
       <article aria-label={title} className="min-h-0 flex-1 overflow-y-auto px-4 py-4 md:px-6">
         <div className="mx-auto max-w-3xl">
           {error && <p role="alert" className="mb-3 rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger">{error}</p>}
+          {changed && draft && (
+            <div role="alert" className="mb-3 flex flex-wrap items-center gap-2 rounded-lg bg-warn/10 px-3 py-2 text-sm text-warn">
+              <span className="min-w-0 flex-1">{gone ? t("This note was deleted after you started editing it.") : t("This note changed after you started editing it.")}</span>
+              {!gone && (
+                <button type="button" onClick={endEdit} className="rounded px-1.5 py-0.5 underline hover:text-fg">
+                  {t("Load the new version")}
+                </button>
+              )}
+              <button type="button" onClick={() => void save(true)} disabled={busy} className="rounded px-1.5 py-0.5 underline hover:text-fg disabled:opacity-40">
+                {t("Save mine anyway")}
+              </button>
+            </div>
+          )}
           {failed ? (
-            <p className="text-sm text-warn">{failed}</p>
+            <p role="alert" className="text-sm text-warn">{failed}</p>
           ) : !concept ? (
-            <div className="skeleton-group space-y-2" aria-label={t("Loading the note")}>
+            <SkeletonGroup className="space-y-2" label={t("Loading the note")}>
               <div className="skeleton h-24 w-full" />
               <div className="skeleton h-40 w-full" />
-            </div>
+            </SkeletonGroup>
           ) : draft ? (
             <form
               aria-label={t("Edit the note")}
@@ -594,18 +748,18 @@ function Note({
                   onChange={(e) => setDraft({ ...draft, body: e.target.value })}
                   rows={16}
                   spellCheck={false}
-                  className="mt-1 w-full resize-y rounded-lg border border-line bg-raised/60 px-3 py-2 font-mono text-xs leading-relaxed outline-none focus:border-accent/60"
+                  className={`${codeAreaCls} mt-1 resize-y`}
                 />
               </label>
               <p className="font-mono text-[10px] text-fg-faint">{path}</p>
               <div className="flex items-center justify-end gap-2">
-                <button type="button" onClick={() => setDraft(null)} disabled={busy} className="rounded-lg px-3 py-1.5 text-sm text-fg-muted hover:bg-fg/5">
+                <button type="button" onClick={cancelEdit} disabled={busy} className="rounded-lg px-3 py-1.5 text-sm text-fg-muted hover:bg-fg/5">
                   {t("Cancel")}
                 </button>
                 <button
                   type="submit"
                   disabled={busy || !draft.title.trim() || !draft.type.trim()}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-accent/12 px-3 py-1.5 text-sm text-accent ring-1 ring-inset ring-accent/25 hover:bg-accent/20 disabled:opacity-40"
+                  className={primarySmCls}
                 >
                   {busy && <LuRefreshCw className="h-3.5 w-3.5 animate-spin" />}
                   {t("Save")}
@@ -731,7 +885,7 @@ function AfterChange({
             onClick={() => void repair()}
             disabled={busy !== null || nothingToRepair}
             title={nothingToRepair ? t("No links to nothing and no notes nothing links to: nothing for the model to do") : undefined}
-            className="rounded-lg bg-accent/12 px-3 py-1.5 text-sm text-accent ring-1 ring-inset ring-accent/25 hover:bg-accent/20 disabled:opacity-40"
+            className={primarySmCls}
           >
             {t("Repair with the model")}
           </button>
@@ -803,7 +957,7 @@ function AfterChange({
           <details className="rounded-lg border border-line px-3 py-2 text-xs">
             <summary className="cursor-pointer text-fg-muted">{t("What the model said")}</summary>
             <div className="md mt-2 max-h-60 overflow-y-auto text-fg">
-              <Streamdown>{told}</Streamdown>
+              <Markdown>{told}</Markdown>
             </div>
           </details>
         )}
@@ -862,11 +1016,11 @@ function LogView({ writable, onOpen, onBack, onCleared }: { writable: boolean; o
       <section aria-label={t("Changes to the memory")} className="min-h-0 flex-1 overflow-y-auto px-4 py-4 md:px-6">
         <div className="mx-auto max-w-3xl">
           {failed ? (
-            <p className="text-sm text-warn">{failed}</p>
+            <p role="alert" className="text-sm text-warn">{failed}</p>
           ) : !log ? (
-            <div className="skeleton-group space-y-2" aria-label={t("Loading the log")}>
+            <SkeletonGroup className="space-y-2" label={t("Loading the log")}>
               {[0, 1, 2].map((i) => <div key={i} className="skeleton h-12 w-full" />)}
-            </div>
+            </SkeletonGroup>
           ) : recent.length === 0 ? (
             <p className="text-sm text-fg-subtle">{t("Nothing has changed yet.")}</p>
           ) : (
@@ -924,8 +1078,8 @@ function Issues({ validation, onOpen, onBack }: { validation: MemoryValidation |
   );
 }
 
-/** Tokens, short: 9.7k. */
-const tokens = (n?: number) => (n === undefined ? "?" : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+/** Tokens as the chat writes them (9.7k, 2k), or a ? where the trace kept none. */
+const tokens = (n?: number) => (n === undefined ? "?" : formatTokens(n));
 
 function GraphView({ onOpen, onBack }: { onOpen: (path: string) => void; onBack: () => void }) {
   const colourOf = useContext(Colours);
@@ -937,12 +1091,51 @@ function GraphView({ onOpen, onBack }: { onOpen: (path: string) => void; onBack:
     api.memoryTraces().then(setTraces, () => {});
   }, []);
 
-  const placed = useMemo(() => (graph ? layout(graph.nodes.map((n) => n.path), graph.edges) : []), [graph]);
+  const placed = useMemo(() => (graph ? layoutKept(graph.nodes.map((n) => n.path), graph.edges) : []), [graph]);
   const where = useMemo(() => new Map(placed.map((p) => [p.path, p])), [placed]);
   const fit = useMemo(() => bounds(placed), [placed]);
   const [box, setBox] = useState(fit);
   useEffect(() => setBox(fit), [fit]);
   const types = useMemo(() => [...new Set((graph?.nodes ?? []).map((n) => n.type).filter((t): t is string => !!t))].sort(), [graph]);
+
+  // The notes and links, kept as they are drawn while the view moves: a pan or a zoom changes the box many times a second, and a thousand notes drawn again each time stutters.
+  const drawn = useMemo(
+    () =>
+      graph && (
+        <>
+          {graph.edges.map((e, i) => {
+            const a = where.get(e.source);
+            const b = where.get(e.target);
+            return a && b ? <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="currentColor" className="text-fg/20" strokeWidth={1.2} /> : null;
+          })}
+          {graph.nodes.map((n) => {
+            const p = where.get(n.path)!;
+            const r = 6 + Math.min(n.links, 10) * 0.8;
+            const title = n.title || n.path;
+            return (
+              <g
+                key={n.path}
+                data-note
+                role="button"
+                tabIndex={0}
+                aria-label={title}
+                onClick={() => onOpen(n.path)}
+                onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onOpen(n.path))}
+                className="cursor-pointer outline-none [&:focus-visible_circle]:stroke-accent"
+              >
+                <title>{n.description ? `${title} — ${n.description}` : title}</title>
+                {n.links === 0 && <circle cx={p.x} cy={p.y} r={r + 4} fill="none" className="stroke-danger" strokeWidth={1.5} />}
+                <circle cx={p.x} cy={p.y} r={r} fill={colourOf(n.type)} stroke="transparent" strokeWidth={3} />
+                <text x={p.x} y={p.y + r + 13} textAnchor="middle" className="fill-fg text-[11px]">
+                  {title.length > 32 ? `${title.slice(0, 31)}…` : title}
+                </text>
+              </g>
+            );
+          })}
+        </>
+      ),
+    [graph, where, colourOf, onOpen],
+  );
 
   const svg = useRef<SVGSVGElement>(null);
   /** Zoom by `factor` around a point in the drawing's own units. */
@@ -991,14 +1184,15 @@ function GraphView({ onOpen, onBack }: { onOpen: (path: string) => void; onBack:
       <Bar title={t("Graph")} onBack={onBack} />
       <div className="relative min-h-0 flex-1 overflow-hidden">
         {failed ? (
-          <p className="p-4 text-sm text-warn">{failed}</p>
+          <p role="alert" className="p-4 text-sm text-warn">{failed}</p>
         ) : !graph ? (
-          <div className="skeleton m-4 h-64" aria-label={t("Loading the graph")} />
+          <div className="skeleton m-4 h-64" role="status"><span className="sr-only">{t("Loading the graph")}</span></div>
         ) : (
           <>
             <svg
               ref={svg}
-              role="img"
+              // A group, not a picture: the notes in it are links, which a picture would hide from a screen reader while Tab still lands on them.
+              role="group"
               aria-label={t("The memory's notes and their links: {notes}, {links}", { notes: tp(graph.nodes.length, "{n} note", "{n} notes"), links: tp(graph.edges.length, "{n} link", "{n} links") })}
               viewBox={`${box.x} ${box.y} ${box.width} ${box.height}`}
               className="h-full w-full cursor-grab touch-none select-none active:cursor-grabbing"
@@ -1007,35 +1201,7 @@ function GraphView({ onOpen, onBack }: { onOpen: (path: string) => void; onBack:
               onPointerUp={up}
               onPointerCancel={up}
             >
-              {graph.edges.map((e, i) => {
-                const a = where.get(e.source);
-                const b = where.get(e.target);
-                return a && b ? <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="currentColor" className="text-fg/20" strokeWidth={1.2} /> : null;
-              })}
-              {graph.nodes.map((n) => {
-                const p = where.get(n.path)!;
-                const r = 6 + Math.min(n.links, 10) * 0.8;
-                const title = n.title || n.path;
-                return (
-                  <g
-                    key={n.path}
-                    data-note
-                    role="button"
-                    tabIndex={0}
-                    aria-label={title}
-                    onClick={() => onOpen(n.path)}
-                    onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onOpen(n.path))}
-                    className="cursor-pointer outline-none [&:focus-visible_circle]:stroke-accent"
-                  >
-                    <title>{n.description ? `${title} — ${n.description}` : title}</title>
-                    {n.links === 0 && <circle cx={p.x} cy={p.y} r={r + 4} fill="none" stroke="#ef4444" strokeWidth={1.5} />}
-                    <circle cx={p.x} cy={p.y} r={r} fill={colourOf(n.type)} stroke="transparent" strokeWidth={3} />
-                    <text x={p.x} y={p.y + r + 13} textAnchor="middle" className="fill-fg text-[11px]">
-                      {title.length > 32 ? `${title.slice(0, 31)}…` : title}
-                    </text>
-                  </g>
-                );
-              })}
+              {drawn}
             </svg>
 
             {(types.length > 0 || graph.nodes.some((n) => n.links === 0)) && (
@@ -1048,7 +1214,7 @@ function GraphView({ onOpen, onBack }: { onOpen: (path: string) => void; onBack:
                 ))}
                 {graph.nodes.some((n) => n.links === 0) && (
                   <li className="flex items-center gap-2">
-                    <span className="h-2.5 w-2.5 shrink-0 rounded-full border-[1.5px] border-[#ef4444]" />
+                    <span className="h-2.5 w-2.5 shrink-0 rounded-full border-[1.5px] border-danger" />
                     {t("orphan (unlinked)")}
                   </li>
                 )}

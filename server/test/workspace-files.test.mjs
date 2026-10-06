@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
-import { chmodSync, closeSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, closeSync, existsSync, linkSync, mkdirSync, readFileSync, readSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
+import { scratch } from './server-harness.mjs';
 const files = await import('../dist/workspace-files.js');
 const { FileError, baseDir, listDir, readText, writeText, removeEntry, renameEntry, folderPath, resolveInside, openDownload, MAX_EDIT_BYTES } = files;
 
 /** A folder to work in, and one beside it that nothing may reach. */
 function setup() {
-  const top = mkdtempSync(path.join(tmpdir(), 'wsfiles-'));
+  const top = scratch('wsfiles-');
   const dir = path.join(top, 'work');
   const outside = path.join(top, 'outside');
   mkdirSync(dir); mkdirSync(outside);
@@ -208,11 +208,10 @@ test('a download is a plain file opened once, dotfiles included, and nothing els
 });
 
 test('a download from a folder that sits under a dot-folder is not refused for it', () => {
-  const top = mkdtempSync(path.join(tmpdir(), 'wsfiles-'));
+  const top = scratch('wsfiles-');
   const dir = path.join(top, '.hidden', 'home'); mkdirSync(dir, { recursive: true });
   writeFileSync(path.join(dir, 'a.txt'), 'x');
   assert.equal(drain(openDownload(baseDir(dir), 'a.txt')), 'x');
-  rmSync(top, { recursive: true });
 });
 
 test('a folder that is itself a link is followed once, up front, and checked against where it leads', () => {
@@ -427,4 +426,18 @@ test('a link is marked as one, also when it leads to a folder that is listed as 
   assert.equal(by.sub.link, undefined);
   assert.equal(by['a.txt'].link, undefined);
   done();
+});
+
+test('a refusal is sent with its code, so that the page does not have to read the sentence', async () => {
+  const { fail } = await import('../dist/api/files.js');
+  const answer = (e) => {
+    const sent = {};
+    const res = { status(s) { sent.status = s; return this; }, json(b) { sent.body = b; return this; } };
+    fail(res, e);
+    return sent;
+  };
+  // Both are 409: only the code says which one it is.
+  assert.deepEqual(answer(new FileError('conflict', 'The file changed after you opened it')), { status: 409, body: { error: 'The file changed after you opened it', code: 'conflict' } });
+  assert.deepEqual(answer(new FileError('exists', 'Something with that name is already here')), { status: 409, body: { error: 'Something with that name is already here', code: 'exists' } });
+  assert.equal(answer(new FileError('too_large', 'Too big')).body.code, 'too_large');
 });

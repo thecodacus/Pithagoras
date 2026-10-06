@@ -1,19 +1,22 @@
 name: Tests
 
-# The image workflow builds; this one runs the server's tests, among them the
-# upgrade of a database from before schema versions (test/upgrade-unversioned).
+# What a pull request has to pass, and what a published image waits for: docker.yml
+# runs these jobs first. A push to main is tested there, so it is not tested twice.
 on:
   pull_request:
-  push:
-    branches: [main]
+  workflow_call:
 
 # Read only, and the checkout's token is not left in .git/config for the code under test to find.
 permissions:
   contents: read
 
 jobs:
+  # The server's tests, among them the upgrade of a database from before schema
+  # versions (test/upgrade-unversioned), and the root unit tests with the i18n check.
   server:
     runs-on: ubuntu-latest
+    # A hung test is a failed run after twenty minutes, not after the six hours GitHub allows.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -21,8 +24,41 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm install
+          cache: npm
+      - run: npm ci
       # A Chromium for the browser tools' test (test/browser-tools), which drives one over its debugging port.
       - run: npx playwright install --with-deps chromium
-      - run: npm run build -w server
-      - run: npm test -w server
+      - run: npm test
+
+  # The type check of the web app and its build, which is also what the image runs.
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build -w web
+
+  # The browser tests, against the web app's dev server and a mocked portal. Two of them are
+  # known to fail now and then on a busy machine (the voice windows phone layout, and a model
+  # picked in a chat on the default), so a test that fails is tried once more before it counts.
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test --retries=1

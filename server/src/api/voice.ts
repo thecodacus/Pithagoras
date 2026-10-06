@@ -1,7 +1,7 @@
 import { addVoice, listVoices, readVoice, updateVoice, deleteVoice, VoiceNotFound } from '../voice-presets.js';
 import { spokenNumbers } from '../voice-numbers.js';
 import { INPUT_LANGUAGES, CHATTERBOX_LANGUAGES } from '../voice-languages.js';
-import { DEFAULT_CHOICE, cpuSpeechUrl, endpoints, isManagedUrl, parseChoice, type VoiceChoice } from '../voice-engines.js';
+import { DEFAULT_CHOICE, cpuSpeechUrl, endpoints, isManagedUrl, parseChoice, speechUrl, type VoiceChoice } from '../voice-engines.js';
 import { DEFAULT_KOKORO_VOICE, KOKORO_SPEEDS, isKokoroVoice } from '../kokoro-voices.js';
 import { VoiceLeases } from '../extensions/voice-leases.js';
 import { DEFAULT_SKIP_THINKING_PROVIDERS, DEFAULT_VOICE_INSTRUCTIONS, voiceInstructions, voiceRulesOn } from '../pi/voice-first.js';
@@ -9,7 +9,7 @@ import * as voiceService from '../extensions/voice-service.js';
 import { setTimeout as delay } from "node:timers/promises";
 import { once } from "node:events";
 import express, { type Router } from "express";
-import { getDb, getSession, getStoredSettings } from "../db.js";
+import { getSession, getSetting, putSetting } from "../db.js";
 import { agentOf, defaultAgent } from "../agents.js";
 
 const DEFAULT_VAD = { positiveSpeechThreshold: 0.65, negativeSpeechThreshold: 0.35, minSpeechMs: 256, preSpeechPadMs: 320, redemptionMs: 1000 };
@@ -47,8 +47,8 @@ export const MAX_RESPONSE_INSTRUCTIONS = 8000;
 const DEFAULT_WHISPER_URL = "http://127.0.0.1:8178/inference";
 const DEFAULT_BREEZE_URL = "http://127.0.0.1:7860/v1/audio/speech";
 function config(): VoiceConfig {
-  const stored = getStoredSettings() as Record<string, string>;
-  return stored.voice ? { voice: "design", language: "auto", cfgScale: 4, ...JSON.parse(stored.voice) } : {
+  const stored = getSetting("voice");
+  return stored ? { voice: "design", language: "auto", cfgScale: 4, ...JSON.parse(stored) } : {
     voice: "design", language: "auto", cfgScale: 4,
     enabled: false, whisperUrl: DEFAULT_WHISPER_URL,
     breezeUrl: DEFAULT_BREEZE_URL,
@@ -173,19 +173,24 @@ export function pcmWav(pcm: Buffer): Buffer {
   return Buffer.concat([header, pcm]);
 }
 // Speech is in the GPU process, or in the CPU one where Kokoro is put on the CPU.
-const managedVoice = () => ['audio-cpp', 'chatterbox', 'kokoro'].includes(config().runtime ?? '') && [voiceService.breezeUrl, cpuSpeechUrl].includes(config().breezeUrl);
+const managedVoice = () => ['audio-cpp', 'chatterbox', 'kokoro'].includes(config().runtime ?? '') && [speechUrl, cpuSpeechUrl].includes(config().breezeUrl);
 const managedPort = () => Number(new URL(config().breezeUrl).port);
 // The lease loads the speech model the saved runtime speaks with. Recognition loads itself on its first request.
 const managedEngine = () => { const runtime = config().runtime; return runtime === 'chatterbox' || runtime === 'kokoro' ? runtime : 'breeze'; };
 const leases = new VoiceLeases(()=>voiceService.modelAction('load', managedEngine(), managedPort()),()=>voiceService.modelAction('unload', managedEngine(), managedPort()));
+/**
+ * A setup that was started here and has finished is connected to, once: what the page's Install did not wait for.
+ * Taken up wherever the finished service is first seen, which is the timer or the page asking after it.
+ */
+function adoptFinishedInstall(service: Awaited<ReturnType<typeof voiceService.status>>) {
+  if (service.state !== 'running' || getSetting('voice_setup_pending') !== '1') return;
+  connectManagedVoice(service.choice);
+  putSetting('voice_setup_pending', '');
+}
 async function maintainManagedVoice() {
   // Also reconciles running legacy containers after portal updates, without
   // requiring the settings modal to be opened. Stopped add-ons stay stopped.
-  const state = await voiceService.status();
-  if ((getStoredSettings() as Record<string,string>).voice_setup_pending === '1' && state.state === 'running') {
-    connectManagedVoice(state.choice);
-    getDb().prepare("DELETE FROM settings WHERE key='voice_setup_pending'").run();
-  }
+  adoptFinishedInstall(await voiceService.status());
   if (managedVoice()) await leases.sweep(config().lazyLoad !== false);
 }
 const maintain = () => { void maintainManagedVoice().catch(e => console.error('[voice] maintenance:', (e as Error).message)); };
@@ -209,11 +214,11 @@ interface Remembered {
 }
 const REMEMBERED_KEY = "voice_before_managed";
 function saveVoice(value: VoiceConfig) {
-  getDb().prepare("INSERT INTO settings (key, value) VALUES ('voice', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(JSON.stringify(value));
+  putSetting("voice", JSON.stringify(value));
 }
 function remembered(): Remembered {
   try {
-    const value = JSON.parse((getStoredSettings() as Record<string, string>)[REMEMBERED_KEY] ?? "{}");
+    const value = JSON.parse(getSetting(REMEMBERED_KEY) ?? "{}");
     const { listening, speaking } = value;
     return {
       ...(typeof listening?.whisperUrl === "string" ? { listening: { whisperUrl: listening.whisperUrl, sttModel: typeof listening.sttModel === "string" ? listening.sttModel : "", enabled: listening.enabled === true } } : {}),
@@ -242,7 +247,7 @@ export function connectManagedVoice(choice: VoiceChoice = DEFAULT_CHOICE) {
   const next: Remembered = { ...kept, noSpeech: runtime === "none" };
   if (!listening) next.listening = { whisperUrl: current.whisperUrl, sttModel: current.sttModel ?? "", enabled: current.enabled };
   if (!speaking) next.speaking = { breezeUrl: current.breezeUrl, runtime: current.runtime ?? "breeze", enabled: current.enabled };
-  getDb().prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(REMEMBERED_KEY, JSON.stringify(next));
+  putSetting(REMEMBERED_KEY, JSON.stringify(next));
   // Chatterbox is told a language and has no detection mode; keep one it speaks rather than save a setting it refuses.
   const language = runtime === 'chatterbox' && !CHATTERBOX_LANGUAGES.includes(current.language) ? 'en' : current.language;
   // Whisper.cpp serves one model and is sent no model field: an id left over
@@ -260,7 +265,7 @@ export function connectManagedVoice(choice: VoiceChoice = DEFAULT_CHOICE) {
 export function disconnectManagedVoice() {
   const current = config();
   const kept = remembered();
-  getDb().prepare("DELETE FROM settings WHERE key = ?").run(REMEMBERED_KEY);
+  putSetting(REMEMBERED_KEY, "");
   const { listening, speaking } = managedSides(current, kept.noSpeech);
   if (!listening && !speaking) return current;
   const back = {
@@ -277,7 +282,7 @@ export function disconnectManagedVoice() {
 export function voiceRouter(): Router {
   const router = express.Router();
   // The stored GPU choice, in place before anything asks the service to start.
-  voiceService.useGpu((getStoredSettings() as Record<string, string>).voice_gpu ?? '');
+  voiceService.useGpu(getSetting('voice_gpu') ?? '');
   /** Choose the GPU by UUID, or "" to leave it to VOICE_GPU and then the card with the most room. A running voice moves now; a stopped one on its next start. */
   router.put('/voice/gpu', async (req, res) => {
     const id = req.body?.gpu;
@@ -285,8 +290,7 @@ export function voiceRouter(): Router {
     try {
       // Before anything is saved or stopped: a card that is not there, or that cannot hold the engines installed, leaves the service where it is.
       if (id) await voiceService.checkGpu(id);
-      if (id) getDb().prepare("INSERT INTO settings (key, value) VALUES ('voice_gpu', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(id);
-      else getDb().prepare("DELETE FROM settings WHERE key = 'voice_gpu'").run();
+      putSetting('voice_gpu', id);
       voiceService.useGpu(id);
       const restarting = ['running', 'starting'].includes((await voiceService.status()).state);
       if (restarting) {
@@ -305,10 +309,7 @@ export function voiceRouter(): Router {
   router.get('/voice/install', async (_req, res) => {
     try {
       const state = await voiceService.status();
-      if (state.state === 'running' && (getStoredSettings() as Record<string,string>).voice_setup_pending === '1') {
-        connectManagedVoice(state.choice);
-        getDb().prepare("DELETE FROM settings WHERE key = 'voice_setup_pending'").run();
-      }
+      adoptFinishedInstall(state);
       // `connected`: the saved settings point at the service, whether or not it is there, so that they can be put right after the container was removed by hand.
       res.json({ ...state, connected: pointsAtManagedVoice() });
     } catch (e) { res.status(503).json({ error: (e as Error).message }); }
@@ -321,8 +322,7 @@ export function voiceRouter(): Router {
       // Install takes the engines to build for; without them it keeps what is installed, or picks for the GPU.
       if (action === 'install') await voiceService.install(Object.keys(req.body ?? {}).length ? parseChoice(req.body) : undefined);
       else await voiceService[action]();
-      if (action !== 'stop') getDb().prepare("INSERT INTO settings (key,value) VALUES ('voice_setup_pending','1') ON CONFLICT(key) DO UPDATE SET value='1'").run();
-      else getDb().prepare("DELETE FROM settings WHERE key = 'voice_setup_pending'").run();
+      putSetting('voice_setup_pending', action !== 'stop' ? '1' : '');
       res.json({ ok: true });
     } catch (e) { res.status(400).json({ error: (e as Error).message }); }
   });
@@ -335,7 +335,7 @@ export function voiceRouter(): Router {
       let kept: Error | undefined;
       try { await voiceService.uninstall(removeData); }
       catch (e) { if (!(e instanceof voiceService.DataNotRemoved)) throw e; kept = e; }
-      getDb().prepare("DELETE FROM settings WHERE key = 'voice_setup_pending'").run();
+      putSetting('voice_setup_pending', '');
       disconnectManagedVoice();
       if (kept) return res.status(409).json({ error: kept.message });
       res.json({ ok: true });
@@ -358,8 +358,7 @@ export function voiceRouter(): Router {
   });
   router.use("/sessions/:id/voice", (req, res, next) => {
     if (!config().enabled) return res.status(409).json({ error: "Enable Voice in Settings → Add-ons first" });
-    if (!getDb().prepare("SELECT id FROM sessions WHERE id = ?").get(req.params.id))
-      return res.status(404).json({ error: "Session not found" });
+    if (!getSession(req.params.id)) return res.status(404).json({ error: "Session not found" });
     next();
   });
   router.post('/sessions/:id/voice/connection', async (req,res)=>{

@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { LuCheck, LuDownload, LuFolder, LuImage, LuInfo, LuMessageSquare, LuRefreshCw, LuRepeat, LuTrash2, LuWandSparkles, LuX } from "react-icons/lu";
+import { LuCheck, LuDownload, LuFolder, LuImage, LuInfo, LuMessageSquare, LuRefreshCw, LuRepeat, LuTrash2, LuWandSparkles } from "react-icons/lu";
 import { api, type GalleryPicture, type ImagesFeature, type PictureJob, type PictureKind, type PictureOrigin } from "../api";
 import { MAX_SOURCES, addSources, sourceName } from "../edit-sources";
 import { appendPage, fieldsText, madeButNotListed, mergeTop, readFilter, sameList, tiles, viewerList, viewerPicture, type Filter, type Tile } from "../images-gallery";
@@ -9,13 +9,13 @@ import { bytesLabel } from "../projects";
 import { isEscape } from "../shortcuts";
 import { sinceThen } from "../time";
 import { formatDateTime, msg, t, tp } from "../i18n";
-import { useNow } from "./ChatActivity";
+import { useNow } from "../use-now";
 import { confirmDialog } from "./ConfirmDialog";
 import { ImageMaker, type Mode } from "./ImageMaker";
 import { ImagePreview, type PreviewState } from "./ImagePreview";
-import { ImageViewer } from "./ImageViewer";
+import { ImageViewer, iconButton } from "./ImageViewer";
 import { PageHeader, Stat } from "./PageHeader";
-import { Empty, btnCls, ghostCls } from "./SettingsUi";
+import { Empty, ErrorBanner, Segments, btnCls, ghostCls } from "./SettingsUi";
 import type { ViewerPicture } from "../image-viewer";
 
 /** How many pictures a page of the gallery has: enough to fill a screen and some, and few enough to be quick. */
@@ -58,9 +58,8 @@ const KIND_SHORT: Record<PictureKind, string> = {
 /** What a folder is called: its agent for an agent's home, as the sidebar names it (Home where the server gave no name), or its place under the workspace root. */
 const folderName = (folder: { name: string; home: boolean }): string => (folder.home ? folder.name || t("Home") : folder.name);
 
-/** The viewer's own buttons are this size; the ones this page adds match them. */
-const viewerButton =
-  "grid h-10 w-10 shrink-0 place-items-center rounded-lg text-fg-muted transition hover:bg-fg/10 hover:text-fg disabled:pointer-events-none disabled:opacity-35 aria-pressed:bg-accent/15 aria-pressed:text-accent sm:h-9 sm:w-9";
+/** The viewer's own buttons, with a look for the ones that are on: the ones this page adds match them. */
+const viewerButton = `${iconButton} aria-pressed:bg-accent/15 aria-pressed:text-accent`;
 
 interface Listing {
   pictures: GalleryPicture[];
@@ -92,6 +91,8 @@ export function ImagesPage() {
 
   const [features, setFeatures] = useState<ImagesFeature | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The gallery's own, apart: a page of it that loads ends a page that could not, and nothing else that went wrong.
+  const [galleryError, setGalleryError] = useState<string | null>(null);
   useEffect(() => {
     api.imagesFeature().then((r) => setFeatures(r.images), (e: Error) => setError(e.message));
   }, []);
@@ -120,19 +121,24 @@ export function ImagesPage() {
         if (asked.current !== mine) return;
         setList({ pictures: page.pictures, next: page.next, total: page.total, pageBytes: page.pageBytes });
         setLoading(false);
+        // A gallery that has loaded is the end of one that could not.
+        setGalleryError(null);
       },
       (e: Error) => {
         if (asked.current !== mine) return;
-        setError(e.message);
+        setGalleryError(e.message);
         setLoading(false);
       },
     );
   }, [filterKey]);
 
-  /** The top of the list again, joined to what is loaded: a picture was made, or taken away, or the agent made one in a chat. */
-  const refreshTop = useCallback(() => {
+  /**
+   * The top of the list again, joined to what is loaded: a picture was made, or taken away, or the agent made one in a chat.
+   * The portal does not look through the folders for pictures nobody listed more than once a minute, unless `look` says so: the Refresh button.
+   */
+  const refreshTop = useCallback((look = false) => {
     const mine = asked.current;
-    api.galleryPage({ ...latestFilter.current, limit: PAGE }).then(
+    api.galleryPage({ ...latestFilter.current, limit: PAGE, again: !look }).then(
       (page) => {
         if (asked.current !== mine) return;
         setList((cur) => {
@@ -171,7 +177,7 @@ export function ImagesPage() {
           if (asked.current !== mine) return;
           setList((cur) => ({ pictures: appendPage(cur.pictures, page.pictures), next: page.next, total: page.total, pageBytes: page.pageBytes }));
         },
-        (e: Error) => asked.current === mine && setError(e.message),
+        (e: Error) => asked.current === mine && setGalleryError(e.message),
       )
       .finally(() => {
         loadingMoreRef.current = false;
@@ -235,8 +241,8 @@ export function ImagesPage() {
   const [prompt, setPrompt] = useState("");
   const [sources, setSources] = useState<GalleryPicture[]>([]);
   // Making and changing are set up apart: one can be on without the other, and the form has both, whichever is not set up saying so.
-  const makes = !!features && features.enabled && features.baseUrl !== "";
-  const changes = !!features && features.editReady;
+  const makes = !!features?.ready;
+  const changes = !!features?.editReady;
   // Where the person has not chosen yet, the one that is set up; making where both are.
   const [chosen, setChosen] = useState<Mode | null>(null);
   const mode: Mode = chosen ?? (changes && !makes ? "edit" : "make");
@@ -471,27 +477,21 @@ export function ImagesPage() {
           title={t("Images")}
           description={t("Make and change pictures with the image endpoint you set up, without a chat, and keep what the agent made in chats.")}
           action={
-            <button type="button" onClick={() => { refreshTop(); poll(); }} className={btnCls} title={t("Look for new pictures")}>
+            <button type="button" onClick={() => { refreshTop(true); poll(); }} className={btnCls} title={t("Look for new pictures")}>
               <LuRefreshCw aria-hidden className="h-4 w-4" />
               {t("Refresh")}
             </button>
           }
         >
           <div className="mt-3 flex flex-wrap gap-2">
-            <Stat value={list.total} label={t("pictures")} />
+            <Stat value={list.total} label={tp(list.total, "picture", "pictures")} />
             {list.pageBytes > 0 && <Stat value={bytesLabel(list.pageBytes)} label={t("kept from this page")} />}
             {makingNow > 0 && <Stat value={makingNow} label={t("being made")} tone="text-accent" />}
           </div>
         </PageHeader>
 
-        {error && (
-          <div role="alert" className="flex items-start gap-2 rounded-xl border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
-            <span className="min-w-0 flex-1">{error}</span>
-            <button type="button" onClick={() => setError(null)} aria-label={t("Dismiss")} title={t("Dismiss")} className="shrink-0 rounded p-0.5 hover:bg-danger/10">
-              <LuX aria-hidden className="h-4 w-4" />
-            </button>
-          </div>
-        )}
+        {error && <ErrorBanner onClose={() => setError(null)}>{error}</ErrorBanner>}
+        {galleryError && <ErrorBanner onClose={() => setGalleryError(null)}>{galleryError}</ErrorBanner>}
 
         {features && (
           <ImageMaker
@@ -513,8 +513,8 @@ export function ImagesPage() {
 
         <section aria-label={t("Gallery")}>
           <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2">
-            <Segments label={t("Where from")} value={filter.origin ?? ""} options={ORIGINS} onChange={(origin) => setFilter({ ...filter, origin: origin || undefined })} />
-            <Segments label={t("How it was made")} value={filter.kind ?? ""} options={KINDS} onChange={(kind) => setFilter({ ...filter, kind: kind || undefined })} />
+            <Segments showLabel label={t("Where from")} value={filter.origin ?? ""} options={ORIGINS} onChange={(origin) => setFilter({ ...filter, origin: origin || undefined })} />
+            <Segments showLabel label={t("How it was made")} value={filter.kind ?? ""} options={KINDS} onChange={(kind) => setFilter({ ...filter, kind: kind || undefined })} />
             {/* Said where the boxes are what an edit is made of, and where they are not: that is all the gallery needs to say of them until one is ticked. */}
             {!selecting && everyId.length > 0 && (
               <span className="ml-auto text-xs text-fg-muted">
@@ -539,7 +539,7 @@ export function ImagesPage() {
                 <LuDownload aria-hidden className="h-4 w-4" />
                 {t("Download")}
               </button>
-              <button type="button" onClick={() => void remove([...picked])} className={`${btnCls} hover:bg-danger/10 hover:text-danger`}>
+              <button type="button" onClick={() => void remove([...picked])} className={`${btnCls} hover:!bg-danger/10 hover:text-danger`}>
                 <LuTrash2 aria-hidden className="h-4 w-4" />
                 {t("Delete")}
               </button>
@@ -612,7 +612,8 @@ export function ImagesPage() {
               <ViewerActions
                 key={picture.id}
                 picture={picture}
-                features={features}
+                makes={makes}
+                canEdit={changes}
                 onShown={shown}
                 onEdit={editIt}
                 // While the form is in Edit, the pictures are taken into it from here as well, one after another, with the viewer open.
@@ -624,27 +625,6 @@ export function ImagesPage() {
           }}
         />
       )}
-    </div>
-  );
-}
-
-/** A row of choices of which one holds, the way the audit page filters. */
-function Segments<T extends string>({ label, value, options, onChange }: { label: string; value: T; options: { id: T; label: string }[]; onChange: (id: T) => void }) {
-  return (
-    <div role="radiogroup" aria-label={label} className="flex flex-wrap items-center gap-1">
-      <span className="mr-1 text-[11px] text-fg-subtle">{label}</span>
-      {options.map((o) => (
-        <button
-          key={o.id}
-          type="button"
-          role="radio"
-          aria-checked={value === o.id}
-          onClick={() => onChange(o.id)}
-          className={`rounded-lg px-2.5 py-1 text-xs transition ${value === o.id ? "bg-accent/12 text-accent ring-1 ring-inset ring-accent/25" : "bg-fg/5 text-fg-muted hover:bg-fg/10"}`}
-        >
-          {t(o.label)}
-        </button>
-      ))}
     </div>
   );
 }
@@ -709,7 +689,8 @@ function PictureDetails({ picture }: { picture: GalleryPicture }) {
  */
 function ViewerActions({
   picture,
-  features,
+  makes,
+  canEdit,
   onShown,
   onEdit,
   use,
@@ -717,7 +698,9 @@ function ViewerActions({
   onDelete,
 }: {
   picture: GalleryPicture;
-  features: ImagesFeature | null;
+  /** Whether pictures can be made, and whether they can be changed: what the buttons that make one again say. */
+  makes: boolean;
+  canEdit: boolean;
   onShown: (picture: GalleryPicture) => void;
   onEdit: (picture: GalleryPicture) => void;
   /** Where the form is in Edit: whether this picture is one of the edit's, whether the edit has all it takes, and a way to take it in or out. */
@@ -727,8 +710,6 @@ function ViewerActions({
 }) {
   const [details, setDetails] = useState(false);
   useEffect(() => onShown(picture), [picture.id, onShown]);
-  const makes = !!features && features.enabled && features.baseUrl !== "";
-  const canEdit = !!features && features.editReady;
   // A picture put in by the person has no description to make again.
   const again = picture.kind !== "uploaded" && picture.prompt !== "" && (picture.kind === "generated" ? makes : canEdit);
   return (

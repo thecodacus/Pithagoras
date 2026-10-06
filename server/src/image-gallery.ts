@@ -264,13 +264,21 @@ function locate(row: Row, folders: Map<string, string | FileError> = new Map()):
 }
 
 /**
- * Whether a picture's folder is only out of reach for the moment: a chat's
- * folder on a drive that is not mounted. Its pictures are not gone, and what
- * looks at them leaves them in the list. A chat that is gone is another thing.
- * A picture that was found has no chat to lose it with, and is found again
- * when its folder is back, so it is not kept: only what was recorded is.
+ * Whether a picture's folder is only out of reach for the moment: a folder on a
+ * drive that is not mounted, or one that was renamed away. Its pictures are not
+ * gone, and what looks at them leaves them in the list. A chat that is gone is
+ * another thing. A picture that was found has no chat to lose it with, and is
+ * found again when its folder is back, so it is not kept: only what was recorded
+ * is, and with it what a kept picture was asked for, which a scan cannot give it
+ * back, or the edits that were made of it (see forgetPicturesIn for a folder the
+ * portal removed). A folder that is there and has lost the file is a picture that
+ * is gone.
  */
-const unreachable = (row: Row, e: unknown): boolean => row.origin === "chat" && e instanceof FileError && e.code === "missing" && !(e instanceof ChatGone);
+function unreachable(row: Row, e: unknown): boolean {
+  if (!(e instanceof FileError) || e.code !== "missing" || e instanceof ChatGone) return false;
+  if (row.origin === "chat") return true;
+  return row.origin === "folder" && (row.prompt !== "" || row.params !== "{}" || row.source_id !== null || !!getDb().prepare("SELECT 1 FROM images WHERE source_id = ? LIMIT 1").get(row.id));
+}
 
 /** Whether a picture is still to be shown: its file is there as a plain file, or its folder is out of reach and it may be. */
 function isThere(row: Row, folders: Map<string, string | FileError>): boolean {
@@ -396,7 +404,14 @@ export function pruneMissing(): number {
     if (!isThere(row, folders)) {
       gone.push(row.id);
     } else if (row.origin === "folder" && row.folder) {
-      const real = foundFolder(row.folder, folders);
+      let real: string;
+      try {
+        real = foundFolder(row.folder, folders);
+      } catch (e) {
+        // Kept for a folder that is out of reach for the moment: there is no real place to put it under.
+        if (e instanceof FileError) continue;
+        throw e;
+      }
       // Taken from the list when the same file is already a picture of that folder.
       if (real !== row.folder && !d.prepare("UPDATE OR IGNORE images SET folder = ? WHERE id = ?").run(real, row.id).changes) gone.push(row.id);
     }
@@ -559,10 +574,13 @@ export function scanFolders(): number {
 /** Takes pictures from the list, and what pointed at them from the edits made of them. The files are not touched. */
 function forget(ids: string[]): void {
   const d = getDb();
+  // Each statement once for all the pictures: what was made of a picture is found by its index, not by a pass over the gallery.
+  const remove = d.prepare("DELETE FROM images WHERE id = ?");
+  const unlink = d.prepare("UPDATE images SET source_id = NULL WHERE source_id = ?");
   d.transaction(() => {
     for (const id of ids) {
-      d.prepare("DELETE FROM images WHERE id = ?").run(id);
-      d.prepare("UPDATE images SET source_id = NULL WHERE source_id = ?").run(id);
+      remove.run(id);
+      unlink.run(id);
     }
   })();
 }
@@ -570,15 +588,23 @@ function forget(ids: string[]): void {
 /**
  * Takes the pictures of a folder that was removed from the list: those of every
  * chat that worked in it, routine runs included, which are kept when a project
- * is deleted. A folder that is gone for good cannot be told from a drive that
- * is not mounted, which keeps its pictures, so the portal says it when it is
- * the one that removed the folder. The files went with the folder.
+ * is deleted, and those that were found in it, or kept from a chat that is gone.
+ * A folder that is gone for good cannot be told from a drive that is not
+ * mounted, which keeps its pictures, so the portal says it when it is the one
+ * that removed the folder. The files went with the folder.
  */
 export function forgetPicturesIn(dir: string): number {
-  const rows = getDb()
+  const d = getDb();
+  // The folder is gone, so it cannot be followed: where it led is its parent's, and its name.
+  const parent = realPath(path.dirname(dir));
+  const places = parent ? [dir, path.join(parent, path.basename(dir))] : [dir];
+  const rows = d
     .prepare("SELECT images.id AS id, sessions.workspace AS workspace FROM images JOIN sessions ON sessions.id = images.session_id WHERE images.origin = 'chat'")
     .all() as { id: string; workspace: string }[];
   const gone = rows.filter((row) => isWithinText(dir, row.workspace)).map((row) => row.id);
+  for (const row of d.prepare("SELECT id, folder FROM images WHERE origin = 'folder' AND folder IS NOT NULL").all() as { id: string; folder: string }[]) {
+    if (places.some((place) => isWithinText(place, row.folder))) gone.push(row.id);
+  }
   if (gone.length) forget(gone);
   return gone.length;
 }
@@ -589,15 +615,27 @@ export interface ListQuery {
   /** The `next` of the page before. */
   before?: string;
   limit?: number;
+  /**
+   * A page that asks again for the top of a list it has, as on a timer: the look
+   * through the files is not made again within LOOK_AGAIN_MS of the last one.
+   * What the tools save is listed when it is saved, so only a file put there
+   * some other way waits for it; opening the page and its Refresh button look at once.
+   */
+  again?: boolean;
 }
 
 export const DEFAULT_PAGE = 48;
 export const MAX_PAGE = 100;
 
+/** How long a page that asks again is told what the last look found: the look is a stat for each picture and a read of every folder. */
+export const LOOK_AGAIN_MS = 60_000;
+let lastLook = 0;
+
 /** A page of the list, newest first, the next one's start, and what there is in all. */
 export function listPictures(query: ListQuery = {}): { pictures: GalleryPicture[]; next: string | null; total: number; pageBytes: number } {
   // The whole list is looked at when it is looked at from the top, not once for every page of it. What is gone goes first, then what has come that nobody listed.
-  if (!query.before) {
+  if (!query.before && !(query.again && Date.now() - lastLook < LOOK_AGAIN_MS)) {
+    lastLook = Date.now();
     pruneMissing();
     try {
       scanFolders();
@@ -642,11 +680,6 @@ export function listPictures(query: ListQuery = {}): { pictures: GalleryPicture[
 export function picturesById(ids: string[]): GalleryPicture[] {
   return ids.map(rowOf).filter((row): row is ListedRow => !!row).map(shown);
 }
-
-export const pictureById = (id: string): GalleryPicture | undefined => {
-  const row = rowOf(id);
-  return row ? shown(row) : undefined;
-};
 
 /**
  * A picture opened to be sent: the descriptor, its size and its type, from

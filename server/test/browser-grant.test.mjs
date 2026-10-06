@@ -1,15 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import path from "node:path";
+import { inProcessHome } from "./server-harness.mjs";
 
 // A database and an agent directory of their own, before anything opens the
 // real ones.
-const home = mkdtempSync(path.join(tmpdir(), "pithagoras-browser-"));
-process.env.DATA_DIR = home;
-process.env.PI_CODING_AGENT_DIR = path.join(home, "agent");
-mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
+const home = inProcessHome("pithagoras-browser-");
 // A server called `browser`, and one whose name merely starts with it.
 writeFileSync(
   path.join(process.env.PI_CODING_AGENT_DIR, "mcp.json"),

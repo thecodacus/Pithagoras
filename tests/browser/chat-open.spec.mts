@@ -1,13 +1,14 @@
-import { test, expect, type Page } from '@playwright/test';
+import { type Page } from '@playwright/test';
+import { test, expect, mockPortal, HANG } from './portal-mock';
 
 /**
  * Opening a chat: the stream it keeps open, and the effort pill it draws
  * before anything has answered.
  */
-const ornith = { id: 'Ornith1.5-35b', name: 'Ornith 1.5 35B', provider: 'llama-swap' };
-const qwen = { id: 'Qwen3.8-27b', name: 'Qwen 3.8 27B', provider: 'llama-swap' };
+const modelA = { id: 'model-a', name: 'Model A', provider: 'llama-swap' };
+const modelB = { id: 'model-b', name: 'Model B', provider: 'llama-swap' };
 const ALL = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
-const config = (model: typeof ornith, levels: string[], named: { provider: string | null; model: string | null } = { provider: null, model: null }, models = [ornith, qwen]) =>
+const config = (model: typeof modelA, levels: string[], named: { provider: string | null; model: string | null } = { provider: null, model: null }, models = [modelA, modelB]) =>
   ({ live: false, state: { model, thinkingLevel: 'medium' }, stats: null, thinking: { levels }, models: { models }, named });
 
 async function portal(page: Page, opts: { streamsOpen?: boolean; listHangs?: boolean } = {}) {
@@ -25,41 +26,38 @@ async function portal(page: Page, opts: { streamsOpen?: boolean; listHangs?: boo
   let picked = false;
   /** Every GET, by path, and how often. */
   const asked: Record<string, number> = {};
-  await page.route('**/api/**', async (route) => {
-    const p = new URL(route.request().url()).pathname;
-    const method = route.request().method();
+  // Every stream the page opens is in window.streams, with whether it has been closed. One not `open` stays pending.
+  await mockPortal(page, async ({ path: p, method }) => {
     if (method === 'GET') asked[p] = (asked[p] ?? 0) + 1;
-    let reply: unknown = {};
-    if (p === '/api/auth/status') reply = { authed: true, authRequired: false };
-    else if (p === '/api/sessions') reply = { sessions, executor: 'host' };
-    else if (/^\/api\/sessions\/\w+$/.test(p)) reply = sessions.find((s) => p.endsWith('/' + s.id));
+    if (p === '/api/sessions') return { sessions, executor: 'host' };
+    if (/^\/api\/sessions\/\w+$/.test(p)) return sessions.find((s) => p.endsWith('/' + s.id));
     // These answers never come: what their pills show is the first guess.
-    else if (p === '/api/sessions/b/config' || p === '/api/sessions/c2/config') return;
-    else if (p === '/api/sessions/a/config' && method === 'POST') {
+    if (p === '/api/sessions/b/config' || p === '/api/sessions/c2/config') return HANG;
+    if (p === '/api/sessions/a/config' && method === 'POST') {
       picked = true;
-      reply = { ok: true, applied: ['model'], state: { model: qwen, thinkingLevel: 'medium' } };
-    } else if (p === '/api/sessions/a/config' || p === '/api/sessions/a/models') {
+      return { ok: true, applied: ['model'], state: { model: modelB, thinkingLevel: 'medium' } };
+    }
+    if (p === '/api/sessions/a/config' || p === '/api/sessions/a/models') {
       // The model menu fetches the catalogue where the browser has none cached, and is answered as the config is.
-      reply = picked ? { ...config(qwen, ALL, { provider: 'llama-swap', model: qwen.id }), live: true } : config(ornith, ['off', 'medium']);
-    } else if (p === '/api/sessions/c/config') reply = config(ornith, ['off', 'medium'], { provider: 'llama-swap', model: null });
-    // The default is Qwen now, and pi's catalogue has not said its levels yet.
-    else if (p === '/api/sessions/d/config') reply = config(qwen, []);
-    // No catalogue yet: opening the model menu asks pi for it, which says the default is Qwen now.
-    else if (p === '/api/sessions/e/config') reply = config(ornith, ['off', 'medium'], undefined, []);
-    else if (p === '/api/sessions/e/models') reply = { ...config(qwen, ALL), live: true };
-    // Still Ornith, the default, but pi's catalogue has not answered yet.
-    else if (p === '/api/sessions/f/config') reply = config(ornith, []);
+      return picked ? { ...config(modelB, ALL, { provider: 'llama-swap', model: modelB.id }), live: true } : config(modelA, ['off', 'medium']);
+    }
+    if (p === '/api/sessions/c/config') return config(modelA, ['off', 'medium'], { provider: 'llama-swap', model: null });
+    // The default is Model B now, and pi's catalogue has not said its levels yet.
+    if (p === '/api/sessions/d/config') return config(modelB, []);
+    // No catalogue yet: opening the model menu asks pi for it, which says the default is Model B now.
+    if (p === '/api/sessions/e/config') return config(modelA, ['off', 'medium'], undefined, []);
+    if (p === '/api/sessions/e/models') return { ...config(modelB, ALL), live: true };
+    // Still Model A, the default, but pi's catalogue has not answered yet.
+    if (p === '/api/sessions/f/config') return config(modelA, []);
     // No default set in the portal: pi's own, which an idle chat cannot name.
-    else if (p === '/api/sessions/g/config') reply = config({ id: 'default', name: "pi's default", provider: 'llama-swap' }, []);
+    if (p === '/api/sessions/g/config') return config({ id: 'default', name: "pi's default", provider: 'llama-swap' }, []);
     // The browser has no connection for it: asked, and never answered.
-    else if (p.endsWith('/canvases') && opts.listHangs) return;
-    else if (p.endsWith('/canvases')) reply = [];
-    else if (p === '/api/workspaces') reply = { root: '/w', workspaces: [] };
-    else if (p === '/api/models') reply = { models: [], providers: {} };
-    await route.fulfill({ json: reply });
-  });
-  await page.addInitScript((open: boolean) => {
-    localStorage.setItem('pithagoras.setup', 'done');
+    if (p.endsWith('/canvases') && opts.listHangs) return HANG;
+    if (p.endsWith('/canvases')) return [];
+    if (p === '/api/workspaces') return { root: '/w', workspaces: [] };
+    if (p === '/api/models') return { models: [], providers: {} };
+  }, { streams: opts.streamsOpen === false ? 'pending' : 'open', settings: true });
+  await page.addInitScript(() => {
     // Whether the page is hidden, as the test says.
     (window as any).hide = (hidden: boolean) => {
       (window as any).hidden = hidden;
@@ -67,22 +65,7 @@ async function portal(page: Page, opts: { streamsOpen?: boolean; listHangs?: boo
     };
     Object.defineProperty(document, 'hidden', { get: () => !!(window as any).hidden });
     Object.defineProperty(document, 'visibilityState', { get: () => ((window as any).hidden ? 'hidden' : 'visible') });
-    // Every stream the page opens, and whether it has been closed. One not
-    // `open` stays pending, as when the browser has no connection to give it.
-    const streams: any[] = ((window as any).streams = []);
-    (window as any).EventSource = class {
-      url: string; closed = false; onmessage: any; onopen: any; onerror: any;
-      listeners: Record<string, ((e: any) => void)[]> = {};
-      constructor(url: string) { this.url = url; streams.push(this); if (open) setTimeout(() => this.onopen?.(), 0); }
-      addEventListener(name: string, fn: (e: any) => void) { (this.listeners[name] ??= []).push(fn); }
-      close() { this.closed = true; }
-      emit(name: string, data: unknown) {
-        const e = { data: JSON.stringify(data) };
-        if (name === 'message') this.onmessage?.(e);
-        else (this.listeners[name] ?? []).forEach((fn) => fn(e));
-      }
-    };
-  }, opts.streamsOpen ?? true);
+  });
   return { sessions, asked };
 }
 
@@ -171,9 +154,9 @@ test("a model picked in a chat on the default is not kept as the default's", asy
   await page.goto('/s/a');
   await expect(page.getByTitle('Thinking on / off')).toHaveText('thinking on');
   // Picked here: the chat is on a model of its own now, with seven levels.
-  await page.getByTitle('Ornith1.5-35b', { exact: true }).click();
+  await page.getByTitle('model-a', { exact: true }).click();
   await page.getByRole('button', { name: 'More models' }).click();
-  await page.getByTitle('Qwen3.8-27b', { exact: true }).click();
+  await page.getByTitle('model-b', { exact: true }).click();
   await expect(page.getByTitle('Effort / thinking level')).toHaveText('medium');
   // Chat b is still on the default, which switches on and off.
   await open(page, 'Second chat', 'b');
@@ -182,13 +165,13 @@ test("a model picked in a chat on the default is not kept as the default's", asy
 });
 
 test("a new default's control is not the old default's, when its levels are not known yet", async ({ page }) => {
-  await seen(page, { ':': ['off', 'medium'] }, { ':': 'llama-swap:Ornith1.5-35b' });
+  await seen(page, { ':': ['off', 'medium'] }, { ':': 'llama-swap:model-a' });
   await portal(page);
-  // Chat d is drawn first with the default's levels as last seen: Ornith's.
-  // Its answer names Qwen, the default now, with no levels yet. What was
+  // Chat d is drawn first with the default's levels as last seen: Model A's.
+  // Its answer names Model B, the default now, with no levels yet. What was
   // drawn is another model's, and stayed until the chat was run.
   await page.goto('/s/d');
-  await expect(page.locator('.composer-settings button').first()).toHaveText('Qwen 3.8 27B');
+  await expect(page.locator('.composer-settings button').first()).toHaveText('Model B');
   await expect(page.getByTitle('Effort / thinking level')).toHaveText('medium');
 });
 
@@ -197,31 +180,31 @@ test("the levels the model list reports are kept as the config's are", async ({ 
   await portal(page);
   await page.goto('/s/e');
   await expect(page.getByTitle('Thinking on / off')).toHaveText('thinking on');
-  // No catalogue: opening the menu asks pi, which says the default is Qwen now.
-  await page.getByTitle('Ornith1.5-35b', { exact: true }).click();
+  // No catalogue: opening the menu asks pi, which says the default is Model B now.
+  await page.getByTitle('model-a', { exact: true }).click();
   await expect(pill(page)).toHaveText('medium');
   await page.keyboard.press('Escape');
-  // Chat b follows the default too: it draws Qwen's seven levels, not Ornith's two.
+  // Chat b follows the default too: it draws Model B's seven levels, not Model A's two.
   await open(page, 'Second chat', 'b');
   await expect(page.locator('.composer-settings button').first()).toHaveText('default');
   await expect(page.getByTitle('Effort / thinking level')).toHaveText('medium');
 });
 
 test("the default's control stays while pi's catalogue has not answered", async ({ page }) => {
-  // Drawn from what was last seen for a chat on the default: Ornith's. Its
-  // answer names Ornith with no levels yet. The first paint named no model,
+  // Drawn from what was last seen for a chat on the default: Model A's. Its
+  // answer names Model A with no levels yet. The first paint named no model,
   // and was taken for another's: the right control became the full slider
   // whenever the catalogue was slow.
-  await seen(page, { ':': ['off', 'medium'] }, { ':': 'llama-swap:Ornith1.5-35b' });
+  await seen(page, { ':': ['off', 'medium'] }, { ':': 'llama-swap:model-a' });
   await portal(page);
   await page.goto('/s/f');
-  await expect(page.locator('.composer-settings button').first()).toHaveText('Ornith 1.5 35B');
+  await expect(page.locator('.composer-settings button').first()).toHaveText('Model A');
   await page.waitForTimeout(300);
   await expect(page.getByTitle('Thinking on / off')).toHaveText('thinking on');
 });
 
 test("pi's own default, which cannot be named, keeps what was drawn", async ({ page }) => {
-  await seen(page, { ':': ['off', 'medium'] }, { ':': 'llama-swap:Ornith1.5-35b' });
+  await seen(page, { ':': ['off', 'medium'] }, { ':': 'llama-swap:model-a' });
   await portal(page);
   await page.goto('/s/g');
   await expect(page.locator('.composer-settings button').first()).toHaveText("pi's default");

@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import { joinSamples } from "./samples";
 import { TimeStretch } from "./time-stretch";
 
@@ -14,6 +15,30 @@ const samplesOf = (bytes: Uint8Array, count: number) => {
   for (let i = 0; i < count; i++) samples[i] = view.getInt16(i * 2, true) / 32768;
   return samples;
 };
+
+/**
+ * Turns the bytes of a PCM stream into samples as they arrive. A 16-bit sample
+ * cut in two between chunks is held back until its other half comes; `cut` says
+ * whether the stream ended in the middle of one.
+ */
+function pcmDecoder() {
+  let carry: number | undefined;
+  return {
+    /** The samples this chunk completes, or none when it holds less than one. */
+    push(chunk: Uint8Array): Float32Array | undefined {
+      const bytes = new Uint8Array(chunk.length + (carry === undefined ? 0 : 1));
+      if (carry !== undefined) bytes[0] = carry;
+      bytes.set(chunk, carry === undefined ? 0 : 1);
+      carry = bytes.length % 2 ? bytes[bytes.length - 1] : undefined;
+      const count = Math.floor(bytes.length / 2);
+      return count ? samplesOf(bytes, count) : undefined;
+    },
+    get cut() { return carry !== undefined; },
+  };
+}
+
+/** Whatever engine made the audio: nothing here knows which one it was. */
+const incompleteAudio = () => new Error(t("The voice service returned incomplete audio"));
 
 /** A buffer holding `samples`, or none for none: a zero-length AudioBuffer is an error. */
 export function bufferOf(audio: BaseAudioContext, samples: Float32Array, sampleRate = 24000): AudioBuffer | undefined {
@@ -34,7 +59,8 @@ export async function readPcmStream(
   const stretcher = new TimeStretch(options.rate ?? 1);
   const chunks: Uint8Array[] = [];
   const stretched: Float32Array[] = [];
-  let length = 0, carry: number | undefined;
+  const decoder = pcmDecoder();
+  let length = 0;
   const cancelRead = () => { void reader.cancel().catch(() => {}); };
   signal.addEventListener('abort', cancelRead, { once: true });
   try {
@@ -43,25 +69,21 @@ export async function readPcmStream(
       signal.throwIfAborted();
       if (done) break;
       chunks.push(value); length += value.length;
-      const bytes = new Uint8Array(value.length + (carry === undefined ? 0 : 1));
-      if (carry !== undefined) bytes[0] = carry;
-      bytes.set(value, carry === undefined ? 0 : 1);
-      carry = bytes.length % 2 ? bytes[bytes.length - 1] : undefined;
-      const count = Math.floor(bytes.length / 2);
-      if (count) stretched.push(stretcher.push(samplesOf(bytes, count)));
+      const samples = decoder.push(value);
+      if (samples) stretched.push(stretcher.push(samples));
     }
   } finally {
     signal.removeEventListener('abort', cancelRead);
     await reader.cancel().catch(() => {}); reader.releaseLock();
   }
-  if (!length || carry !== undefined) throw new Error('Breeze returned incomplete PCM audio');
+  if (!length || decoder.cut) throw incompleteAudio();
   stretched.push(stretcher.flush());
   const bytes = new Uint8Array(length);
   let offset = 0;
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
   options.record?.(samplesOf(bytes, length / 2));
   const buffer = bufferOf(audio, joinSamples(stretched));
-  if (!buffer) throw new Error('Breeze returned incomplete PCM audio');
+  if (!buffer) throw incompleteAudio();
   signal.throwIfAborted();
   return buffer;
 }
@@ -79,12 +101,6 @@ export async function playAudioBuffer(buffer: AudioBuffer, audio: AudioContext, 
   });
 }
 
-/** Combined helper for consumers that only have one phrase. */
-export async function playPcmStream(body: ReadableStream<Uint8Array>, audio: AudioContext, destination: AudioNode, signal: AbortSignal, onStarted: (scheduledAt?:number) => void, options: SpeechOptions = {}): Promise<void> {
-  const buffer = await readPcmStream(body, audio, signal, options);
-  await playAudioBuffer(buffer, audio, destination, signal, onStarted);
-}
-
 /** Start from a small PCM cushion while the producer continues generating. */
 export async function preparePcmSpeech(body: ReadableStream<Uint8Array>, audio: AudioContext, signal: AbortSignal, options: SpeechOptions = {}) {
   const reader = body.getReader();
@@ -92,7 +108,8 @@ export async function preparePcmSpeech(body: ReadableStream<Uint8Array>, audio: 
   let spoken = 0;
   const pending: AudioBuffer[] = [];
   const sources = new Set<AudioBufferSourceNode>();
-  let destination: AudioNode | undefined, nextTime = 0, finished = false, carry: number | undefined;
+  const decoder = pcmDecoder();
+  let destination: AudioNode | undefined, nextTime = 0, finished = false;
   let buffered = 0, started = false;
   let ready!: () => void, rejectReady!: (error: unknown) => void;
   const initial = new Promise<void>((resolve, reject) => { ready = resolve; rejectReady = reject; });
@@ -122,21 +139,16 @@ export async function preparePcmSpeech(body: ReadableStream<Uint8Array>, audio: 
       while (true) {
         const { done, value } = await reader.read(); signal.throwIfAborted();
         if (done) break;
-        const bytes = new Uint8Array(value.length + (carry === undefined ? 0 : 1));
-        if (carry !== undefined) bytes[0] = carry;
-        bytes.set(value, carry === undefined ? 0 : 1);
-        carry = bytes.length % 2 ? bytes[bytes.length - 1] : undefined;
-        const count = Math.floor(bytes.length / 2);
-        if (!count) continue;
-        const samples = samplesOf(bytes, count);
-        spoken += count; options.record?.(samples);
+        const samples = decoder.push(value);
+        if (!samples) continue;
+        spoken += samples.length; options.record?.(samples);
         const buffer = bufferOf(audio, stretcher.push(samples));
         if (!buffer) continue;
         pending.push(buffer); buffered += buffer.duration;
         if (buffered >= 0.65) ready();
         pump();
       }
-      if (!spoken || carry !== undefined) throw new Error('Breeze returned incomplete PCM audio');
+      if (!spoken || decoder.cut) throw incompleteAudio();
       const rest = bufferOf(audio, stretcher.flush());
       if (rest) { pending.push(rest); buffered += rest.duration; }
       finished = true; ready(); pump();

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { HandsFreeVoice, type VoiceIO } from '../web/src/hands-free.js';
+import { COMPACTION_PHRASES, HandsFreeVoice, THINKING_PHRASES, type VoiceIO } from '../web/src/hands-free.js';
+import { addLocale, setLanguage } from '../web/src/i18n.js';
 import { samplesWav } from '../web/src/voice.js';
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; }
@@ -152,10 +153,14 @@ test('response audio plays while the send acknowledgement is still pending', asy
   accepted.resolve(); await tick(); voice.stop();
 });
 
-test('thinking gets one short queued phrase; fast replies suppress it', async () => {
+// The cue comes after a pause the voice sets itself. The test moves the clock past it instead of waiting it out.
+const PAST_THE_PAUSE = 1900;
+
+test('thinking gets one short queued phrase; fast replies suppress it', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
   const { voice, spoken } = setup({ agentRunning: () => true });
   voice.observe([reply('a10')]);
-  await new Promise(r => setTimeout(r, 1900)); await tick();
+  t.mock.timers.tick(PAST_THE_PAUSE); await tick();
   assert.equal(spoken.length, 1);
   assert.match(spoken[0], /think|consider|moment/i);
   voice.observe([reply('a10')]); await tick();
@@ -168,14 +173,15 @@ test('thinking gets one short queued phrase; fast replies suppress it', async ()
   assert.deepEqual(fast.spoken, ['A spoken answer.']);
 });
 
-test('compaction replaces thinking cues once and returns to normal status after ending', async () => {
+test('compaction replaces thinking cues once and returns to normal status after ending', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
   const phases: string[] = [];
   const { voice, spoken } = setup({ agentRunning: () => true, phase: phase => phases.push(phase) });
   voice.observe([reply('a10')]);
   voice.setCompacting(true);
   voice.setCompacting(true);
   await tick();
-  await new Promise(r => setTimeout(r, 1900));
+  t.mock.timers.tick(PAST_THE_PAUSE); await tick();
   assert.equal(spoken.length, 1);
   assert.match(spoken[0], /context/i);
   assert.equal(phases.at(-1), 'Compacting context');
@@ -186,7 +192,8 @@ test('compaction replaces thinking cues once and returns to normal status after 
   voice.stop();
 });
 
-test('compaction aborts an in-flight thinking cue', async () => {
+test('compaction aborts an in-flight thinking cue', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
   let cueSignal: AbortSignal | undefined;
   const { voice } = setup({ agentRunning: () => true, synthesize: async (text, signal) => {
     if (!text.includes('context')) {
@@ -196,12 +203,41 @@ test('compaction aborts an in-flight thinking cue', async () => {
     return async () => {};
   } });
   voice.observe([reply('a10')]);
-  await new Promise(r => setTimeout(r, 1900));
+  t.mock.timers.tick(PAST_THE_PAUSE); await tick();
   assert.ok(cueSignal);
   voice.setCompacting(true);
   assert.equal(cueSignal.aborted, true);
   await tick();
   voice.stop();
+});
+
+test('what it says while it waits is said in the portal\'s language', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const others = ["Context compaction is done. I'm ready to continue.", 'Context compaction stopped before it finished.', "I'm still compacting our conversation. Please wait a moment; I'll let you know when I'm ready."];
+  addLocale({ code: 'xx', name: 'Test', strings: Object.fromEntries([...THINKING_PHRASES, ...COMPACTION_PHRASES, ...others].map(text => [text, `xx: ${text}`])) });
+  setLanguage('xx');
+  try {
+    // A slow reply, then a compaction that is waited through, spoken over, and ends well; and one that does not.
+    const slow = setup({ agentRunning: () => true });
+    slow.voice.observe([reply('a10')]);
+    t.mock.timers.tick(PAST_THE_PAUSE); await tick();
+    assert.equal(slow.spoken.length, 1);
+    assert.ok(THINKING_PHRASES.map(text => `xx: ${text}`).includes(slow.spoken[0]), slow.spoken[0]);
+    slow.voice.setCompacting(true); await tick();
+    assert.ok(COMPACTION_PHRASES.map(text => `xx: ${text}`).includes(slow.spoken[1]), slow.spoken[1]);
+    slow.voice.speechStart(); await tick();
+    slow.voice.setCompacting(false); await tick();
+    // Told to wait when spoken over, and told it is done when it ends.
+    assert.deepEqual(slow.spoken.slice(2), [`xx: ${others[2]}`, `xx: ${others[0]}`]);
+    slow.voice.stop();
+    const failed = setup();
+    failed.voice.setCompacting(true); await tick();
+    failed.voice.setCompacting(false, false); await tick();
+    assert.equal(failed.spoken.at(-1), `xx: ${others[1]}`);
+    failed.voice.stop();
+  } finally {
+    setLanguage('system');
+  }
 });
 
 test('speech during compaction does not abort or send, even if compaction ends mid-utterance', async () => {

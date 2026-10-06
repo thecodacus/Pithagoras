@@ -1,16 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
+import { inProcessHome, scratch } from "./server-harness.mjs";
 
-const home = mkdtempSync(path.join(tmpdir(), "pithagoras-images-"));
-process.env.DATA_DIR = home;
-process.env.WORKSPACE_ROOT = path.join(home, "ws");
-process.env.PI_CODING_AGENT_DIR = path.join(home, "agent");
-mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
+const home = inProcessHome("pithagoras-images-");
 
-const { parseImages, saveImages, imagePath, loadImages, MAX_IMAGE_BYTES } = await import("../dist/prompt-images.js");
+const { parseImages, decodeBase64, saveImages, imagePath, loadImages, MAX_IMAGE_BYTES } = await import("../dist/prompt-images.js");
+const { parseEdit } = await import("../dist/api/images.js");
+const { MAX_PICTURE_BYTES } = await import("../dist/workspace-files.js");
 const { createSession, eventsSince } = await import("../dist/db.js");
 const { sessions, IMAGE_ROOT } = await import("../dist/session-manager.js");
 
@@ -34,8 +32,44 @@ test("what is not a picture, or too big, or too many, is refused", () => {
   assert.deepEqual(parseImages(undefined), []);
 });
 
+test("a picture that arrives as text is read by one set of rules, whether it is pasted, a mask, or what an endpoint sent", () => {
+  // Wrapped base64, as some tools write it.
+  const wrapped = PNG.replace(/(.{20})/g, "$1\r\n");
+  assert.equal(parseImages([{ data: wrapped }])[0].data, PNG);
+  assert.deepEqual(decodeBase64(`data:image/png;base64,${wrapped}`, 1024), { bytes: Buffer.from(PNG, "base64"), data: PNG });
+  assert.deepEqual(decodeBase64("!!! no !!!", 1024), { error: "invalid" });
+  assert.deepEqual(decodeBase64("", 1024), { error: "invalid" });
+
+  // The limit is the picture's size, not what its length can tell: one byte over is over.
+  const magic = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const sized = (n) => {
+    const bytes = Buffer.alloc(n);
+    magic.copy(bytes);
+    return bytes.toString("base64");
+  };
+  // Only short values are compared below: a failure that printed a 25 MB picture would take gigabytes to say so.
+  const outcome = (fn) => {
+    try {
+      const got = fn();
+      return Array.isArray(got) ? `${got.length} pictures` : typeof got === "string" ? got : "taken";
+    } catch (e) {
+      return e.message;
+    }
+  };
+  assert.equal(outcome(() => parseImages([{ data: sized(MAX_IMAGE_BYTES) }])), "1 pictures");
+  assert.equal(outcome(() => parseImages([{ data: sized(MAX_IMAGE_BYTES + 1) }])), "Picture 1 is over 5 MB");
+  assert.equal(decodeBase64(sized(MAX_IMAGE_BYTES + 1), MAX_IMAGE_BYTES).error, "large");
+
+  // The same for the mask of an edit.
+  const edit = (mask) => parseEdit({ prompt: "p", sources: ["0123456789ab"], mask });
+  assert.deepEqual(edit(wrapped).mask, Buffer.from(PNG, "base64"));
+  assert.equal(edit("not base64!"), "The mask is not base64");
+  // One byte over what an edit takes, 25 MB: the one big fixture of the test.
+  assert.equal(outcome(() => edit(sized(MAX_PICTURE_BYTES + 1))), "The mask is over 25 MB");
+});
+
 test("only names made here lead to a file, and only in that chat's folder", () => {
-  const root = mkdtempSync(path.join(tmpdir(), "images-"));
+  const root = scratch("images-");
   const [saved] = saveImages(root, "chat1", parseImages([{ data: PNG }]));
   assert.match(saved.name, /^[0-9a-f-]{36}\.png$/);
   assert.ok(imagePath(root, "chat1", saved.name));

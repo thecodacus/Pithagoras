@@ -1,24 +1,19 @@
 import { test, after, mock } from "node:test";
 import assert from "node:assert/strict";
-import { createServer, get, type IncomingMessage, type ServerResponse, type Server } from "node:http";
+import { createServer, get } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
+import { inProcessHome } from "./helpers.mts";
 
-const temp = mkdtempSync(path.join(tmpdir(), "pitha-gallery-"));
-// What it made is not left in the temporary folder, run after run.
-after(() => rmSync(temp, { recursive: true, force: true }));
-process.env.DATA_DIR = temp;
-process.env.SESSION_DIR = path.join(temp, "sessions");
-process.env.PI_CODING_AGENT_DIR = path.join(temp, "agent");
-process.env.AGENT_HOME = path.join(temp, "agent-home");
+const temp = inProcessHome("pitha-gallery-");
 
 const express = (await import("express")).default;
 const gen = await import("../server/src/image-generation.ts");
 const gallery = await import("../server/src/image-gallery.ts");
 const { imagesRouter } = await import("../server/src/api/images.ts");
 const { featuresRouter } = await import("../server/src/api/features.ts");
-const { GenerateImageTool, GENERATED_DIR } = await import("../server/src/pi/generate-image-tool.ts");
+const { GenerateImageTool } = await import("../server/src/pi/generate-image-tool.ts");
+const { GENERATED_DIR } = gallery;
 const { EditImageTool } = await import("../server/src/pi/edit-image-tool.ts");
 const { MAX_RUNNING } = await import("../server/src/image-jobs.ts");
 const { createSession, deleteSession, getDb } = await import("../server/src/db.ts");
@@ -1093,6 +1088,7 @@ test("the sidebar is told whether the page is there: on while an address is set 
   assert.deepEqual((await call("GET", "/features/flags")).body.images, { enabled: true }, "only changing is set up");
   const state = (await call("GET", "/features/images")).body.images;
   assert.equal(state.enabled, false);
+  assert.equal(state.ready, false, "nothing to make pictures with: only changing is set up");
   assert.equal(state.editReady, true);
   gen.saveImageGeneration({ editEnabled: false });
   assert.deepEqual((await call("GET", "/features/flags")).body.images, { enabled: false }, "an address for changes that is switched off is not a page");

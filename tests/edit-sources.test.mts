@@ -1,14 +1,11 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { MAX_SOURCES, MAX_SOURCES_BYTES, addSources, galleryIdsIn, moveTo, moved, refusal, roomFor, sourceName, weightOf } from "../web/src/edit-sources.ts";
 import type { GalleryPicture } from "../web/src/api.ts";
+import { inProcessHome } from "./helpers.mts";
 
-const temp = mkdtempSync(path.join(tmpdir(), "pitha-sources-"));
-after(() => rmSync(temp, { recursive: true, force: true }));
-process.env.DATA_DIR = temp;
+const temp = inProcessHome("pitha-sources-");
 const editing = await import("../server/src/image-editing.ts");
 
 let n = 0;

@@ -1,9 +1,21 @@
 import { VoiceAddon } from "./VoiceAddon";
 import { MemoryAddon, SubagentAddon } from "./FeatureAddons";
 import { useEffect, useId, useState } from "react";
-import { LuBot, LuBrain, LuCheck, LuGlobe, LuMic, LuRefreshCw, LuTrash2 } from "react-icons/lu";
+import { LuBot, LuBrain, LuCheck, LuGlobe, LuMic, LuRefreshCw } from "react-icons/lu";
 import { api, type BrowserStatus } from "../api";
+import { BrowserInstall } from "./BrowserInstall";
+import { LoadFailed } from "./SettingsUi";
 import { msg, t } from "../i18n";
+import { tabKeys } from "../tab-keys";
+
+/** The add-ons, in the order they are listed. */
+const addons = [
+  { id: 'browser', label: msg('Browser'), Icon: LuGlobe },
+  { id: 'voice', label: msg('Voice'), Icon: LuMic },
+  { id: 'subagents', label: msg('Subagents'), Icon: LuBot },
+  { id: 'memory', label: msg('Memory'), Icon: LuBrain },
+] as const;
+type Addon = typeof addons[number]['id'];
 
 /**
  * Optional pieces of the portal itself, as opposed to pi's packages.
@@ -13,14 +25,6 @@ import { msg, t } from "../i18n";
  * place to be discovered from — nothing was visible until it was already
  * running, so there was nowhere to press install.
  */
-const addons = [
-  { id: 'browser', label: msg('Browser'), Icon: LuGlobe },
-  { id: 'voice', label: msg('Voice'), Icon: LuMic },
-  { id: 'subagents', label: msg('Subagents'), Icon: LuBot },
-  { id: 'memory', label: msg('Memory'), Icon: LuBrain },
-] as const;
-type Addon = typeof addons[number]['id'];
-
 export function PortalExtensions({ onError }: { onError: (e: string) => void }) {
   const id = useId();
   const [selected, setSelected] = useState<Addon>('browser');
@@ -31,19 +35,11 @@ export function PortalExtensions({ onError }: { onError: (e: string) => void }) 
   };
   return <div>
     <p className="mb-4 text-xs text-fg-muted">{t("Install and manage the add-ons for your sessions.")}</p>
-    <div role="tablist" aria-label={t("Add-ons")} className="flex gap-1 rounded-xl border border-line bg-raised/40 p-1">
-      {addons.map(({ id: addon, label, Icon }, index) => <button
+    <div role="tablist" aria-label={t("Add-ons")} onKeyDown={tabKeys} className="flex gap-1 rounded-xl border border-line bg-raised/40 p-1">
+      {addons.map(({ id: addon, label, Icon }) => <button
         key={addon} id={`${id}-${addon}-tab`} type="button" role="tab"
         aria-selected={selected === addon} aria-controls={`${id}-${addon}-panel`}
         tabIndex={selected === addon ? 0 : -1} onClick={() => select(addon)}
-        onKeyDown={event => {
-          const next = event.key === 'ArrowRight' ? (index + 1) % addons.length
-            : event.key === 'ArrowLeft' ? (index + addons.length - 1) % addons.length
-            : event.key === 'Home' ? 0 : event.key === 'End' ? addons.length - 1 : null;
-          if (next === null) return;
-          event.preventDefault(); select(addons[next].id);
-          document.getElementById(`${id}-${addons[next].id}-tab`)?.focus();
-        }}
         className={`flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-2 sm:gap-2 sm:px-4 text-xs font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${selected === addon ? 'bg-accent/12 text-accent shadow-sm ring-1 ring-inset ring-accent/25' : 'text-fg-muted hover:bg-fg/5 hover:text-fg'}`}
       ><Icon className="hidden h-4 w-4 shrink-0 sm:block" />{t(label)}</button>)}
     </div>
@@ -59,32 +55,27 @@ export function PortalExtensions({ onError }: { onError: (e: string) => void }) 
 
 function BrowserAddon({ onError }: { onError: (e: string) => void }) {
   const [status, setStatus] = useState<BrowserStatus | null>(null);
-  const [password, setPassword] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
 
+  // Before the first read there is no page to put the error on, so the page says it; a poll that fails later goes to the banner.
   const load = () =>
     api
       .browser()
-      .then(setStatus)
-      .catch((e) => onError((e as Error).message));
+      .then((s) => {
+        setFailed(null);
+        setStatus(s);
+      })
+      .catch((e) => {
+        if (status) onError((e as Error).message);
+        else setFailed((e as Error).message);
+      });
 
   useEffect(() => {
     load();
   }, []);
 
-  const act = async (fn: () => Promise<unknown>) => {
-    setBusy(true);
-    try {
-      await fn();
-      await load();
-    } catch (e) {
-      onError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
   if (!status) {
+    if (failed) return <LoadFailed error={failed} onRetry={load} />;
     return (
       <p className="flex items-center gap-2 text-sm text-fg-subtle">
         <LuRefreshCw className="h-3.5 w-3.5 animate-spin" /> {t("Loading…")}
@@ -95,7 +86,6 @@ function BrowserAddon({ onError }: { onError: (e: string) => void }) {
   const i = status.install;
   const installed = i.container === "running" || i.container === "stopped";
   const dockerMode = i.mode === "docker";
-  const needsPassword = dockerMode && !status.config.hasPassword && !installed;
 
   return (
     <>
@@ -136,72 +126,9 @@ function BrowserAddon({ onError }: { onError: (e: string) => void }) {
           </div>
         </div>
 
-        {needsPassword && (
-          <div className="mt-3 flex flex-wrap gap-2">
-            <input
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder={t("a password for its web UI")}
-              className="min-w-[12rem] flex-1 rounded-lg border border-line bg-raised/60 px-2 py-1.5 text-xs outline-none focus:border-accent/60"
-            />
-            <button
-              onClick={async () => setPassword((await api.suggestBrowserPassword()).password)}
-              className="rounded-lg bg-fg/5 px-2.5 py-1.5 text-[11px] text-fg-muted transition hover:bg-fg/10"
-            >
-              {t("Suggest one")}
-            </button>
-          </div>
-        )}
-
-        {i.available && (
-          <div className="mt-3 flex flex-wrap gap-2">
-            {!installed && (
-              <button
-                disabled={busy || (needsPassword && !password.trim())}
-                onClick={() =>
-                  act(async () => {
-                    if (password.trim()) await api.setBrowserConfig({ password: password.trim() });
-                    await api.installBrowser();
-                    await api.connectBrowser();
-                  })
-                }
-                className="inline-flex items-center gap-1.5 rounded-lg bg-accent/12 px-3 py-1.5 text-xs text-accent ring-1 ring-inset ring-accent/25 transition hover:bg-accent/20 disabled:opacity-40"
-              >
-                {busy && <LuRefreshCw className="h-3.5 w-3.5 animate-spin" />}
-                {t("Install")}
-              </button>
-            )}
-            {installed && (
-              <>
-                <button
-                  disabled={busy}
-                  onClick={() =>
-                    act(() => (i.container === "running" ? api.stopBrowser() : api.startBrowser()))
-                  }
-                  className="rounded-lg bg-fg/5 px-3 py-1.5 text-xs text-fg-muted transition hover:bg-fg/10"
-                >
-                  {i.container === "running" ? t("Stop") : t("Start")}
-                </button>
-                <button
-                  disabled={busy}
-                  onClick={() =>
-                    act(async () => {
-                      await api.disconnectBrowser();
-                      await api.removeBrowser(false);
-                    })
-                  }
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-fg/5 px-3 py-1.5 text-xs text-fg-muted transition hover:bg-danger/10 hover:text-danger"
-                >
-                  <LuTrash2 className="h-3.5 w-3.5" /> {t("Remove")}
-                </button>
-              </>
-            )}
-          </div>
-        )}
-
-        {i.pulling.active && (
-          <p className="mt-2 font-mono text-[11px] text-fg-faint">{i.pulling.line}</p>
-        )}
+        <div className="mt-1">
+          <BrowserInstall status={status} reload={load} onError={onError} lifecycle />
+        </div>
         {installed && (
           <p className="mt-2 text-[11px] text-fg-faint">
             {t("Removing keeps the profile, so its logins are still there if you install it again.")}

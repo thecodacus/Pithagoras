@@ -1,23 +1,46 @@
 import { useEffect, useId, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { LuBot, LuBrain, LuCheck, LuDownload, LuImage, LuMinus, LuPlus, LuRefreshCw, LuTrash2, LuTriangleAlert, LuWandSparkles } from "react-icons/lu";
-import { api, type AvailableModel, type Features, type ImagesFeature, type ImagesFeaturePatch, type ManagedUnderstory, type SubagentFeature, type SubagentMode, type UnderstoryLlmChoice } from "../api";
+import { api, type AvailableModel, type Features, type ImagesFeaturePatch, type ManagedUnderstory, type SubagentMode, type UnderstoryLlmChoice } from "../api";
+import { MAX_SIZE, TIMEOUT_SECONDS } from "../../../server/src/image-settings";
 import { confirmDialog } from "./ConfirmDialog";
+import { useUnsavedDraft } from "./Modal";
+import { forgetNoteDrafts } from "../note-drafts";
 import { Select } from "./Select";
-import { SwitchRow, inputCls, primaryCls } from "./SettingsUi";
+import { LoadFailed, SwitchRow, inputCls, primaryCls } from "./SettingsUi";
 import { formatDateTime, msg, t, tp, tx } from "../i18n";
 
 /**
- * The opt-in features: off in a fresh install, one switch each. Both are
- * written into pi's own configuration — a package, an MCP server — so what
- * the switch does can also be seen, and undone, from Extensions and MCP.
+ * The opt-in add-ons: off in a fresh install, one switch each. Each is written
+ * into pi's own configuration — a package, an MCP server — so what the switch
+ * does can also be seen, and undone, from Extensions and MCP.
  */
-function useFeatures(onError: (e: string) => void) {
-  const [features, setFeatures] = useState<Features | null>(null);
+
+/** All the features at once, which is what Understory's tab reads: Subagents and Images each read their own. */
+function useFeatures() {
+  return useFirstRead(api.features);
+}
+
+/**
+ * A tab's first read. Until it has come there is nothing to show, so a failure
+ * is said where the tab would be, with a way to try again; a banner over a tab
+ * that spins on forever said it too quietly.
+ */
+function useFirstRead<T>(read: () => Promise<T>) {
+  const [value, setValue] = useState<T | null>(null);
+  const [failed, setFailed] = useState<Error | null>(null);
+  const retry = () =>
+    read().then(
+      (v) => {
+        setFailed(null);
+        setValue(v);
+      },
+      (e: Error) => setFailed(e),
+    );
   useEffect(() => {
-    api.features().then(setFeatures).catch((e: Error) => onError(e.message));
+    void retry();
   }, []);
-  return [features, setFeatures] as const;
+  return [value, setValue, failed, retry] as const;
 }
 
 /** What a switch did to the chats that are open. */
@@ -56,12 +79,7 @@ const MODES: { value: SubagentMode; label: string; detail: string }[] = [
 
 export function SubagentAddon({ onError }: { onError: (e: string) => void }) {
   // Its own, not with Understory's: a Docker that cannot be reached is not this tab's to wait on.
-  const [subagent, setSubagent] = useState<SubagentFeature | null>(null);
-  useEffect(() => {
-    api.subagentFeature().then((r) => setSubagent(r.subagent), (e: Error) => onError(e.message));
-  }, []);
-  const features = subagent && { subagent };
-  const setFeatures = (f: { subagent: SubagentFeature }) => setSubagent(f.subagent);
+  const [subagent, setSubagent, failed, retry] = useFirstRead(() => api.subagentFeature().then((r) => r.subagent));
   const [busy, setBusy] = useState(false);
   // Said in the language shown, whenever it is drawn.
   const [note, setNote] = useState<(() => string) | null>(null);
@@ -72,22 +90,22 @@ export function SubagentAddon({ onError }: { onError: (e: string) => void }) {
     api.allModels().then((r) => setModels(r.models)).catch(() => {});
   }, []);
 
-  if (!features) return <Loading />;
-  const s = features.subagent;
+  if (!subagent) return failed ? <ReadFailed error={failed} onRetry={retry} /> : <Loading />;
+  const s = subagent;
 
   const change = async (patch: { enabled?: boolean; mode?: SubagentMode; maxParallel?: number; model?: string }) => {
     setBusy(true);
     setNote(null);
     // The choice shows at once; what the server says after is what stays.
-    if (patch.mode || patch.maxParallel || patch.model) setFeatures({ ...features, subagent: { ...s, ...patch } });
+    if (patch.mode || patch.maxParallel || patch.model) setSubagent({ ...s, ...patch });
     try {
-      const { subagent, waiting } = await api.setSubagentFeature(patch);
-      setFeatures({ ...features, subagent });
+      const { subagent: saved, waiting } = await api.setSubagentFeature(patch);
+      setSubagent(saved);
       setNote(() => () => reloadNote(waiting));
       // A chat's model menu has the subagents' model while the tool is on.
       window.dispatchEvent(new Event("features-changed"));
     } catch (e) {
-      setFeatures(features);
+      setSubagent(s);
       onError((e as Error).message);
     } finally {
       setBusy(false);
@@ -267,12 +285,14 @@ function choiceOf(d: Draft): UnderstoryLlmChoice | null {
 const INSTALLING = msg("Installing Understory…");
 
 export function MemoryAddon({ onError }: { onError: (e: string) => void }) {
-  const [features, setFeatures] = useFeatures(onError);
+  const [features, setFeatures, failed, retry] = useFeatures();
   const [url, setUrl] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   // Said in the language shown, whenever it is drawn.
   const [note, setNote] = useState<(() => string) | null>(null);
+  // What is changed here and not saved is in no other place.
+  useUnsavedDraft(!!draft);
 
   // While it is installed, and its image pulled, what the daemon says.
   const watching = Boolean(features?.understory.managed.pulling.active) || busy === INSTALLING;
@@ -297,7 +317,7 @@ export function MemoryAddon({ onError }: { onError: (e: string) => void }) {
     };
   }, [watching]);
 
-  if (!features) return <Loading />;
+  if (!features) return failed ? <ReadFailed error={failed} onRetry={retry} /> : <Loading />;
   const u = features.understory;
   const m = u.managed;
   const form = draft ?? draftOf(m);
@@ -306,13 +326,7 @@ export function MemoryAddon({ onError }: { onError: (e: string) => void }) {
   const runsHere = m.container === "running" || m.container === "stopped";
   const foreign = m.container === "foreign";
   const address = url ?? u.url;
-  const origin = (() => {
-    try {
-      return new URL(u.url).origin;
-    } catch {
-      return null;
-    }
-  })();
+  const origin = originOf(u.url) || null;
 
   /** Runs one change, and takes what the server says the state is after it. */
   const act = async (what: string, run: () => Promise<{ understory: Features["understory"]; waiting?: number }>) => {
@@ -596,7 +610,12 @@ export function MemoryAddon({ onError }: { onError: (e: string) => void }) {
                       danger: true,
                       deletes: true,
                     });
-                    if (ok) await act(msg("Removing…"), () => api.removeUnderstory(true));
+                    // The notes are gone with it: an edit kept for one would come back over a note made again at its path.
+                    if (ok) await act(msg("Removing…"), async () => {
+                      const removed = await api.removeUnderstory(true);
+                      forgetNoteDrafts();
+                      return removed;
+                    });
                   }}
                   className="rounded-lg px-3 py-1.5 text-xs text-fg-subtle transition hover:bg-danger/10 hover:text-danger"
                 >
@@ -606,7 +625,7 @@ export function MemoryAddon({ onError }: { onError: (e: string) => void }) {
             )}
           </div>
           {m.pulling.active && <p className="font-mono text-[11px] text-fg-faint">{m.pulling.line}</p>}
-          {m.pulling.error && <p className="text-[11px] text-warn">{m.pulling.error}</p>}
+          {m.pulling.error && <p role="alert" className="text-[11px] text-warn">{m.pulling.error}</p>}
           {!runsHere && <p className="text-[11px] text-fg-faint">{t("Installing downloads its image the first time.")}</p>}
         </section>
       )}
@@ -693,8 +712,8 @@ interface ImagesDraft {
   apiKey: string;
 }
 
-/** What the server takes as a time limit, in seconds (TIMEOUT_SECONDS there). */
-const TIMEOUT = { default: 300, min: 30, max: 3600 };
+/** What the server takes as a time limit, in seconds. */
+const TIMEOUT = TIMEOUT_SECONDS;
 /** Empty is the default, as it is for the model and the size: it takes a saved limit away. */
 const timeoutOk = (typed: string) => typed.trim() === "" || (/^\d+$/.test(typed.trim()) && Number(typed) >= TIMEOUT.min && Number(typed) <= TIMEOUT.max);
 
@@ -708,8 +727,8 @@ interface ImagesEditDraft {
   apiKey: string;
 }
 
-/** What the server takes as a maximum size (MAX_SIZE there): empty is none. */
-const maxSizeOk = (typed: string) => typed.trim() === "" || /^[1-9]\d{1,4}x[1-9]\d{1,4}$/.test(typed.trim());
+/** What the server takes as a maximum size: empty is none. */
+const maxSizeOk = (typed: string) => typed.trim() === "" || MAX_SIZE.test(typed.trim());
 
 const originOf = (address: string): string => {
   try {
@@ -721,17 +740,16 @@ const originOf = (address: string): string => {
 
 export function ImagesAddon({ onError }: { onError: (e: string) => void }) {
   // Its own, not with Understory's: a Docker that cannot be reached is not this tab's to wait on.
-  const [images, setImages] = useState<ImagesFeature | null>(null);
+  const [images, setImages, failed, retry] = useFirstRead(() => api.imagesFeature().then((r) => r.images));
   const [draft, setDraft] = useState<ImagesDraft | null>(null);
   const [editDraft, setEditDraft] = useState<ImagesEditDraft | null>(null);
   const [busy, setBusy] = useState(false);
   // Said in the language shown, whenever it is drawn.
   const [note, setNote] = useState<(() => string) | null>(null);
-  useEffect(() => {
-    api.imagesFeature().then((r) => setImages(r.images), (e: Error) => onError(e.message));
-  }, []);
+  // What is changed here and not saved is in no other place.
+  useUnsavedDraft(!!draft || !!editDraft);
 
-  if (!images) return <Loading />;
+  if (!images) return failed ? <ReadFailed error={failed} onRetry={retry} /> : <Loading />;
   const form = draft ?? { baseUrl: images.baseUrl, model: images.model, size: images.size, timeout: String(images.timeoutSeconds), apiKey: "" };
   const edit = (patch: Partial<ImagesDraft>) => setDraft({ ...form, ...patch });
   const editForm = editDraft ?? { baseUrl: images.editBaseUrl, model: images.editModel, maxSize: images.editMaxSize, apiKey: "" };
@@ -1009,6 +1027,14 @@ export function ImagesAddon({ onError }: { onError: (e: string) => void }) {
         </p>
       )}
       {note && !busy && <p role="status" className="text-xs text-fg-muted">{note()}</p>}
+    </div>
+  );
+}
+
+function ReadFailed({ error, onRetry }: { error: Error; onRetry: () => unknown }) {
+  return (
+    <div className="mt-4">
+      <LoadFailed error={error} onRetry={onRetry} />
     </div>
   );
 }

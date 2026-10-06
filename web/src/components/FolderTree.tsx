@@ -187,8 +187,9 @@ export function FolderTree<S extends { status: SessionStatus }>({
                 <span className="truncate font-medium">{folderName(f)}</span>
               </button>
               {running && <StatusDot status="running" bare />}
-              <span className="shrink-0 px-1 text-[11px] tabular-nums text-fg-faint" aria-label={tp(f.sessions.length, "{n} chat", "{n} chats")}>
-                {f.sessions.length}
+              <span className="shrink-0 px-1 text-[11px] tabular-nums text-fg-faint">
+                <span aria-hidden>{f.sessions.length}</span>
+                <span className="sr-only">{tp(f.sessions.length, "{n} chat", "{n} chats")}</span>
               </span>
               {extra?.(f)}
               {onNewChat && f.path !== null && (
@@ -223,7 +224,7 @@ const SORTS: { value: FolderSort; label: string }[] = [
 ];
 
 /** How the chats are listed: by folder or as one list, and the folders in which order. */
-export function FolderControls({
+function FolderControls({
   grouping,
   sort,
   onGrouping,

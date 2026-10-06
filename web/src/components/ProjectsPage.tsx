@@ -1,14 +1,15 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { LuBlocks, LuFileText, LuFolderGit2, LuFolderKanban, LuPlus, LuTrash2 } from "react-icons/lu";
 import { PageHeader } from "./PageHeader";
 import { RowsSkeleton } from "./Skeleton";
-import { api, type Project, type ProjectContents, type Session } from "../api";
+import { api, ApiError, type Project, type ProjectContents, type Session } from "../api";
 import { deleteAsking, unsavedNotes } from "../unsaved";
 import { bytesLabel, slugify } from "../projects";
 import { within } from "../paths";
 import { when } from "../time";
 import { confirmDialog } from "./ConfirmDialog";
 import { Modal } from "./Modal";
+import { LoadFailed, inputCls, primarySmCls } from "./SettingsUi";
 import { ToolSwitches } from "./ToolSwitches";
 import { isEnter } from "../shortcuts";
 import { t, tp, tx } from "../i18n";
@@ -41,22 +42,32 @@ export function ProjectsPage({
   const [editing, setEditing] = useState<Project | null>(null);
   const [toolsOf, setToolsOf] = useState<Project | null>(null);
 
-  const load = useCallback(() => {
-    api
-      .projects()
-      .then((r) => {
-        setProjects(r.projects);
-        setRoot(r.root);
-      })
-      .catch((e) => setError((e as Error).message));
-  }, []);
+  /** Why the first read failed: until there is a list, that is said where the list would be. */
+  const [failed, setFailed] = useState<string | null>(null);
+  const had = useRef(false);
+
+  const load = useCallback(
+    () =>
+      api
+        .projects()
+        .then((r) => {
+          had.current = true;
+          setFailed(null);
+          setProjects(r.projects);
+          setRoot(r.root);
+        })
+        .catch((e) => (had.current ? setError((e as Error).message) : setFailed((e as Error).message))),
+    [],
+  );
   // Also when the chats change: the counts and the "last active" are theirs.
   // The list is a new array on every poll, and a running chat changes its
   // timestamp on every one. What the server counts is only which chats there
   // are and where, so that is what is compared; "last active" is worked out
   // here from the list itself.
   const chats = sessions.map((s) => `${s.id}:${s.workspace}`).join("|");
-  useEffect(load, [load, chats]);
+  useEffect(() => {
+    void load();
+  }, [load, chats]);
 
   const attempt = async (fn: () => Promise<void>) => {
     setError(null);
@@ -126,7 +137,8 @@ export function ProjectsPage({
       title: lost
         ? t("Delete the project \"{name}\" and its unsaved work?", { name: p.name })
         : t("Delete the project \"{name}\"?", { name: p.name }),
-      message: [...git, going, t("This cannot be undone.")].join(" ") + stranded,
+      // The jobs go whether or not there are any: how many is not asked, and what is running is not the chats' alone.
+      message: [...git, going, t("The background jobs running in its folder, a dev server for example, are stopped too."), t("This cannot be undone.")].join(" ") + stranded,
       confirmLabel: risky ? t("Delete anyway") : t("Delete project"),
       danger: true,
       // Asked whatever Settings says: the server refuses without it, and what is lost has no copy.
@@ -150,17 +162,23 @@ export function ProjectsPage({
             action={
               <button
                 onClick={() => setCreating(true)}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-accent/12 px-3 py-1.5 text-sm text-accent ring-1 ring-inset ring-accent/25 hover:bg-accent/20"
+                className={primarySmCls}
               >
                 <LuPlus className="h-4 w-4" /> {t("New project")}
               </button>
             }
           />
 
-          {error && <p className="mt-3 rounded-lg bg-danger/10 px-3 py-2 text-xs text-danger">{error}</p>}
+          {error && <p role="alert" className="mt-3 rounded-lg bg-danger/10 px-3 py-2 text-xs text-danger">{error}</p>}
 
           {projects === null ? (
-            <RowsSkeleton />
+            failed ? (
+              <div className="mt-4">
+                <LoadFailed error={failed} onRetry={load} />
+              </div>
+            ) : (
+              <RowsSkeleton />
+            )
           ) : (
             <ul className="stagger-in mt-4 space-y-1">
               {projects.length === 0 && (
@@ -301,8 +319,6 @@ export function ProjectsPage({
   );
 }
 
-const FIELD = "w-full rounded-lg border border-line bg-raised/60 px-3 py-2 text-sm outline-none placeholder:text-fg-faint focus:border-accent/60";
-
 function NewProject({
   root,
   onClose,
@@ -338,16 +354,17 @@ function NewProject({
       title={t("New project")}
       subtitle={t("A folder of its own, with instructions the agent follows in it")}
       onClose={onClose}
+      unsaved={!busy && (!!name.trim() || !!instructions.trim() || toolsOff !== undefined)}
       footer={
         <div className="flex items-center justify-end gap-2">
-          {error && <p className="mr-auto text-xs text-danger">{error}</p>}
+          {error && <p role="alert" className="mr-auto text-xs text-danger">{error}</p>}
           <button onClick={onClose} className="rounded-lg px-3 py-1.5 text-sm text-fg-muted hover:bg-fg/5">
             {t("Cancel")}
           </button>
           <button
             onClick={submit}
             disabled={!slug || busy}
-            className="rounded-lg bg-accent/12 px-3 py-1.5 text-sm text-accent ring-1 ring-inset ring-accent/25 hover:bg-accent/20 disabled:opacity-40"
+            className={primarySmCls}
           >
             {busy ? t("Creating…") : t("Create and open")}
           </button>
@@ -362,7 +379,7 @@ function NewProject({
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => isEnter(e) && submit()}
           placeholder={t("Cool Project")}
-          className={`${FIELD} mt-1`}
+          className={`${inputCls} mt-1`}
         />
       </label>
       {name.trim() && (
@@ -377,7 +394,7 @@ function NewProject({
           onChange={(e) => setInstructions(e.target.value)}
           rows={8}
           placeholder={t("What this project is, and how the agent should work in it.")}
-          className={`${FIELD} mt-1 resize-y font-mono text-xs`}
+          className={`${inputCls} mt-1 resize-y font-mono text-xs`}
         />
       </label>
       {/* Shut, like the sections of the voice settings: most projects start with
@@ -407,28 +424,39 @@ function Instructions({
 }) {
   const [text, setText] = useState<string | null>(null);
   const [saved, setSaved] = useState("");
+  // When the file was read: the agent writes AGENTS.md too, and a save from an older copy must not replace what it wrote since.
+  const [readAt, setReadAt] = useState(0);
+  const [changed, setChanged] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    api
+  const load = useCallback(() => {
+    return api
       .projectInstructions(project.name)
       .then((r) => {
         setText(r.text);
         setSaved(r.text);
+        setReadAt(r.mtime);
+        setChanged(false);
+        setError(null);
       })
       .catch((e) => setError((e as Error).message));
   }, [project.name]);
 
-  const save = async () => {
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const save = async (overwrite = false) => {
     if (text === null || busy) return;
     setBusy(true);
     setError(null);
     try {
-      await api.setProjectInstructions(project.name, text);
+      await api.setProjectInstructions(project.name, text, overwrite ? undefined : readAt);
       onSaved();
     } catch (e) {
-      setError((e as Error).message);
+      if (e instanceof ApiError && e.status === 409) setChanged(true);
+      else setError((e as Error).message);
       setBusy(false);
     }
   };
@@ -438,16 +466,17 @@ function Instructions({
       title={t("Instructions · {name}", { name: project.name })}
       subtitle={t("Saved as AGENTS.md in the folder — edit it there too if you like")}
       onClose={onClose}
+      unsaved={text !== null && text !== saved && !busy}
       footer={
         <div className="flex items-center justify-end gap-2">
-          {error && <p className="mr-auto text-xs text-danger">{error}</p>}
+          {error && <p role="alert" className="mr-auto text-xs text-danger">{error}</p>}
           <button onClick={onClose} className="rounded-lg px-3 py-1.5 text-sm text-fg-muted hover:bg-fg/5">
             {t("Cancel")}
           </button>
           <button
-            onClick={save}
+            onClick={() => void save()}
             disabled={text === null || text === saved || busy}
-            className="rounded-lg bg-accent/12 px-3 py-1.5 text-sm text-accent ring-1 ring-inset ring-accent/25 hover:bg-accent/20 disabled:opacity-40"
+            className={primarySmCls}
           >
             {busy ? t("Saving…") : t("Save")}
           </button>
@@ -458,6 +487,17 @@ function Instructions({
         <p className="py-8 text-center text-sm text-fg-subtle">{error ? "" : t("Loading…")}</p>
       ) : (
         <>
+          {changed && (
+            <div role="alert" className="mb-2 flex flex-wrap items-center gap-2 rounded-lg bg-warn/10 px-3 py-1.5 text-xs text-warn">
+              <span className="min-w-0 flex-1">{t("This file changed after you opened it.")}</span>
+              <button onClick={() => void load()} className="rounded px-1.5 py-0.5 underline hover:text-fg">
+                {t("Load the new version")}
+              </button>
+              <button onClick={() => void save(true)} className="rounded px-1.5 py-0.5 underline hover:text-fg">
+                {t("Save mine anyway")}
+              </button>
+            </div>
+          )}
           <textarea
             autoFocus
             aria-label={t("Project instructions")}
@@ -465,7 +505,7 @@ function Instructions({
             onChange={(e) => setText(e.target.value)}
             rows={14}
             placeholder={t("What this project is, and how the agent should work in it.")}
-            className={`${FIELD} resize-y font-mono text-xs`}
+            className={`${inputCls} resize-y font-mono text-xs`}
           />
           <p className="mt-2 text-[11px] text-fg-subtle">
             {tx("Chats started after saving pick this up. One already open does after {command}. Leave it empty to remove the file.", { command: <code>/reload</code> })}

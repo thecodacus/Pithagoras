@@ -96,6 +96,9 @@ export function toggleOpen(open: string[], source: string): string[] {
   return open.includes(source) ? open.filter((s) => s !== source) : [...open, source];
 }
 
+/** Where a group of tools comes from, as it is: a package's spec, or what the portal brings itself, in words. */
+export const sourceName = (source: string): string => (source === BUILT_IN ? t(BUILT_IN) : source === PICTURES ? t("Images") : source);
+
 /**
  * What a group is called on the page.
  *
@@ -105,13 +108,9 @@ export function toggleOpen(open: string[], source: string): string[] {
  * address is still there, under the package in the extensions list and in the
  * heading's tooltip.
  */
-/** Where a group of tools comes from, as it is: a package's spec, or what the portal brings itself, in words. */
-export const sourceName = (source: string): string => (source === BUILT_IN ? t(BUILT_IN) : source === PICTURES ? t("Images") : source);
-
 export function displayName(source: string, names: Record<string, string> = {}): string {
   const given = names[source]?.trim();
   if (given) return given;
-  if (source === BUILT_IN) return t(BUILT_IN);
-  if (source === PICTURES) return t("Images");
+  if (source === BUILT_IN || source === PICTURES) return sourceName(source);
   return source.replace(/^@[^/]+\//, "") || source;
 }

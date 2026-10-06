@@ -1,15 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import path from "node:path";
+import { inProcessHome } from "./server-harness.mjs";
 
 // An install that already has conversations in it, opened the way a server
 // opens it after an upgrade: the database first, the tools later.
-const home = mkdtempSync(path.join(tmpdir(), "pithagoras-upgrade-"));
-process.env.DATA_DIR = home;
-process.env.PI_CODING_AGENT_DIR = path.join(home, "agent");
-mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
+const home = inProcessHome("pithagoras-upgrade-");
 writeFileSync(
   path.join(process.env.PI_CODING_AGENT_DIR, "mcp.json"),
   JSON.stringify({ mcpServers: { browser: {} } })

@@ -1,10 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
+import { inProcessHome } from "./server-harness.mjs";
 
-process.env.DATA_DIR = mkdtempSync(path.join(tmpdir(), "pithagoras-reload-"));
+inProcessHome("pithagoras-reload-");
 
 const { SdkPiClient } = await import("../dist/pi/sdk-client.js");
 

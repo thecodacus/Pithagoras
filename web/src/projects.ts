@@ -1,14 +1,8 @@
-/** Mirrors the server's slugify so the preview matches the folder that gets made. */
-export function slugify(input: string): string {
-  return input
-    .normalize("NFKD")
-    .replace(/[̀-ͯ]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/-{2,}/g, "-")
-    .replace(/^[-._]+|[-._]+$/g, "")
-    .slice(0, 64);
-}
+/**
+ * The server's own module, so that the preview of a project's folder is the
+ * folder that gets made.
+ */
+export { slugify } from "../../server/src/slug";
 
 export function bytesLabel(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;

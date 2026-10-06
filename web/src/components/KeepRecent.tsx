@@ -103,6 +103,12 @@ export function KeepRecent({
  *
  * All of this is module level rather than per component: it is one setting,
  * and the two places that offer it must not race each other either.
+ *
+ * `serialSaver` (serial-saver.ts) orders the saves of the other settings the
+ * same way, one saver to a component. This one is not built on it for two
+ * reasons: its queue has to be shared by both places, and a failed save does
+ * not drop the value waiting behind it here (the newest is still sent, and its
+ * own failure is the one told), where a saver gives up with the failure.
  */
 let queue: Promise<unknown> = Promise.resolve();
 let newest = 0;

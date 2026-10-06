@@ -40,7 +40,7 @@ export const folderName = (f: { kind: string; name: string; agent?: string }) =>
 export const HOME = "home";
 export const ELSEWHERE = "elsewhere";
 export const projectKey = (name: string) => `project:${name}`;
-export const agentKey = (id: string) => (id === "home" ? HOME : `agent:${id}`);
+const agentKey = (id: string) => (id === "home" ? HOME : `agent:${id}`);
 
 export type PlaceAgent = { id: string; name: string; home: string };
 
@@ -110,7 +110,7 @@ export function groupByFolder<S extends { workspace: string; updated_at: string 
 /** How the folders are ordered: by their latest chat, by name, or as they were put. */
 export type FolderSort = "recent" | "name" | "manual";
 
-export const FOLDER_SORTS: FolderSort[] = ["recent", "name", "manual"];
+const FOLDER_SORTS: FolderSort[] = ["recent", "name", "manual"];
 
 /**
  * The folders in `sort`'s order. By name, Home comes first, as the place

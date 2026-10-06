@@ -1,11 +1,23 @@
 import { randomBytes } from "node:crypto";
+import { existsSync, readdirSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { inlineBrowserScreenshot } from "./browser-screenshot.js";
 import { cleanBrowserSnapshot, isBrowserSnapshot } from "./browser-snapshot-format.js";
+import { bareRef } from "../browser/ref.js";
 import { listToolRules, recordAudit, useGrant, type ToolRule } from "../db.js";
 import { EDIT_IMAGE_TOOL } from "../image-generation.js";
 import { PORTAL_BROWSER_TOOLS } from "../tool-policy.js";
-// Only the name: a heartbeat's note is registered for heartbeats alone, and is how one says what it read.
-import { NOTE_TOOL } from "./heartbeat-names.js";
+import { isWithinText, pathBelow, realPath, realPathAhead } from "../within.js";
+import { agentsRoot, listAgents } from "../agents.js";
+import { workspaceRoot } from "../workspaces.js";
+import { PRIVATE_FILES } from "./context-files.js";
+import { loadedAt, loadedPlaces, type LoadedAs, type LoadedPlace } from "./loaded-from-folders.js";
+import { loadedByLinks } from "./loaded-links.js";
+// Only the names: a heartbeat's note is registered for heartbeats alone, and is how one says what it read.
+import { HEARTBEAT_ROLE, NOTE_TOOL } from "./heartbeat-names.js";
+import { runsAsPrimary } from "./runs-as-primary.js";
 
 /**
  * A blast-radius limiter for prompt injection.
@@ -35,6 +47,18 @@ import { NOTE_TOOL } from "./heartbeat-names.js";
 /** Commands whose output is somebody else's words. */
 const UNTRUSTED_COMMAND = /\b(himalaya|mutt|neomutt|notmuch|offlineimap|mbsync|curl|wget|lynx|w3m|ssh|scp)\b|\bgit\s+(?:clone|fetch|pull)\b|\b(?:npm|pnpm|yarn|pip3?|uv)\s+(?:install|add|sync)\b/;
 
+/**
+ * Does what this call returned carry somebody else's words? Mail and the web
+ * read through a command, an MCP server the portal does not control, and the
+ * browser, which reads pages anyone can write. The agent's own tools, a
+ * subagent's answer and a routine's included, do not mark the conversation.
+ */
+function untrustedResult(toolName: string, input: Record<string, unknown>): boolean {
+  if (toolName === "bash") return UNTRUSTED_COMMAND.test(cmd(input));
+  if (browserCall(toolName, input).isBrowser) return true;
+  return /^mcp(_|$)/.test(toolName);
+}
+
 interface Rule {
   name: string;
   why: string;
@@ -59,6 +83,68 @@ const PATH_DIRS = /(^|[^\w/])(\/data\/bin|\/usr\/local\/bin|\/usr\/bin|\/usr\/lo
 const PERSIST_PATHS = /(?:\/etc\/(?:cron\.[a-z]+|systemd\/system)|(?:~|\/[^\s]+)\/\.config\/(?:autostart|systemd\/user)|(?:~|\/[^\s]+)\/\.(?:bashrc|bash_profile|zshrc|zprofile|profile))(?=\/|[\s'"]|$)/;
 const writesFiles = (command: string) => /(>|\b(?:cp|mv|install|tee)\b)/.test(command);
 
+/**
+ * What a token or a credentials file is called, by its name and not by the
+ * letters: a path or a command that merely has them in it — a tokenizer, a
+ * page on credentials, design tokens — is no secret. A name can be one of
+ * `$GITHUB_TOKEN`, `.token`, `remote.origin.token`, `access_token.json`,
+ * `credentials`, `.git-credentials`, `google-credentials.yml`.
+ */
+const SECRET_NAMES = /(?:^|[/\s'"=*$.{])\.?(?:\w*[_-])?(?:token|(?:[\w-]*[_-])?credentials)(?:\.(?:json|txt|ya?ml))?(?=$|[\s'"*}])/i;
+
+/** Whether a call reads a place where secrets are kept: the command, or the path. */
+function readsCredentials(tool: string, input: Record<string, unknown>): boolean {
+  const where = tool === "bash" ? cmd(input) : target(input);
+  return /(auth\.json|\.secrets|\.env\b|id_(?:rsa|dsa|ecdsa|ed25519)|\.ssh\/|\.netrc)/i.test(where) || SECRET_NAMES.test(where);
+}
+
+/** The options git takes before the subcommand that read the next word as their value (the others, `--no-pager` or `-p`, stand alone). */
+const GIT_OPTIONS_WITH_VALUE = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env"]);
+
+/**
+ * `git push`, with whatever git's own options stand between: `git -C repo push`,
+ * `git -c color.ui=never push`, `git --git-dir=x --no-pager push`. A model writes
+ * them whenever the repository is not its working folder. Read word by word and not
+ * by one pattern: options before a subcommand can be told apart from it only by
+ * knowing which of them take a value, and a pattern for that backtracks without end.
+ */
+function pushesGit(command: string): boolean {
+  for (const found of command.matchAll(/\bgit\b/g)) {
+    const words = command.slice(found.index + 3).match(/(?:"[^"]*"|'[^']*'|[^\s"'])+/g) ?? [];
+    let at = 0;
+    while (at < words.length && words[at].startsWith("-")) at += GIT_OPTIONS_WITH_VALUE.has(words[at]) ? 2 : 1;
+    if (at < words.length && /^push(?![\w-])/.test(words[at])) return true;
+  }
+  return false;
+}
+
+/** curl's short flags that take a value, which swallows the rest of their group: in `-ofile.tar` the `f` is no flag. */
+const CURL_VALUE_FLAGS = "oAbcCeEHKmQrtuUwxXyYzW";
+
+/** Whether a short-flag group has one of `wanted` before a flag that takes the rest as its value: `-sd`, `-sSLd@file`, `-sfT`. */
+function hasShortFlag(command: string, wanted: string): boolean {
+  for (const group of command.matchAll(/(?:^|\s)-([A-Za-z]+)/g)) {
+    for (const flag of group[1]) {
+      if (wanted.includes(flag)) return true;
+      if (CURL_VALUE_FLAGS.includes(flag)) break;
+    }
+  }
+  return false;
+}
+
+/**
+ * curl or wget carrying data out: a body (`-d`, `-F`, `-T` alone or in a group such
+ * as `-sd`, `--data*`, `--form`, `--json`, `--upload-file`, `--post-data`,
+ * `--post-file`, `--body-data`, `--body-file`) or a method that has one. wget's
+ * short flags are not looked at: its `-d` is debug and its `-nd` no directories.
+ */
+function sendsData(command: string): boolean {
+  const withBody = /--(?:data|form|upload-file|json|post-data|post-file|body-data|body-file)\b/;
+  const withMethod = /(?:--request|--method)(?:\s+|=)["']?(?:POST|PUT|PATCH)\b|(?:^|\s)-[A-Za-z]*X\s*["']?(?:POST|PUT|PATCH)\b/i;
+  if (/\bcurl\b/.test(command) && (hasShortFlag(command, "dFT") || withBody.test(command) || withMethod.test(command))) return true;
+  return /\bwget\b/.test(command) && (withBody.test(command) || withMethod.test(command));
+}
+
 const RULES: Rule[] = [
   {
     name: "pipe-to-shell",
@@ -79,27 +165,17 @@ const RULES: Rule[] = [
   {
     name: "upload",
     why: "sending data out of the box",
-    hit: (tool, input) =>
-      tool === "bash" &&
-      /\b(curl|wget)\b/.test(cmd(input)) &&
-      /(\s-d\b|--data|\s-F\b|--form|--upload-file|\s-T\b|-X\s*(POST|PUT|PATCH)|--post-file|--json)/.test(
-        cmd(input),
-      ),
+    hit: (tool, input) => tool === "bash" && sendsData(cmd(input)),
   },
   {
     name: "read-credentials",
     why: "reading secrets it was not asked about",
-    hit: (tool, input) => {
-      const where = tool === "bash" ? cmd(input) : target(input);
-      return /(auth\.json|\.secrets|\.env\b|id_(?:rsa|dsa|ecdsa|ed25519)|\.ssh\/|credentials|\.netrc|token)/i.test(
-        where,
-      );
-    },
+    hit: readsCredentials,
   },
   {
     name: "publish",
     why: "pushing to a remote is not undoable from here",
-    hit: (tool, input) => tool === "bash" && /\bgit\s+push\b/.test(cmd(input)),
+    hit: (tool, input) => tool === "bash" && pushesGit(cmd(input)),
   },
   {
     name: "persist",
@@ -110,6 +186,11 @@ const RULES: Rule[] = [
       ((tool === "write" || tool === "edit") && PERSIST_PATHS.test(target(input))) ||
       (tool === "bash" && (/\b(crontab|systemd-run|at\s+now)\b/.test(cmd(input)) ||
         (PERSIST_PATHS.test(cmd(input)) && writesFiles(cmd(input))))),
+  },
+  {
+    name: "delegate",
+    why: "a subagent works without these rules, so what it is asked to do is not held to them",
+    hit: (tool) => tool === "subagent",
   },
 ];
 
@@ -127,7 +208,7 @@ const RULES: Rule[] = [
  */
 const MARKER = /<<<\/?untrusted:[0-9a-f]{0,32}>>>/gi;
 
-const deface = (text: string) => text.replace(MARKER, "[marker removed]");
+export const deface = (text: string) => text.replace(MARKER, "[marker removed]");
 
 /**
  * The same envelope for the portal's own browser tools, without the paragraph:
@@ -168,60 +249,12 @@ const envelope = (id: string) => ({
 const READ_ONLY = new Set(["read", "grep", "find", "ls", "ask_primary", NOTE_TOOL]);
 
 /**
- * Driving the agent's browser, in either of the two shapes the MCP adapter
- * offers: a directly registered tool named for its server, or the proxy tool
- * carrying the same thing as an argument.
- *
- * The browser is signed into the agent's own accounts, so a session holding it
- * can act as the agent anywhere it has a login. That is a capability, not a
- * read — it is off unless somebody turned it on.
- */
-/**
- * A snapshot prints refs as `[ref=f1e17]`, and pasting that in whole is the
- * obvious thing to do. Playwright reads a bracketed value as a CSS attribute
- * selector, matches nothing, and reports it as "does not match any elements" —
- * which reads like the ref expired, so the next move is to take another
- * snapshot and get the same result. Agents have burned whole sessions on it.
- *
- * Telling the model the convention did not hold. This normalises the argument
- * on the way past instead, which is deterministic.
- */
-/**
- * Playwright's own ref shape: frame then element, `f1e17`, or bare `e17`.
- * Distinctive enough to tell a ref from an attribute selector — nobody writes
- * `[e17]` meaning an element with an `e17` attribute.
- */
-const REF_TOKEN = /^(?:f\d+)?e\d+$/;
-
-/**
- * Peel off the decoration and keep it only if a ref is what is underneath.
- *
- * Shape-based rather than a list of known mistakes: the first version matched
- * `[ref=x]` exactly, the model moved to `[x]` the next day, and the same error
- * came back. Anything that does not reduce to a ref is returned exactly as it
- * arrived, so real selectors — `[disabled]`, `a[href="..."]`, `#id` — are
- * never touched.
- */
-function bareRef(value: string): string {
-  const stripped = value
-    .trim()
-    .replace(/^\[|\]$/g, "")
-    .trim()
-    .replace(/^["']|["']$/g, "")
-    .trim()
-    .replace(/^(?:aria-)?ref\s*=\s*/i, "")
-    .trim()
-    .replace(/^["']|["']$/g, "")
-    .trim();
-  return REF_TOKEN.test(stripped) ? stripped : value;
-}
-
-/**
  * Playwright's element argument, whatever shape it arrives in.
  *
  * `target` is current; `ref` was its name until @playwright/mcp changed the
  * signature, and a model that learned the old one keeps sending it. Both are
- * accepted here rather than failing on a difference of spelling.
+ * accepted here rather than failing on a difference of spelling. Refs are
+ * read as the portal's own browser tools read them (see bareRef).
  */
 function normaliseTarget(input: unknown): void {
   if (!input || typeof input !== "object") return;
@@ -235,12 +268,47 @@ function normaliseTarget(input: unknown): void {
   else if (typeof o.ref === "string") o.target = bareRef(o.ref);
   // fill_form carries one of these per field.
   if (Array.isArray(o.fields)) for (const field of o.fields) normaliseTarget(field);
+  // The MCP proxy takes its arguments as a JSON string as well, and the string
+  // is written back as one. One that does not parse is left as it is: the
+  // browser gate has already refused the call (see browserCall).
+  if (typeof o.args === "string") {
+    const parsed = parseArgs(o.args);
+    if (parsed) {
+      const before = JSON.stringify(parsed);
+      normaliseTarget(parsed);
+      if (JSON.stringify(parsed) !== before) o.args = JSON.stringify(parsed);
+    }
+  }
 }
 
+/** The arguments of a proxied call that came as a string: an object, or undefined when they are not one. */
+function parseArgs(text: string): Record<string, unknown> | undefined {
+  if (!text.trim()) return {};
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Driving the agent's browser, in either of the two shapes the MCP adapter
+ * offers: a directly registered tool named for its server, or the proxy tool
+ * carrying the same thing as an argument.
+ *
+ * The browser is signed into the agent's own accounts, so a session holding it
+ * can act as the agent anywhere it has a login. That is a capability, not a
+ * read — it is off unless somebody turned it on.
+ *
+ * `unreadable` is a browser call whose arguments came as a string that is not
+ * JSON: the adapter would parse them itself, and the gate cannot say where the
+ * call goes, so it does not let it through.
+ */
 function browserCall(
   toolName: string,
   input: Record<string, unknown>
-): { isBrowser: boolean; url?: string } {
+): { isBrowser: boolean; url?: string; unreadable?: boolean } {
   // Matched anywhere, not anchored. Playwright's own tools are browser_navigate,
   // browser_click and so on, so the server prefix puts the telling part in the
   // middle: browser_browser_navigate, playwright_browser_navigate. Anchoring
@@ -254,8 +322,9 @@ function browserCall(
   if (!direct && !viaProxy) return { isBrowser: false };
 
   // The URL, wherever this shape happens to put it.
-  const args = (input.args ?? input) as Record<string, unknown>;
-  const url = typeof args?.url === "string" ? args.url : undefined;
+  const args = typeof input.args === "string" ? parseArgs(input.args) : ((input.args ?? input) as Record<string, unknown>);
+  if (!args) return { isBrowser: true, unreadable: true };
+  const url = typeof args.url === "string" ? args.url : undefined;
   return { isBrowser: true, url };
 }
 
@@ -289,11 +358,29 @@ function hostAllowed(url: string, allow: string[]): boolean {
  */
 const CHAINING = /[;&|`\n<>]|\$\(/;
 
-/** Only `*` is special, so a pattern reads like a command rather than a regex. */
+const escapeRegExp = (c: string) => c.replace(/[.*+^${}()[\]\\?|]/g, "\\$&");
+
+/**
+ * Only `*` is special, so a pattern reads like a command rather than a regex.
+ * A backslash makes the next `*` or backslash itself, and any other backslash
+ * stays one.
+ */
 function globToRegExp(pattern: string): RegExp {
-  const escaped = pattern.replace(/[.+^${}()[\]\\?]/g, "\\$&").replace(/\*/g, "[\\s\\S]*");
-  return new RegExp(`^${escaped}$`);
+  let source = "";
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i];
+    if (c === "\\" && (pattern[i + 1] === "*" || pattern[i + 1] === "\\")) source += escapeRegExp(pattern[++i]);
+    else source += c === "*" ? "[\\s\\S]*" : escapeRegExp(c);
+  }
+  return new RegExp(`^${source}$`);
 }
+
+/**
+ * Text as a pattern that matches only itself. What somebody approves is that
+ * command, not every one it would fit as a glob: "always" for
+ * `rm -rf /tmp/build-*` is not "always" for `rm -rf /tmp/build- /home/me`.
+ */
+export const literalPattern = (text: string): string => text.replace(/[\\*]/g, "\\$&");
 
 /** What a rule is matched against: the command, or the path for file tools. */
 const subjectOf = (toolName: string, input: Record<string, unknown>) =>
@@ -353,31 +440,69 @@ export function rulePatterns(toolName: string, action: string): string[] {
  */
 const STDERR_IDIOM = /\s+2>(&1|\/dev\/null)$/;
 
+/**
+ * Where a path leads when that is not where it was written, as the rules name places, or undefined
+ * for one with no link in it, or one that cannot be placed (a relative path, with no folder to take
+ * it from). The folders the portal gives out may themselves be reached through a link, a data disk
+ * linked in: that is how it was set up, not a link somebody put in a project, so what leads inside
+ * them is named by the folder as it is spelled for the conversation.
+ */
+function ledTo(subject: string, workspace: string | undefined): string | undefined {
+  const typed = workspace === undefined ? (path.isAbsolute(subject) ? path.resolve(subject) : undefined) : askedPath(subject, workspace);
+  if (typed === undefined) return undefined;
+  const real = realPathAhead(typed);
+  if (real === typed) return undefined;
+  for (const base of [workspace, workspaceRoot()]) {
+    if (base === undefined) continue;
+    const inside = pathBelow(realPathAhead(base), real);
+    if (inside !== undefined) return path.join(path.resolve(base), inside);
+  }
+  return real;
+}
+
 export function ruleAllows(
   rules: ToolRule[],
   role: string,
   toolName: string,
   input: Record<string, unknown>,
-  personKey?: string
+  personKey?: string,
+  workspace?: string
 ): boolean {
-  const subjects = subjectsOf(toolName, input).map((s) => s.trim());
+  let subjects = subjectsOf(toolName, input).map((s) => s.trim());
   if (!subjects.length || subjects.some((s) => !s)) return false;
+  let leads = (_subject: string): string | undefined => undefined;
   if (toolName === "bash") {
     subjects[0] = subjects[0].replace(STDERR_IDIOM, "").trim();
     if (CHAINING.test(subjects[0])) return false;
+  } else if (toolName === EDIT_IMAGE_TOOL || target(input)) {
+    // A path is what it leads to, not how it was written: `*` in a rule for
+    // /srv/site/* must not reach /srv/site/../../root. A `..` that is left
+    // after tidying leads out of wherever the rule's place is, and so does a
+    // link in it: see below.
+    subjects = subjects.map((s) => path.posix.normalize(s));
+    if (subjects.some((s) => s.split("/").includes(".."))) return false;
+    leads = (subject) => ledTo(subject, workspace);
   }
-  // Each subject by some rule of its own, as the same calls one by one would be.
-  return subjects.every((subject) =>
-    rules.some(
-      (r) =>
-        (r.role === role || r.role === "all") &&
-        // A rule naming somebody applies to them alone: approving Priya's request
-        // must not quietly permit the same command for every colleague.
-        (!r.person_key || r.person_key === personKey) &&
-        r.tool === toolName &&
-        globToRegExp(r.pattern).test(subject)
-    )
-  );
+  const named = (subject: string) =>
+    rules.some((r) => ruleApplies(r, role, personKey) && r.tool === toolName && globToRegExp(r.pattern).test(subject));
+  // Each subject by some rule of its own, as the same calls one by one would be. A path written under a
+  // rule's folder that leads out of it through a link is not under the rule: where it leads is named as well.
+  return subjects.every((subject) => {
+    if (!named(subject)) return false;
+    const real = leads(subject);
+    return real === undefined || named(real);
+  });
+}
+
+/**
+ * Does a rule reach this speaker? One naming somebody applies to them alone,
+ * whatever their role is now: approving Priya's request must not permit the
+ * same command for every colleague, and her rule must not stop working when
+ * she is promoted. One for a role applies to everybody holding it.
+ */
+export function ruleApplies(rule: Pick<ToolRule, "role" | "person_key">, role: string, personKey?: string): boolean {
+  if (rule.person_key) return rule.person_key === personKey;
+  return rule.role === role || rule.role === "all";
 }
 
 /** A rule permitting this call, recorded so the log shows why it went through. */
@@ -386,12 +511,285 @@ function allowedByRule(
   toolName: string,
   input: Record<string, unknown>,
   key: string | undefined,
+  workspace: string | undefined,
   note: (kind: string, reason: string) => void
 ): boolean {
   const rules = listToolRules();
-  if (!ruleAllows(rules, role, toolName, input, key)) return false;
+  if (!ruleAllows(rules, role, toolName, input, key, workspace)) return false;
   note("allowed-by-rule", "A standing rule permits this");
   return true;
+}
+
+/** The tools that look at a path they are given, or at the folder the conversation is in when they are given none. */
+const PATH_READERS = new Set(["read", "grep", "find", "ls"]);
+
+/**
+ * Where pi's file tools would look for `asked`, worked out as pi works it out —
+ * `~`, a leading `@`, a file: URL and odd spaces included — so that what is
+ * checked is what is opened there. Not followed through links: see
+ * whereToolsLook. Undefined for a path that is no path.
+ */
+function askedPath(asked: string, workspace: string): string | undefined {
+  let text = asked.replace(/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, " ");
+  if (text.startsWith("@")) text = text.slice(1);
+  if (text === "~") text = os.homedir();
+  else if (text.startsWith("~/")) text = path.join(os.homedir(), text.slice(2));
+  if (/^file:\/\//.test(text)) {
+    try {
+      text = fileURLToPath(text);
+    } catch {
+      return undefined;
+    }
+  }
+  return path.resolve(workspace, text);
+}
+
+/**
+ * Where those tools really end up: links are followed, those at the end of the
+ * path and those in the middle of it, for a file that is not there yet as for
+ * one that is.
+ */
+function whereToolsLook(asked: string, workspace: string): string | undefined {
+  const resolved = askedPath(asked, workspace);
+  return resolved && realPathAhead(resolved);
+}
+
+/**
+ * Why somebody who is not the primary user may not have this read, or undefined
+ * when they may. Reading is all they can do, so it is held to what is theirs to
+ * see: nothing that is a secret, nothing outside the folder of this
+ * conversation, and not the primary user's private notes in it (see
+ * PRIVATE_FILES). A search over a folder that holds them is refused as well, as
+ * it would show their lines; listing names is not.
+ *
+ * Without a folder to hold it to, only the names are checked.
+ */
+function unreadable(toolName: string, input: Record<string, unknown>, workspace: string | undefined, alsoReadable: string[]): string | undefined {
+  if (readsCredentials(toolName, input)) return "it reads a place where secrets are kept";
+  const asked = target(input);
+  const priv = "it reads what is private to the primary user";
+  if (workspace === undefined) return PRIVATE_FILES.some((name) => path.basename(asked).toLowerCase() === name.toLowerCase()) ? priv : undefined;
+
+  const root = realPath(workspace) ?? path.resolve(workspace);
+  const where = whereToolsLook(asked || ".", workspace);
+  const open = [root, ...alsoReadable.map((dir) => realPath(dir) ?? path.resolve(dir))];
+  if (where === undefined || !open.some((dir) => isWithinText(dir, where))) return "it is outside the folder of this conversation";
+  for (const name of PRIVATE_FILES) {
+    // Both the file and where a link at its name leads: `where` has had its
+    // links followed, so a MEMORY.md that points at a note in the same folder is
+    // that note, and the note is what is private then.
+    const file = path.join(root, name);
+    const real = realPath(file) ?? file;
+    if (toolName === "read" && [file, real].some((own) => where.toLowerCase() === own.toLowerCase())) return priv;
+    if (toolName === "grep" && [file, real].some((own) => isWithinText(where, own)) && existsSync(file)) return priv;
+  }
+  return undefined;
+}
+
+/** The place as written and as it really is, which is not the same when a link is in the way. */
+const forms = (place: string): string[] => [...new Set([path.resolve(place), realPath(place) ?? path.resolve(place)])];
+
+/**
+ * Whether the portal and pi read the agent's own files out of `dir`, as they do
+ * from the folder of a conversation: an agent's home, one that was kept from an
+ * agent that is gone, and one that is not made yet, for the next agent of that
+ * name takes whatever it finds there up as its own; and any folder of a project,
+ * for a chat of the primary user may run in each of them. `notes/memory.md` in
+ * an agent's home is a note, and is not read.
+ */
+function readsOwnFilesFrom(dir: string, homes: string[]): boolean {
+  if (homes.includes(dir)) return true;
+  if (forms(workspaceRoot()).some((projects) => isWithinText(projects, dir))) return true;
+  return forms(agentsRoot()).some((agents) => {
+    const below = pathBelow(agents, dir);
+    return below !== undefined && below !== "" && !below.includes("/");
+  });
+}
+
+/** What a write to each of them becomes, in the words of the refusal. */
+const REFUSAL: Record<LoadedAs, string> = {
+  context: "it writes to the files the agent's own context is made of",
+  watch: "it writes to the file that tells the agent what to watch on its own",
+  "agent-name": "it writes to the file that says whose a kept folder is, and so which agent takes up what is in it",
+  instructions: "it writes to a place that pi loads the agent's instructions and extensions from",
+  tools: "it writes to a file that says which tool servers the agent starts, which run as processes of the portal",
+  code: "it writes to a place that the portal loads code from",
+};
+
+/**
+ * The folders a link at the name of a loaded file is looked for in, besides every
+ * folder of the projects (see loadedByLinks): those the primary user's own
+ * conversations and looks run in, which are an agent's home, any agent's, kept
+ * or not made yet, and the folder of this conversation.
+ */
+function foldersToLookIn(homes: string[]): string[] {
+  const folders = new Set(homes);
+  for (const root of forms(agentsRoot())) {
+    folders.add(root);
+    try {
+      for (const entry of readdirSync(root, { withFileTypes: true })) if (entry.isDirectory() || entry.isSymbolicLink()) folders.add(path.join(root, entry.name));
+    } catch {
+      // A folder that is not there has nothing in it.
+    }
+  }
+  return [...folders];
+}
+
+/** Written the way a place can differ from itself: the case a file system does not tell apart. */
+const lower = (text: string) => text.toLowerCase();
+
+/**
+ * Why a write to any of these places would put words, config or a process into
+ * what the portal, pi, the MCP adapter or the heartbeat load on their own, or
+ * undefined. What those are is said once, in loaded-from-folders.ts. A write is
+ * judged where it lands as it was asked for and where its links lead, for pi
+ * loads a file under the name it has in the folder, and a file written under a
+ * link goes where the link leads. It is compared with the places that are loaded,
+ * also as they really are: a place reached through a link, and every place a link
+ * in one of them leads to (see loadedByLinks).
+ *
+ * The agent's own files and the rest of what is read by name out of a folder a
+ * conversation runs in are held wherever such a folder is — any agent's home, one
+ * kept or not made yet, any folder of a project.
+ * `homes` is not given where there is no folder to hold it to, and then the names
+ * are held in every folder.
+ */
+function writesInstructions(places: string[], homes?: string[]): string | undefined {
+  const reads = homes && ((dir: string) => readsOwnFilesFrom(dir, homes));
+  const refusal = (held: LoadedPlace | undefined) => held && REFUSAL[held.as];
+  const holds = (list: LoadedPlace[]) => list.find((held) => places.some((where) => isWithinText(lower(held.path), lower(where))));
+  for (const where of places) {
+    const entry = loadedAt(where, reads);
+    if (entry) return REFUSAL[entry.as];
+  }
+  // As written, and then as it really is, which the second look reads off the disk: they differ where a link is in the way.
+  const asWritten = loadedPlaces().map((place): LoadedPlace => ({ ...place, path: path.resolve(place.path) }));
+  return refusal(holds(asWritten)) ?? refusal(holds(loadedByLinks({ folders: homes ? foldersToLookIn(homes) : [], trees: homes ? [realPath(workspaceRoot()) ?? workspaceRoot()] : [] })));
+}
+
+/**
+ * Why a call that is not a read may not run for somebody who is not the primary
+ * user even where a rule or an approval opens its tool, or undefined. A command
+ * is the agent's own, run as it: its paths cannot be followed through a shell,
+ * so what it names is all that is checked — a place secrets are kept, and the
+ * private files by name. A tool that writes to a path is held to what is loaded
+ * into a conversation as the agent's own words, for a write there is an
+ * instruction to it: see writesInstructions.
+ */
+export function unrunnable(toolName: string, input: Record<string, unknown>, workspace: string | undefined): string | undefined {
+  const asPrimary = runsAsPrimary(toolName);
+  if (asPrimary) return asPrimary;
+  if (readsCredentials(toolName, input)) return "it reads a place where secrets are kept";
+  if (toolName !== "bash") {
+    const asked = target(input);
+    if (!asked) return undefined;
+    if (workspace === undefined) return writesInstructions([path.resolve(asked)]);
+    const typed = askedPath(asked, workspace);
+    if (typed === undefined) return undefined;
+    // The folder of this conversation and every agent's home, as written and as they really are.
+    const homes = [workspace, ...listAgents().map((agent) => agent.home)].flatMap((home) => [path.resolve(home), realPath(home) ?? path.resolve(home)]);
+    return writesInstructions([typed, realPathAhead(typed)], homes);
+  }
+  const command = cmd(input).toLowerCase();
+  return PRIVATE_FILES.some((name) => command.includes(name.toLowerCase())) ? "it reads what is private to the primary user" : undefined;
+}
+
+/**
+ * The call an `action` stands for, as the guard reads a call: a command for bash,
+ * and for the other tools what the agent is told to write (see callSubject): the
+ * path, or for a tool that has none the JSON of its arguments. A text that is
+ * not that JSON is a path, so that nothing but a path is read as one.
+ */
+function callOf(toolName: string, action: string): Record<string, unknown> {
+  if (toolName === "bash") return { command: action };
+  return parseArgs(action) ?? { path: action };
+}
+
+/**
+ * Why approving this action would not make it run for somebody who is not the
+ * primary user, or undefined when it would. What the guard refuses a rule or an
+ * approval cannot open (see unrunnable), so asking the primary user for it would
+ * have them say yes to something that cannot happen.
+ */
+export function approvalCannotHelp(toolName: string, action: string, workspace: string | undefined, portalSessionId?: string): string | undefined {
+  if (toolName === EDIT_IMAGE_TOOL) return undefined;
+  // A read is never asked for: where it is allowed it needs no approval, and an approval does not open the rest.
+  if (PATH_READERS.has(toolName)) return "it is a read, which needs no approval where it is allowed and is held to the folder of this conversation where it is not";
+  const input = callOf(toolName, action);
+  const never = unrunnable(toolName, input, workspace);
+  if (never) return never;
+  // A conversation that has read something untrusted refuses a push, an upload, a subagent or a schedule after
+  // an approval as it did before it, and an approval spent on one would be gone.
+  const rule = portalSessionId ? taintRuleFor(portalSessionId, toolName, input) : undefined;
+  return rule ? `this conversation has read content from outside, and what it asks for is ${rule.why}` : undefined;
+}
+
+/** The text parts of a message's content, whichever way pi holds them. */
+const textsOf = (content: unknown): string[] =>
+  typeof content === "string"
+    ? [content]
+    : Array.isArray(content)
+      ? content.flatMap((part: any) => (part?.type === "text" && typeof part.text === "string" ? [part.text] : []))
+      : [];
+
+/**
+ * What a session's entries say it has read: a result that came wrapped as
+ * somebody else's words. A note of the portal's own, such as a routine's
+ * report, is wrapped as data (see wrapUntrusted) but does not mark the
+ * conversation.
+ */
+function sawUntrusted(entries: unknown): boolean {
+  if (!Array.isArray(entries)) return false;
+  return entries.some((entry: any) => {
+    if (entry?.type !== "message") return false;
+    return entry.message?.role === "toolResult" && textsOf(entry.message.content).some((text) => /^<<<untrusted:[0-9a-f]{16}>>>/.test(text));
+  });
+}
+
+/**
+ * Words that came from outside, wrapped as a tool result's are, for a message
+ * the portal writes into a conversation itself. Short, as a page's is: whoever
+ * hands it over has said what it is. The marker is a fresh one, and what is
+ * inside cannot end the block itself.
+ */
+export function wrapUntrusted(text: string): string {
+  const { open, close } = pageEnvelope(randomBytes(8).toString("hex"));
+  return `${open}\n${deface(text)}\n${close}`;
+}
+
+/**
+ * The taint of each running conversation, by the portal's session id, so that
+ * the portal can mark one that read something outside a tool call (see
+ * taintSession) and say whether the rules for a tainted one hold it now.
+ */
+const taints = new Map<string, { mark: () => void; holds: () => boolean }>();
+
+/**
+ * Marks a conversation as having read untrusted content, as a tool result that
+ * carried some would. For what reaches it another way, such as the report of a
+ * routine. False when no guard is running for it.
+ */
+export function taintSession(portalSessionId: string): boolean {
+  const taint = taints.get(portalSessionId);
+  taint?.mark();
+  return Boolean(taint);
+}
+
+/**
+ * The rule that would refuse this call in a conversation that has read something
+ * untrusted, when it has and the rules are enforced there; otherwise undefined.
+ */
+function taintRuleFor(portalSessionId: string, toolName: string, input: Record<string, unknown>): Rule | undefined {
+  return taints.get(portalSessionId)?.holds() ? RULES.find((rule) => rule.hit(toolName, input)) : undefined;
+}
+
+/**
+ * Lets go of a conversation's taint hook, which holds its whole pi in memory
+ * for as long as it is listed. The guard's own session_shutdown does it too;
+ * this is for a pi whose extensions never got to hear of the shutdown.
+ */
+export function forgetTaint(portalSessionId: string): void {
+  taints.delete(portalSessionId);
 }
 
 /** An ExtensionFactory — see pi's InlineExtension. One instance per session. */
@@ -415,25 +813,47 @@ export function guardExtension(
   browserNow: () => { allowed: boolean; allowlist: string[] } = () => ({
     allowed: false,
     allowlist: [],
-  })
+  }),
+  /**
+   * The folder this conversation works in, which what somebody who is not the
+   * primary user may read is held to. Without it only the names of the files
+   * and places are checked, not where a path leads.
+   */
+  workspace?: string,
+  /** Other places they may read as well: the skills the agent offers, which are instructions for anybody it serves. */
+  alsoReadable: string[] = []
 ) {
   return (pi: any): void => {
     // Per session, not global: a taint belongs to the conversation that read the
     // content, and this factory runs once per session.
     let tainted = false;
+    if (portalSessionId) {
+      const taint = { mark: () => { tainted = true; }, holds: () => tainted && enforceTaint };
+      taints.set(portalSessionId, taint);
+      // Only its own: a reload starts the next one before this one is gone.
+      pi.on("session_shutdown", () => { if (taints.get(portalSessionId) === taint) taints.delete(portalSessionId); });
+    }
+
+    // The factory runs again whenever pi reloads, and with it a restart or a
+    // relaunch: what was read stays in the conversation's history, so the taint
+    // is taken from there rather than forgotten.
+    pi.on("session_start", (event: any, ctx: any) => {
+      let found = false;
+      try {
+        found = sawUntrusted(ctx?.sessionManager?.getEntries?.());
+      } catch {
+        // A history that cannot be read is not evidence of anything.
+      }
+      // A new conversation has read nothing yet.
+      tainted = event?.reason === "new" ? found : tainted || found;
+    });
 
     pi.on("tool_result", (event: any) => {
       const compact = !event.isError && isBrowserSnapshot(event.toolName, event.input ?? {});
       const formatted = compact ? (event.content ?? []).map((part: any) =>
         part?.type === 'text' && typeof part.text === 'string' ? { ...part, text: cleanBrowserSnapshot(part.text) } : part,
       ) : event.content;
-      const source =
-        event.toolName === "bash" ? cmd(event.input ?? {}) : String(event.toolName ?? "");
-      // MCP tools reach servers the portal does not control, and the browser
-      // reads pages anyone can write, so their output is treated the same way
-      // as mail: someone else's words.
-      const untrusted =
-        UNTRUSTED_COMMAND.test(source) || /^mcp(_|$)/.test(source) || browserCall(event.toolName, event.input ?? {}).isBrowser;
+      const untrusted = untrustedResult(String(event.toolName ?? ""), event.input ?? {});
       if (!untrusted) return compact ? { content: formatted } : undefined;
 
       tainted = true;
@@ -468,8 +888,9 @@ export function guardExtension(
       const asBrowser = browserCall(event.toolName, event.input ?? {});
       if (asBrowser.isBrowser) {
         inlineBrowserScreenshot(event.toolName, event.input);
-        // Mutated in place — that is how pi takes an argument change.
-        normaliseTarget(event.input);
+        // Mutated in place — that is how pi takes an argument change. Not for
+        // the portal's own browser tools, which read a ref their own way.
+        if (!(PORTAL_BROWSER_TOOLS as readonly string[]).includes(event.toolName)) normaliseTarget(event.input);
         const browser = browserNow();
         if (!browser.allowed) {
           note("refused", "The browser is not enabled for this session");
@@ -479,6 +900,15 @@ export function guardExtension(
               "Refused: this session cannot drive the browser. It is enabled per session and " +
               "per routine, and nobody has enabled it here. Say so rather than looking for " +
               "another way to reach the page.",
+          };
+        }
+        if (asBrowser.unreadable) {
+          note("refused", "The arguments of a browser call could not be read");
+          return {
+            block: true,
+            reason:
+              "Refused: the arguments of this browser call are not valid JSON, so it cannot be " +
+              "checked against the browser allowlist. Send them as an object, or as JSON text.",
           };
         }
         if (asBrowser.url && !hostAllowed(asBrowser.url, browser.allowlist)) {
@@ -494,6 +924,9 @@ export function guardExtension(
         // being able to read back later.
         if (asBrowser.url) note("browsed", asBrowser.url);
       }
+      // The rule that refuses this call because the conversation has read something untrusted, if any.
+      // It refuses whatever allows the call, so a one-off approval is not spent on it first: see below.
+      const heldByTaint = tainted && enforceTaint ? RULES.find((r) => r.hit(event.toolName, event.input ?? {})) : undefined;
       // A one-off approval, spent here. Checked last, after the standing rules,
       // because it is the expensive kind of permission: somebody was asked.
       const granted = () => {
@@ -504,10 +937,41 @@ export function guardExtension(
         return ok;
       };
 
+      // What may be read is not everything a role that can only read could ask
+      // for: see unreadable. A heartbeat is the agent looking around for the
+      // person it works for, with nobody else speaking, and reads what its
+      // WATCH.md names wherever that is. A rule or an approval opens a tool, not
+      // the secrets and private notes: checked before either is used, so that a
+      // one-off approval is not spent on a call that is refused after all.
+      if (role !== "primary" && role !== HEARTBEAT_ROLE) {
+        const reads = PATH_READERS.has(event.toolName);
+        const why = reads
+          ? unreadable(event.toolName, event.input ?? {}, workspace, alsoReadable)
+          : READ_ONLY.has(event.toolName) ? undefined : unrunnable(event.toolName, event.input ?? {}, workspace);
+        if (why) {
+          console.warn(`[guard ${sessionId}] blocked ${event.toolName}: role ${role}, ${why}`);
+          note("refused", `Not permitted for a ${role}: ${why}`);
+          return {
+            block: true,
+            reason: reads
+              ? `Refused: ${why}. You are speaking with someone who is not your primary user, and ` +
+                `they may have you read what is in this conversation's folder — not the primary user's ` +
+                `private notes, anything outside it, or anything that holds a secret. Say so rather than ` +
+                `looking for another way to it.`
+              : `Refused: ${why}. You are speaking with someone who is not your primary user, and what ` +
+                `was allowed for them does not reach what the guard keeps from them: secrets, the ` +
+                `primary user's private notes, what is loaded as your own instructions or tools, and ` +
+                `what would run with your rights. Say so rather than looking for another way to it.`,
+          };
+        }
+      }
+
       if (
         role !== "primary" &&
         !READ_ONLY.has(event.toolName) &&
-        !allowedByRule(role, event.toolName, event.input ?? {}, key, note) &&
+        !allowedByRule(role, event.toolName, event.input ?? {}, key, workspace, note) &&
+        // Not an approval that the taint refuses after all: it is refused below, with its own reason, and keeps its use.
+        !heldByTaint &&
         !granted()
       ) {
         console.warn(`[guard ${sessionId}] blocked ${event.toolName}: role ${role}`);
@@ -523,16 +987,18 @@ export function guardExtension(
             `needs the primary user, and pass the request along — with the exact command as the ` +
             `action, so they can approve that and only that. If you have already asked about ` +
             `this, do not ask again: say you are waiting.` +
-            // The pictures of a list have no one path to write: say what the action is, so that it matches.
-            (event.toolName === EDIT_IMAGE_TOOL
-              ? ` For this call the actionTool is edit_image and the action is the path of each ` +
-                `picture, one to a line, in this order, exactly:\n${subject}`
-              : ""),
+            // What an approval is matched on is not always what the agent would write: the pictures of a list
+            // have no one path, and a call that names no path is matched on its arguments. Said, so that it matches.
+            (event.toolName === "bash"
+              ? ""
+              : ` For this call the actionTool is ${event.toolName} and the action is ` +
+                (event.toolName === EDIT_IMAGE_TOOL ? "the path of each picture, one to a line, in this order, exactly" : "exactly") +
+                `:\n${subject}`),
         };
       }
 
       if (!tainted) return undefined;
-      const rule = RULES.find((r) => r.hit(event.toolName, event.input ?? {}));
+      const rule = heldByTaint ?? RULES.find((r) => r.hit(event.toolName, event.input ?? {}));
       if (!rule) return undefined;
 
       // Recorded even when it does not block: "this ran with the guard off" is

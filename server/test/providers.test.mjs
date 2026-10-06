@@ -1,12 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
 import path from "node:path";
+import { inProcessHome } from "./server-harness.mjs";
 
-const dir = mkdtempSync(path.join(tmpdir(), "pi-agent-"));
-process.env.PI_CODING_AGENT_DIR = dir;
+inProcessHome("pi-agent-");
+const dir = process.env.PI_CODING_AGENT_DIR;
 const p = await import("../dist/providers.js");
 const read = (name) => JSON.parse(readFileSync(path.join(dir, name), "utf8"));
 
@@ -23,11 +23,11 @@ test("a server's models are read from each server's own shape", () => {
 test("a llama-swap alias is known by its own name, not by the name of the model it stands for", () => {
   // As llama-swap lists them: the router, and each preset behind it as an alias carrying the router's name.
   const listed = { data: [
-    { id: "llamacpp", name: "llama.cpp router (models.ini presets)", meta: { llamaswap: { type: "model", aliases: ["ornith-35b-128k"] } } },
-    { id: "ornith-35b-128k", name: "llama.cpp router (models.ini presets)", meta: { llamaswap: { type: "alias", modelID: "llamacpp" } } },
-    { id: "strata", name: "Strata — Qwen3.8-Flash-Next (2 GPUs, 64k)", meta: { llamaswap: { type: "model" } } },
+    { id: "llamacpp", name: "llama.cpp router (presets)", meta: { llamaswap: { type: "model", aliases: ["model-a-128k"] } } },
+    { id: "model-a-128k", name: "llama.cpp router (presets)", meta: { llamaswap: { type: "alias", modelID: "llamacpp" } } },
+    { id: "model-c", name: "Model C — Flash (2 GPUs, 64k)", meta: { llamaswap: { type: "model" } } },
   ] };
-  assert.deepEqual(p.parseModels(listed).map((m) => m.name ?? m.id), ["llama.cpp router (models.ini presets)", "ornith-35b-128k", "Strata — Qwen3.8-Flash-Next (2 GPUs, 64k)"]);
+  assert.deepEqual(p.parseModels(listed).map((m) => m.name ?? m.id), ["llama.cpp router (presets)", "model-a-128k", "Model C — Flash (2 GPUs, 64k)"]);
 });
 
 test("an address is made into the base pi wants", () => {
@@ -47,21 +47,21 @@ test("saving a server keeps what was written by hand, and the file stays private
   writeFileSync(path.join(dir, "models.json"), JSON.stringify({
     providers: {
       "llama-swap": { baseUrl: "http://gpu:8080/v1", api: "openai-completions", apiKey: "none", models: [
-        { id: "Ornith", name: "Ornith", reasoning: true, thinkingLevelMap: { off: "off", medium: "medium" }, contextWindow: 327680 },
+        { id: "model-a", name: "Model A", reasoning: true, thinkingLevelMap: { off: "off", medium: "medium" }, contextWindow: 327680 },
         { id: "Old" },
       ] },
       anthropic: { baseUrl: "https://proxy.example/v1" },
     },
     somethingElse: 1,
   }));
-  await p.saveProvider("llama-swap", { kind: "llama-swap", baseUrl: "http://gpu:8080", models: [{ id: "Ornith", contextWindow: 65536, reasoning: true }, { id: "New", input: ["text", "image"] }] });
+  await p.saveProvider("llama-swap", { kind: "llama-swap", baseUrl: "http://gpu:8080", models: [{ id: "model-a", contextWindow: 65536, reasoning: true }, { id: "New", input: ["text", "image"] }] });
   const file = read("models.json");
   assert.equal(file.somethingElse, 1);
   assert.deepEqual(file.providers.anthropic, { baseUrl: "https://proxy.example/v1" });
   const swap = file.providers["llama-swap"];
   assert.equal(swap.baseUrl, "http://gpu:8080/v1");
   assert.equal(swap.apiKey, "none");
-  assert.deepEqual(swap.models.map((m) => m.id), ["Ornith", "New"]);
+  assert.deepEqual(swap.models.map((m) => m.id), ["model-a", "New"]);
   assert.deepEqual(swap.models[0].thinkingLevelMap, { off: "off", medium: "medium" });
   assert.equal(swap.models[0].contextWindow, 65536);
   assert.equal(swap.models[0].name, undefined, "a name the form cleared is gone");
@@ -93,7 +93,7 @@ test("a bad name is refused before anything is written", async () => {
 test("a llama-server is asked for its models, and for the window it really gives", async () => {
   const server = createServer((req, res) => {
     res.setHeader("content-type", "application/json");
-    if (req.url === "/v1/models") return res.end(JSON.stringify({ data: [{ id: "qwen.gguf", meta: { n_ctx_train: 262144 } }] }));
+    if (req.url === "/v1/models") return res.end(JSON.stringify({ data: [{ id: "model-b-q4.gguf", meta: { n_ctx_train: 262144 } }] }));
     if (req.url === "/props") return res.end(JSON.stringify({ default_generation_settings: { n_ctx: 65536 }, modalities: { vision: true } }));
     res.statusCode = 404; res.end("{}");
   });
@@ -102,7 +102,7 @@ test("a llama-server is asked for its models, and for the window it really gives
   try {
     const found = await p.probeModels("llama-cpp", `127.0.0.1:${port}`);
     assert.equal(found.baseUrl, `http://127.0.0.1:${port}/v1`);
-    assert.deepEqual(found.models, [{ id: "qwen.gguf", contextWindow: 65536, input: ["text", "image"] }]);
+    assert.deepEqual(found.models, [{ id: "model-b-q4.gguf", contextWindow: 65536, input: ["text", "image"] }]);
     // A custom address without /v1 is tried again with it.
     assert.equal((await p.probeModels("custom", `http://127.0.0.1:${port}`)).baseUrl, `http://127.0.0.1:${port}/v1`);
   } finally {

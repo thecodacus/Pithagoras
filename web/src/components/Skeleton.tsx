@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { t } from "../i18n";
 /**
  * A list's rows, while the list is fetched: the page keeps its shape, and
@@ -16,6 +17,21 @@ export function RowsSkeleton({ rows = 4, label }: { rows?: number; label?: strin
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+/**
+ * The shape of a page while it is fetched, as a status that says what is
+ * loading in words a screen reader reads: a label on a `div` with no role is not
+ * read at all. The words come last, so that the spacing between the children is
+ * the page's own.
+ */
+export function SkeletonGroup({ label, className = "", children }: { label: string; className?: string; children: ReactNode }) {
+  return (
+    <div role="status" className={`skeleton-group ${className}`}>
+      {children}
+      <span className="sr-only">{label}</span>
     </div>
   );
 }

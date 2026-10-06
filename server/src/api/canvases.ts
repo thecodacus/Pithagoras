@@ -1,10 +1,10 @@
 import express from 'express';
-import { getDb } from '../db.js';
-import { persistCanvas, listCanvases, createCanvas, editCanvas, deleteCanvas } from '../canvases.js';
+import { getSession } from '../db.js';
+import { persistCanvas, listCanvases, createCanvas, editCanvas, deleteCanvas, restoreCanvas } from '../canvases.js';
 export function canvasesRouter() {
   const router=express.Router();
   router.use('/sessions/:sessionId/canvases', (req,res,next)=> {
-    if(!getDb().prepare('SELECT id FROM sessions WHERE id = ?').get(req.params.sessionId)) return res.status(404).json({error:'Session not found'});
+    if(!getSession(req.params.sessionId)) return res.status(404).json({error:'Session not found'});
     next();
   });
   router.get('/sessions/:sessionId/canvases', (req,res)=>res.json(listCanvases(String(req.params.sessionId))));
@@ -18,6 +18,10 @@ export function canvasesRouter() {
   });
   router.put('/sessions/:sessionId/canvases/:id',(req,res)=> {
     try { const {revision,title,content}=req.body??{};if(!Number.isInteger(revision)||typeof title!=='string'||typeof content!=='string') throw new Error('Revision, title and content required');res.json(editCanvas(String(req.params.sessionId),String(req.params.id),revision,title,content)); }
+    catch(e){res.status(409).json({error:(e as Error).message})}
+  });
+  router.post('/sessions/:sessionId/canvases/:id/restore',(req,res)=> {
+    try {const revision=req.body?.revision;if(!Number.isInteger(revision)) throw new Error('Revision required');res.json(restoreCanvas(String(req.params.sessionId),String(req.params.id),revision));}
     catch(e){res.status(409).json({error:(e as Error).message})}
   });
   router.delete('/sessions/:sessionId/canvases/:id',(req,res)=> {

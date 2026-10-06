@@ -1,15 +1,16 @@
 import { DEFAULT_VAD } from '../api';
 import { local, session } from '../safe-storage';
-import { VoiceProfiler } from '../voice-profile';
+import { VoiceProfiler, replyMarks } from '../voice-profile';
 import { VoiceProfile } from './VoiceProfile';
-import { activity } from '../transcript';
-import { useCallback, useEffect, useRef, useState } from "react";
+import type { Activity } from '../transcript';
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { voiceCue, type VoiceCue } from "../voice-cues";
 import { createPortal } from "react-dom";
 import { VoiceStage, type VoiceLevels } from "./VoiceStage";
 import { LuAudioLines, LuLoaderCircle, LuGauge } from "react-icons/lu";
 import type { MicVAD } from "@ricky0123/vad-web";
-import { api, type PortalEvent, type PromptOptions } from "../api";
+import { api, json, type PortalEvent, type PromptOptions } from "../api";
+import { micError } from "../mic-error";
 import type { Item } from "../transcript";
 import { LiveTranscription } from "../live-transcription";
 import { preparePcmSpeech, readPcmStream, playAudioBuffer, bufferOf } from "../pcm-stream";
@@ -19,7 +20,6 @@ import { asksToRepeat, couldAskToRepeat } from "../voice-commands";
 import { isImage, pending, type Attachment } from "../attachments";
 import { VOICE_RATES } from "./VoiceSettings";
 import { describe, matches, useKeyLabels, useKeybindings } from "../keybindings";
-import { samplesWav } from "../voice";
 import { HandsFreeVoice, type VoicePhase } from "../hands-free";
 import { t } from "../i18n";
 
@@ -29,7 +29,7 @@ const REPEAT_SECONDS = 120;
 type KeptPhrase = { samples: Float32Array[]; sampleRate: number; stretched?: { rate: number; samples: Promise<Float32Array>; signal: AbortSignal; ready?: boolean } };
 const seconds = (phrase: KeptPhrase) => phrase.samples.reduce((n, s) => n + s.length, 0) / phrase.sampleRate;
 
-export function VoiceControl({ canvasOpen, onCanvasMinimize, onCanvasToggle, sessionId, folder, items, running, onSend, onAbort, stageTarget, onModeChange, title, browserAvailable, browserActivity, terminalActivity, toolEvents }: {
+export function VoiceControl({ canvasOpen, onCanvasMinimize, onCanvasToggle, sessionId, folder, items, running, work, onSend, onAbort, stageTarget, onModeChange, title, browserAvailable, browserActivity, terminalActivity, toolEvents }: {
   sessionId: string;
   /** The folder the chat works in, for the Files window. */
   folder: string;
@@ -40,6 +40,8 @@ export function VoiceControl({ canvasOpen, onCanvasMinimize, onCanvasToggle, ses
   browserAvailable: boolean; browserActivity: number; terminalActivity: number; toolEvents: PortalEvent[];
   items: Item[];
   running: boolean;
+  /** What the agent is doing now (the chat works it out once, from the same events), or null when it is not running. */
+  work: Activity | null;
   onSend: (text: string, options?: PromptOptions) => Promise<void>;
   onAbort: () => Promise<void>;
 }) {
@@ -48,7 +50,9 @@ export function VoiceControl({ canvasOpen, onCanvasMinimize, onCanvasToggle, ses
   const [,refreshProfile]=useState(0);
   const profiler=useRef<VoiceProfiler>();
   if(!profiler.current)profiler.current=new VoiceProfiler(()=>refreshProfile(n=>n+1));
-  const eventSeq=useRef(0);eventSeq.current=toolEvents.reduce((n,e)=>Math.max(n,e.seq),0);
+  // Read again only when there are new events: this component is drawn with every key typed in the chat's box.
+  const newestSeq=useMemo(()=>toolEvents.reduce((n,e)=>Math.max(n,e.seq),0),[toolEvents]);
+  const eventSeq=useRef(0);eventSeq.current=newestSeq;
   const profileSeq=useRef(Infinity);
   const profileLiveSeen=useRef(new WeakSet<object>());
   const profileMark=(name:string)=>{if(profiling.current)profiler.current!.mark(name);};
@@ -57,10 +61,7 @@ export function VoiceControl({ canvasOpen, onCanvasMinimize, onCanvasToggle, ses
     for(const event of toolEvents){
       if(event.seq < 0) { if(profileLiveSeen.current.has(event))continue; profileLiveSeen.current.add(event); }
       else { if(event.seq<=profileSeq.current)continue; profileSeq.current=event.seq; }
-      const inner=event.payload?.assistantMessageEvent;
-      if(event.type==='message_update'&&inner?.delta&&['text_delta','thinking_delta','toolcall_delta'].includes(inner.type))profileMark('first_model_token');
-      if(event.type==='message_update'&&inner?.delta&&inner?.type==='text_delta')profileMark('first_text');
-      if(event.type==='message_update'&&inner?.type==='thinking_delta')profileMark('first_thinking_token');
+      for(const name of replyMarks(event))profileMark(name);
       if(event.type==='portal_prefill')profiler.current!.mark('prefill_progress',{total:event.payload?.total??0,processed:event.payload?.processed??0,cache:event.payload?.cache??0,timeMs:event.payload?.timeMs??0});
       if(['portal_prompt','compaction_start','compaction_end','tool_execution_start','tool_execution_end','agent_end'].includes(event.type))profileMark(event.type);
     }
@@ -115,7 +116,9 @@ export function VoiceControl({ canvasOpen, onCanvasMinimize, onCanvasToggle, ses
   const muteBusy = useRef(false);
   const startButton = useRef<HTMLButtonElement>(null);
   const levels = useRef<VoiceLevels>({ input: 0, output: 0 });
-  const compactionEvent = [...toolEvents].reverse().find(event => event.type === 'compaction_start' || event.type === 'compaction_end');
+  const compactionEvent = useMemo(() => {
+    for (let i = toolEvents.length - 1; i >= 0; i--) if (toolEvents[i].type === 'compaction_start' || toolEvents[i].type === 'compaction_end') return toolEvents[i];
+  }, [toolEvents]);
   const compacting = running && compactionEvent?.type === 'compaction_start';
   const latest = useRef({ items, running, onSend, onAbort, compacting });
   latest.current = { items, running, onSend, onAbort, compacting };
@@ -168,8 +171,7 @@ export function VoiceControl({ canvasOpen, onCanvasMinimize, onCanvasToggle, ses
   const connection = useRef<string | null>(null);
   const heartbeat = useRef<ReturnType<typeof setInterval>>();
   const connectVoice = async(client:string,active:boolean)=>{
-    const response=await fetch(`/api/sessions/${sessionId}/voice/connection`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({client,active}),keepalive:!active});
-    if(!response.ok)throw new Error((await response.json()).error||t('Could not connect voice service'));
+    await json(`/api/sessions/${sessionId}/voice/connection`,{method:'POST',body:JSON.stringify({client,active}),keepalive:!active});
   };
   const maxTurn = useRef<ReturnType<typeof setTimeout>>();
 
@@ -399,7 +401,6 @@ export function VoiceControl({ canvasOpen, onCanvasMinimize, onCanvasToggle, ses
         if (signal.aborted) cancel();
       });
     } while (true);
-    if (!response.ok) throw new Error((await response.json()).error || t("Speech generation failed"));
     mark('tts_headers',{serverTiming:response.headers.get('server-timing')??''});
     let body=response.body;
     if(body&&trace){let first=true;body=body.pipeThrough(new TransformStream<Uint8Array<ArrayBuffer>,Uint8Array<ArrayBuffer>>({transform(chunk,controller){if(first&&chunk.length){first=false;mark('first_bytes');}controller.enqueue(chunk);}}));}
@@ -502,12 +503,14 @@ export function VoiceControl({ canvasOpen, onCanvasMinimize, onCanvasToggle, ses
       const live = new LiveTranscription(async (samples, signal) => {
         const trace=profiling.current?profiler.current!.current:undefined;
         const started=performance.now();if(trace)profiler.current!.mark('stt_request',{audioMs:samples.length/16},trace);
-        const response = await fetch(`/api/sessions/${sessionId}/voice/transcribe`, {
-          method: "POST", headers: { "Content-Type": "audio/wav" }, body: samplesWav(samples), signal,
-        });
-        const result = await response.json();
-        if(trace)profiler.current!.mark('stt_result',{requestMs:performance.now()-started,serverTiming:response.headers.get('server-timing')??'',ok:response.ok},trace);
-        if (!response.ok) throw new Error(result.error || t("Transcription failed"));
+        let result: { text: string; serverTiming: string };
+        try {
+          result = await api.transcribe(sessionId, samples, signal);
+        } catch (e) {
+          if(trace)profiler.current!.mark('stt_result',{requestMs:performance.now()-started,serverTiming:'',ok:false},trace);
+          throw e;
+        }
+        if(trace)profiler.current!.mark('stt_result',{requestMs:performance.now()-started,serverTiming:result.serverTiming,ok:true},trace);
         return result.text;
       }, text => { if (current()) { setTranscript(text); voice.current?.heard(text); } }, !sequential.current);
       transcription.current = live;
@@ -608,7 +611,7 @@ export function VoiceControl({ canvasOpen, onCanvasMinimize, onCanvasToggle, ses
       if (pushToTalk.current) mic.getTracks().forEach(track => { track.enabled = false; });
       setEnabled(true); setStarting(false); cue("start");
     } catch (e) {
-      if (current()) { setError((e as Error).message); stop(); }
+      if (current()) { setError(micError(e)); stop(); }
     }
   };
 
@@ -636,7 +639,7 @@ export function VoiceControl({ canvasOpen, onCanvasMinimize, onCanvasToggle, ses
     {profileOpen&&createPortal(<VoiceProfile profiler={profiler.current!} onClose={()=>{setProfileOpen(false);profiler.current!.close('disabled');}}/>,document.body)}
 
     {(starting || enabled) && stageTarget && createPortal(
-      <VoiceStage sessionId={sessionId} folder={folder} workPhase={running ? activity(toolEvents) : null} canvasOpen={canvasOpen} onCanvasMinimize={onCanvasMinimize} onCanvasToggle={onCanvasToggle} title={sequentialMode ? `${title} · ${sentenceMode ? (prefetchMode ? t("Sentence pipeline · buffered audio") : t("Sentence chunks · buffered audio")) : t("Sequential baseline")}` : comparison ? `${title} · ${t("Streaming pipeline")}` : title} phase={phase} starting={starting} muted={muted} speaking={speaking}
+      <VoiceStage sessionId={sessionId} folder={folder} workPhase={work} canvasOpen={canvasOpen} onCanvasMinimize={onCanvasMinimize} onCanvasToggle={onCanvasToggle} title={sequentialMode ? `${title} · ${sentenceMode ? (prefetchMode ? t("Sentence pipeline · buffered audio") : t("Sentence chunks · buffered audio")) : t("Sequential baseline")}` : comparison ? `${title} · ${t("Streaming pipeline")}` : title} phase={phase} starting={starting} muted={muted} speaking={speaking}
         browserAvailable={browserAvailable} browserActivity={browserActivity} terminalActivity={terminalActivity} toolEvents={toolEvents} sounds={sounds} onSounds={toggleSounds} onCue={cue}
         levels={levels} transcript={transcript} error={error} onMute={toggleMute} onEnd={endMode} waitingForTap={waitingForTap}
         items={items} running={running} onStop={() => { void latest.current.onAbort().catch(e => setError((e as Error).message)); }}

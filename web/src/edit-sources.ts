@@ -1,4 +1,5 @@
 import type { GalleryPicture } from "./api";
+import { MAX_EDIT_PICTURES, MAX_EDIT_TOTAL_BYTES } from "../../server/src/image-settings";
 
 /**
  * The pictures an edit on the Images page works from, and how that list
@@ -13,10 +14,10 @@ import type { GalleryPicture } from "./api";
  * that the page can say so rather than drop it without a word.
  */
 
-/** The most pictures one edit takes, as the portal sets it (MAX_EDIT_PICTURES). */
-export const MAX_SOURCES = 8;
-/** What they may weigh together, as the portal sets it (MAX_EDIT_TOTAL_BYTES). */
-export const MAX_SOURCES_BYTES = 50 * 1024 * 1024;
+/** The most pictures one edit takes, as the portal sets it. */
+export const MAX_SOURCES = MAX_EDIT_PICTURES;
+/** What they may weigh together, as the portal sets it. */
+export const MAX_SOURCES_BYTES = MAX_EDIT_TOTAL_BYTES;
 
 export interface Added {
   list: GalleryPicture[];

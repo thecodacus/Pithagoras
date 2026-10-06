@@ -1,4 +1,5 @@
-import { test, expect, type Page } from '@playwright/test';
+import { type Page } from '@playwright/test';
+import { test, expect } from './portal-mock';
 
 const scroller = (page: Page) => page.locator('.chat-list').locator('..');
 /** How far the conversation is from its end, in px. */

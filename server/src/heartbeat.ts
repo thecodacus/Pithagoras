@@ -1,11 +1,13 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { nanoid } from "nanoid";
-import { createSession, getDb, type SessionRow } from "./db.js";
+import { createSession, getDb, getSession, type SessionRow } from "./db.js";
 import { AgentError, getAgent, listAgents, type Agent } from "./agents.js";
 import { countNotes } from "./activity.js";
-import { sessions, EXECUTOR_KIND } from "./session-manager.js";
+import { EXECUTOR_KIND } from "./executor-kind.js";
+import { sessions } from "./session-manager.js";
 import { NOTE_TOOL } from "./pi/heartbeat-names.js";
+import { WATCH_FILE } from "./pi/context-files.js";
 
 /**
  * An agent looking around on its own.
@@ -20,7 +22,7 @@ import { NOTE_TOOL } from "./pi/heartbeat-names.js";
  * told to.
  */
 
-export const WATCH_FILE = "WATCH.md";
+export { WATCH_FILE };
 
 /** The shortest interval offered: a look costs a turn of the model, and more often than this is a busy loop. */
 export const MIN_MINUTES = 15;
@@ -31,6 +33,9 @@ export const MAX_MINUTES = 7 * 24 * 60;
 const LOOK_TIMEOUT_MS = 20 * 60_000;
 
 const TICK_MS = 60_000;
+
+/** What a look shows once a restart cut it off. */
+const INTERRUPTED = "Interrupted by a restart";
 
 const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
@@ -103,7 +108,7 @@ function sessionFor(agent: Agent): SessionRow {
   if (existing) return existing;
   const id = nanoid(12);
   createSession({ id, title: `${agent.name} · heartbeat`, workspace: agent.home, executor: EXECUTOR_KIND, kind: "heartbeat" });
-  return getDb().prepare("SELECT * FROM sessions WHERE id = ?").get(id) as SessionRow;
+  return getSession(id)!;
 }
 
 /**
@@ -133,6 +138,9 @@ class HeartbeatSupervisor {
 
   start(): void {
     if (this.timer) return;
+    // A look cut off by a restart never reached its `finally`; nothing else
+    // would ever take "Looking" off the agent's page.
+    getDb().prepare("UPDATE agents SET heartbeat_status = ? WHERE heartbeat_status = 'Looking'").run(INTERRUPTED);
     this.timer = setInterval(() => void this.tick(), TICK_MS);
     if (typeof this.timer.unref === "function") this.timer.unref();
   }
@@ -188,12 +196,17 @@ class HeartbeatSupervisor {
     const before = countNotes(agent.id);
     try {
       const session = sessionFor(agent);
-      await sessions.ask(session.id, prompt(agent, watch, trigger), { timeoutMs: LOOK_TIMEOUT_MS });
+      // Stop pressed in the look's chat ends it like any other, and would read
+      // as one that found nothing.
+      let stopped = false;
+      await sessions.ask(session.id, prompt(agent, watch, trigger), { timeoutMs: LOOK_TIMEOUT_MS, onStopped: () => (stopped = true) });
       const left = countNotes(agent.id) - before;
-      status(left ? `${left} new ${left === 1 ? "note" : "notes"}` : "Nothing new");
+      // A look the portal's own stop aborted ends like any other, and would read
+      // as one that found nothing: it was cut off, as a crash cuts one off.
+      status(sessions.closing ? INTERRUPTED : stopped ? "Stopped" : left ? `${left} new ${left === 1 ? "note" : "notes"}` : "Nothing new");
     } catch (e) {
       // The first line: pi's errors go on to explain where its docs are.
-      status(`Failed: ${(e as Error).message.split("\n")[0]}`);
+      status(sessions.closing ? INTERRUPTED : `Failed: ${(e as Error).message.split("\n")[0]}`);
     } finally {
       this.running.delete(agent.id);
     }

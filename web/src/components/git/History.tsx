@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { LuCopy, LuGitCompareArrows } from "react-icons/lu";
 import { copyText } from "../../clipboard";
 import { gitApi, type Branch, type Commit, type CommitDetail, type Comparison, type FileChange } from "../../git-api";
 import { ago, Counts, ErrorNote, IconButton, Letter, LETTER_NAME, Quiet, RefBadge, SectionHead, splitPath } from "./bits";
 import { useGit } from "./context";
+import { Select } from "../Select";
 import { formatDateTime, t } from "../../i18n";
 
 const PAGE = 100;
@@ -14,10 +15,17 @@ export function History() {
   const [commits, setCommits] = useState<Commit[] | null>(null);
   const [more, setMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [again, setAgain] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
+  // Which read of the first page an older page was asked against: one asked
+  // before HEAD moved would be put after a list it does not belong to.
+  const generation = useRef(0);
 
   // Read again when HEAD moves: a commit, a checkout, a pull.
   useEffect(() => {
     let gone = false;
+    generation.current++;
+    setLoadingMore(false);
     // What went wrong last time is not what is shown this time.
     setError(null);
     gitApi
@@ -31,19 +39,29 @@ export function History() {
     return () => {
       gone = true;
     };
-  }, [id, repo.head, repo.branch]);
+  }, [id, repo.head, repo.branch, again]);
 
   const loadMore = async () => {
+    // A second click while the first page is on its way would ask for the same one.
+    if (loadingMore) return;
+    const asked = generation.current;
+    setLoadingMore(true);
     try {
       const r = await gitApi.log(id, { limit: PAGE, skip: commits?.length ?? 0 });
-      setCommits((c) => [...(c ?? []), ...r.commits]);
+      if (asked !== generation.current) return;
+      setCommits((c) => {
+        const have = new Set((c ?? []).map((x) => x.sha));
+        return [...(c ?? []), ...r.commits.filter((x) => !have.has(x.sha))];
+      });
       setMore(r.commits.length === PAGE);
     } catch (e) {
-      setError((e as Error).message);
+      if (asked === generation.current) setError((e as Error).message);
+    } finally {
+      if (asked === generation.current) setLoadingMore(false);
     }
   };
 
-  if (error && !commits) return <ErrorNote>{error}</ErrorNote>;
+  if (error && !commits) return <ErrorNote onRetry={() => setAgain((n) => n + 1)}>{error}</ErrorNote>;
   if (!commits) return <Quiet>{t("Loading…")}</Quiet>;
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
@@ -61,7 +79,7 @@ export function History() {
       {!commits.length && <Quiet>{t("No commits yet.")}</Quiet>}
       <CommitList commits={commits} />
       {more && (
-        <button type="button" onClick={() => void loadMore()} className="w-full px-3 py-2 text-left text-xs text-fg-subtle hover:text-fg hover:underline">
+        <button type="button" disabled={loadingMore} onClick={() => void loadMore()} className="w-full px-3 py-2 text-left text-xs text-fg-subtle hover:text-fg hover:underline disabled:opacity-40">
           {t("Older commits…")}
         </button>
       )}
@@ -69,7 +87,7 @@ export function History() {
   );
 }
 
-export function CommitList({ commits }: { commits: Commit[] }) {
+function CommitList({ commits }: { commits: Commit[] }) {
   const { show } = useGit();
   return (
     <ul>
@@ -134,11 +152,12 @@ export function CommitView({ sha }: { sha: string }) {
   const { id, show } = useGit();
   const [detail, setDetail] = useState<CommitDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [again, setAgain] = useState(0);
   useEffect(() => {
     setError(null);
     gitApi.commitDetail(id, sha).then(setDetail, (e) => setError((e as Error).message));
-  }, [id, sha]);
-  if (error) return <ErrorNote>{error}</ErrorNote>;
+  }, [id, sha, again]);
+  if (error) return <ErrorNote onRetry={() => setAgain((n) => n + 1)}>{error}</ErrorNote>;
   if (!detail) return <Quiet>{t("Loading…")}</Quiet>;
   const [subject, ...body] = detail.message.split("\n");
   const added = detail.files.reduce((n, f) => n + f.added, 0);
@@ -180,9 +199,13 @@ export function CompareView({ base: asked }: { base?: string }) {
   // What was picked, and what the answer was against: the default is only known once answered, and
   // taking it as the pick asked the same question twice.
   const [chosen, setChosen] = useState(asked ?? "");
-  const [result, setResult] = useState<Comparison | null | undefined>(undefined);
+  // The answer is kept with the pick it answers: one for another base, or from before
+  // a failure, is not shown, or its files would open diffs against a base that is not the one named.
+  const [answer, setAnswer] = useState<{ chosen: string; comparison: Comparison | null } | undefined>(undefined);
+  const result = answer?.chosen === chosen ? answer.comparison : undefined;
   const [error, setError] = useState<string | null>(null);
   const [branches, setBranches] = useState<Branch[]>([]);
+  const [again, setAgain] = useState(0);
   useEffect(() => {
     gitApi.branches(id).then((r) => setBranches(r.branches), () => {});
   }, [id]);
@@ -192,14 +215,18 @@ export function CompareView({ base: asked }: { base?: string }) {
     gitApi.compare(id, chosen || undefined).then(
       (r) => {
         if (gone) return;
-        setResult(r.comparison);
+        setAnswer({ chosen, comparison: r.comparison });
       },
-      (e) => !gone && setError((e as Error).message),
+      (e) => {
+        if (gone) return;
+        setAnswer(undefined);
+        setError((e as Error).message);
+      },
     );
     return () => {
       gone = true;
     };
-  }, [id, chosen, repo.head]);
+  }, [id, chosen, repo.head, again]);
   const base = chosen || result?.base || "";
 
   const choices = branches.filter((b) => !b.current).map((b) => b.name);
@@ -208,22 +235,16 @@ export function CompareView({ base: asked }: { base?: string }) {
       <div className="flex items-center gap-2 border-b border-line px-3 py-1.5 text-xs text-fg-subtle">
         <span className="shrink-0 font-mono text-fg">{repo.branch ?? "HEAD"}</span>
         <span className="shrink-0">{t("compared with")}</span>
-        <select
+        <Select
+          size="sm"
           value={base}
-          onChange={(e) => setChosen(e.target.value)}
+          onChange={setChosen}
           aria-label={t("Compare with")}
-          className="min-w-0 flex-1 rounded border border-line bg-canvas px-1 py-0.5 font-mono text-[11px] text-fg"
-        >
-          {!choices.includes(base) && base && <option value={base}>{base}</option>}
-          {!base && <option value="">—</option>}
-          {choices.map((name) => (
-            <option key={name} value={name}>
-              {name}
-            </option>
-          ))}
-        </select>
+          className="min-w-0 flex-1 font-mono"
+          options={[...(!choices.includes(base) && base ? [base] : []), ...(!base ? [""] : []), ...choices].map((name) => ({ value: name, label: name || "—" }))}
+        />
       </div>
-      {error && <ErrorNote>{error}</ErrorNote>}
+      {error && <ErrorNote onRetry={() => setAgain((n) => n + 1)}>{error}</ErrorNote>}
       {result === undefined && !error && <Quiet>{t("Loading…")}</Quiet>}
       {result === null && <Quiet>{t("There is nothing to compare with — no main or master branch here. Pick one above.")}</Quiet>}
       {result && (

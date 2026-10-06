@@ -4,5 +4,6 @@
   "description": "POST a message in, get the agent's reply in the response",
   "type": "module",
   "main": "index.js",
+  "license": "Apache-2.0",
   "pithagoras": { "channel": true }
 }

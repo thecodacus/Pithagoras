@@ -1,5 +1,6 @@
 import type { GalleryPicture, OutputFormat, PictureJob, PictureKind, PictureOrigin, PictureSettingsBody } from "./api";
 import type { ViewerPicture } from "./image-viewer";
+import { COMPRESSIBLE as COMPRESSIBLE_FORMATS, LIMITS, OUTPUT_FORMATS } from "../../server/src/image-settings";
 
 /**
  * What the Images page (components/ImagesPage.tsx) works out without a page:
@@ -158,19 +159,13 @@ export const fieldsText = (extra: Record<string, string | number | boolean> | un
     .join("\n");
 
 /**
- * What a picture may be asked for, as the portal sets it (LIMITS in
- * server/src/image-settings.ts): the form says what is wrong before it asks.
+ * What a picture may be asked for is the portal's own (server/src/image-settings.ts),
+ * not a copy of it: the form says what is wrong before it asks, and never of
+ * something the portal takes.
  */
-export const LIMITS = {
-  side: { min: 64, max: 8192 },
-  compression: { min: 0, max: 100 },
-  steps: { min: 1, max: 100 },
-  negativePrompt: 4000,
-} as const;
-
-export const OUTPUT_FORMATS: readonly OutputFormat[] = ["png", "jpeg", "webp"];
-/** The formats that have a compression to set. */
-export const COMPRESSIBLE: readonly string[] = ["jpeg", "webp"];
+export { LIMITS, OUTPUT_FORMATS };
+/** The formats that have a compression to set, for a format as it is typed. */
+export const COMPRESSIBLE: readonly string[] = COMPRESSIBLE_FORMATS;
 
 /** What the form asks for one picture with, as typed: nothing typed is nothing sent. */
 export interface Fields {
@@ -190,8 +185,6 @@ export interface Fields {
 }
 
 export type FieldName = keyof Fields;
-
-export const noFields = (): Fields => ({ model: "", width: "", height: "", negativePrompt: "", outputFormat: "", outputCompression: "", seed: "", sampleSteps: "", strength: "", fromNoise: false });
 
 /** What is wrong with a setting, as a code that the form says in words. */
 export type Problem = "size-pair" | "size-range" | "compression-range" | "seed" | "steps" | "strength" | "negative-long";
@@ -248,7 +241,7 @@ export function settingsBody(fields: Fields, edit: boolean, sd: boolean): { body
 
   const seed = fields.seed.trim();
   if (seed) {
-    const n = whole(seed, -1);
+    const n = whole(seed, LIMITS.seed.min);
     if (n === undefined) return { field: "seed", problem: "seed" };
     body.seed = n;
   }
@@ -265,7 +258,7 @@ export function settingsBody(fields: Fields, edit: boolean, sd: boolean): { body
     // A comma is a decimal point where the person writes one.
     const text = strength.replace(",", ".");
     const n = /^(\d+(\.\d+)?|\.\d+)$/.test(text) ? Number(text) : NaN;
-    if (!(n >= 0 && n <= 1)) return { field: "strength", problem: "strength" };
+    if (!(n >= LIMITS.strength.min && n <= LIMITS.strength.max)) return { field: "strength", problem: "strength" };
     body.strength = n;
   }
   return { body };

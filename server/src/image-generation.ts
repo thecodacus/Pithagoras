@@ -3,8 +3,8 @@ import http from "node:http";
 import https from "node:https";
 import { BlockList, isIP } from "node:net";
 import { getSetting, putSetting } from "./db.js";
-import { promptWith, type NativeSettings, type OutputFormat } from "./image-settings.js";
-import { pictureExt } from "./prompt-images.js";
+import { MAX_SIZE, TIMEOUT_SECONDS, parseSize, promptWith, type NativeSettings, type OutputFormat } from "./image-settings.js";
+import { decodeBase64, pictureExt } from "./prompt-images.js";
 
 /**
  * Image generation as an add-on: the agent's `generate_image` tool asks an
@@ -80,12 +80,6 @@ export interface ImageGenerationConfig {
 
 const text = (v: unknown): string => (typeof v === "string" ? v : "");
 
-/**
- * The time a request for a picture may take, in whole seconds: a slow or local model needs minutes, so five by
- * default. Under half a minute almost no endpoint answers, so a typo could not make every request fail; an hour is
- * more than anyone should wait on one picture.
- */
-export const TIMEOUT_SECONDS = { default: 300, min: 30, max: 3600 };
 const validTimeout = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= TIMEOUT_SECONDS.min && (v as number) <= TIMEOUT_SECONDS.max;
 
 /** What is saved, as it is: without the defaults the config fills in. */
@@ -105,7 +99,8 @@ export function imageGenerationConfig(): ImageGenerationConfig {
     enabled: raw.enabled === true,
     baseUrl: text(raw.baseUrl),
     model: text(raw.model),
-    size: text(raw.size),
+    // One saved before the sizes were limited, and outside them, is as good as none.
+    size: typeof raw.size === "string" && typeof parseSize(raw.size) === "string" ? raw.size.trim() : "",
     apiKey: text(raw.apiKey),
     editEnabled: raw.editEnabled === true,
     editBaseUrl: text(raw.editBaseUrl),
@@ -164,7 +159,7 @@ export function imageEditingTarget(config: ImageGenerationConfig = imageGenerati
 export function imageGenerationState() {
   const config = imageGenerationConfig();
   const { apiKey, editApiKey, ...rest } = config;
-  return { ...rest, keySet: apiKey !== "", editKeySet: editApiKey !== "", editReady: imageEditingReady(config) };
+  return { ...rest, keySet: apiKey !== "", editKeySet: editApiKey !== "", ready: imageGenerationReady(config), editReady: imageEditingReady(config) };
 }
 
 export interface ImageGenerationPatch {
@@ -187,11 +182,6 @@ export interface ImageGenerationPatch {
   timeoutSeconds?: number | null;
   sdExtras?: boolean;
 }
-
-/** `1024x1024`, or `auto`, as the OpenAI-style APIs take it. */
-export const SIZE = /^(auto|\d{2,5}x\d{2,5})$/;
-/** The same without `auto`, which is no size to limit by, and with no side of zero, which would limit nothing: what a maximum is given as. */
-export const MAX_SIZE = /^[1-9]\d{1,4}x[1-9]\d{1,4}$/;
 
 /** An API address as the settings keep it, or the reason it is not one. */
 function parseBase(value: unknown): { base: string } | { error: string } {
@@ -231,8 +221,11 @@ export function parseImageGenerationPatch(body: unknown): ImageGenerationPatch |
     patch[field] = given.trim();
   }
   if (b.size !== undefined) {
-    if (typeof b.size !== "string" || (b.size.trim() && !SIZE.test(b.size.trim()))) return 'The size looks like "1024x1024"';
-    patch.size = b.size.trim();
+    if (typeof b.size !== "string") return 'The size looks like "1024x1024"';
+    // The same sizes the Images page and the agent's tool take: a default that the gallery refuses is none.
+    const size = b.size.trim() ? parseSize(b.size) : "";
+    if (typeof size !== "string") return size.error;
+    patch.size = size;
   }
   if (b.editMaxSize !== undefined) {
     if (typeof b.editMaxSize !== "string" || (b.editMaxSize.trim() && !MAX_SIZE.test(b.editMaxSize.trim()))) return 'The maximum size looks like "2048x2048"';
@@ -296,7 +289,6 @@ export class ImageGenerationError extends Error {}
 
 /** After decoding: what the portal serves back as a picture, with room to spare. */
 export const MAX_GENERATED_BYTES = 20 * 1024 * 1024;
-const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 
 export interface GenerateOptions {
   /** The chat being stopped. */
@@ -468,13 +460,13 @@ function picture(bytes: Buffer, max: number): { bytes: Buffer; ext: string } {
   return { bytes, ext };
 }
 
-/** Base64, or a data: URL holding it, decoded; the size is worked out before anything large is. */
+/** Base64, or a data: URL holding it, decoded. */
 function fromBase64(given: string, max: number): Buffer {
-  const comma = given.startsWith("data:") ? given.indexOf(",") : -1;
-  const data = (comma >= 0 ? given.slice(comma + 1) : given).replace(/\s+/g, "");
-  if (!data || !BASE64.test(data)) throw new ImageGenerationError("The picture the image endpoint sent is not base64");
-  if (Math.floor((data.length * 3) / 4) > max + 3) throw new ImageGenerationError(`The picture is over ${max / 1024 / 1024} MB`);
-  return Buffer.from(data, "base64");
+  const decoded = decodeBase64(given, max);
+  if ("error" in decoded) {
+    throw new ImageGenerationError(decoded.error === "invalid" ? "The picture the image endpoint sent is not base64" : `The picture is over ${max / 1024 / 1024} MB`);
+  }
+  return decoded.bytes;
 }
 
 /** A body read up to a limit, which is not read past. */

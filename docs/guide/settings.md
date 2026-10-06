@@ -16,6 +16,20 @@ Plus a page for every extension that exposes configuration.
 There is no Session tab. Model, effort and context all live on the pills under
 the composer, and a second copy here would be two places to keep in sync.
 
+The pages are built from the same few pieces. Something that takes effect the
+moment it is clicked is a switch, and a choice between a few things is a row of
+buttons of which one is picked; a screen reader says which, as "on" or "off" and
+as picked or not, and not only the colour does. An off switch has an edge you can
+see in the light theme too. A page with a **Save** button shows **Saved** beside
+it for two seconds, counted from the last save.
+
+A page that cannot read what it shows, because the portal was restarting or could
+not be reached, says so in red with the reason and a **Try again** button, in the
+place of its list. It does not show an empty list or "Nobody yet" as if that were
+what the portal holds. The same goes for the Projects, Audit and Agents pages and
+for the add-ons. A refresh that fails while a page is already showing something
+is a message at the top of the dialog instead, and what was shown stays.
+
 ## Defaults
 
 *(The **Defaults** page; older links call it `general`.)*
@@ -126,8 +140,10 @@ written the language's way. It changes the portal's words only: what the agent
 writes is up to the agent, and messages that come from the server — an error it
 reports, a channel's own description — stay as they are.
 
-A language is one file in `web/src/locales/`, mapping each English text to its
-own; adding one means adding that file, and the tests list what it lacks.
+A language is one file in `web/src/locales/`, named by its language code
+(`de.ts`), mapping each English text to its own; adding one means adding that
+file, and the tests list what it lacks. A page fetches only the file of the
+language it is in, so an English page does not carry the German text.
 
 ## Add-ons
 
@@ -148,7 +164,9 @@ Every keyboard shortcut, in one list. The voice-mode ones can be changed: choose
 **Change** and press the new keys, with any modifiers. **Clear** leaves an action
 without one, **Reset** puts its default back, and **Reset all** puts back every
 default. A key that another action already has moves to the one being changed,
-and the list says which action lost it. Shortcuts are kept in this browser.
+and the list says which action lost it. `Tab` cannot be a shortcut — it is how
+the keyboard moves on to the next button — so pressing it while listening ends
+the listening and moves on. Shortcuts are kept in this browser.
 
 A shortcut is the physical key, so it stays the same key whatever the keyboard
 layout, and it is shown with the label on this keyboard where the browser can
@@ -160,4 +178,11 @@ the message box — are listed there too, and are fixed.
 
 pi's raw `settings.json`, edited in place. It is validated as JSON before
 writing — a broken file stops every future session from starting, so an invalid
-save is refused rather than accepted.
+save is refused rather than accepted. It has to be an object, and what a save
+replaces is kept beside the file as `settings.json.bak`.
+
+If you edit the file by hand and leave it unreadable, the other places that
+write to it (the compaction slider, the extension switches and forms) refuse to
+change it and say so, rather than starting over from an empty file and losing
+your packages and defaults. Put it right here, or in your editor, and save
+again.

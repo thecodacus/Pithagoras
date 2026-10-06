@@ -1,5 +1,5 @@
 import { ImageGenerationError, requestPicture, type GenerateOptions, type ImageEditingTarget } from "./image-generation.js";
-import { promptWith, type NativeSettings, type OutputFormat } from "./image-settings.js";
+import { MAX_EDIT_PICTURES, MAX_EDIT_TOTAL_BYTES, promptWith, type NativeSettings, type OutputFormat } from "./image-settings.js";
 import { pictureSize } from "./picture-size.js";
 import { pictureExt, pictureType } from "./prompt-images.js";
 import { MAX_PICTURE_BYTES } from "./workspace-files.js";
@@ -35,14 +35,8 @@ export function editEndpointUrl(baseUrl: string): URL {
   return url;
 }
 
-/**
- * How many pictures one edit takes, and how much they weigh together. Endpoints
- * take fewer or more and say so in their answer, which is passed on; these keep
- * what the portal reads and sends within reason, since all of it is held in
- * memory and goes up within the time limit of the request.
- */
-export const MAX_EDIT_PICTURES = 8;
-export const MAX_EDIT_TOTAL_BYTES = 50 * 1024 * 1024;
+/** How many pictures one edit takes, and how much they weigh together: set in image-settings.ts, which the page reads too. */
+export { MAX_EDIT_PICTURES, MAX_EDIT_TOTAL_BYTES };
 
 export interface EditRequest {
   /** What should change, or what a new picture should be made of the pictures. */

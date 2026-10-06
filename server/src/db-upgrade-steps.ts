@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { existsSync, mkdirSync, readdirSync, statSync, statfsSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, statfsSync, unlinkSync } from "node:fs";
 import path from "node:path";
 
 /**
@@ -57,21 +57,40 @@ export function pruneBackups(dir: string, keep: number): void {
   for (const old of backupsIn(dir).slice(keep)) unlinkSync(old);
 }
 
+/** What a backup is called while it is being written: it is no backup until it is whole, and nothing counts or keeps it as one. */
+const PARTIAL = ".partial";
+
+/** Removes what an upgrade that stopped halfway left of its backup; the space it holds is what the next one needs. */
+export function removePartialBackups(dir: string): void {
+  if (!existsSync(dir)) return;
+  for (const f of readdirSync(dir)) {
+    if (/^portal-v\d+-\d{8}-\d{6}\.db\.partial(-journal)?$/.test(f)) rmSync(path.join(dir, f), { force: true });
+  }
+}
+
 /**
  * A copy of the database through SQLite's own backup, which is consistent
  * while it is read and leaves out nothing the log still holds. `progress`
- * hears the share done, 0 to 100.
+ * hears the share done, 0 to 100. It is written beside its name and renamed
+ * once it is whole, so a full disk or a stop in the middle leaves no file that
+ * could be taken for a backup, or pushes a good one out when old ones go.
  */
 export async function backupTo(file: string, dest: string, progress: (percent: number) => void = () => {}): Promise<void> {
+  const partial = dest + PARTIAL;
   const d = new Database(file, { fileMustExist: true });
   try {
-    await d.backup(dest, {
+    await d.backup(partial, {
       progress({ totalPages, remainingPages }) {
         progress(totalPages ? Math.round((1 - remainingPages / totalPages) * 100) : 100);
         return 2000;
       },
     });
     progress(100);
+    renameSync(partial, dest);
+  } catch (e) {
+    rmSync(partial, { force: true });
+    rmSync(partial + "-journal", { force: true });
+    throw e;
   } finally {
     d.close();
   }
@@ -98,6 +117,8 @@ export interface UpgradeOptions {
  * nothing has been changed.
  */
 export async function runUpgrade(o: UpgradeOptions, progress: (message: string) => void): Promise<string | undefined> {
+  // What an earlier try left of its backup: it holds the room this one needs, and is none.
+  removePartialBackups(o.backupDir);
   progress("Checking the database. A large one can take a few minutes.");
   const problems = integrityProblems(o.file);
   if (problems.length) throw new DamagedDatabase(`The database is damaged: ${problems.slice(0, 3).join("; ")}`);

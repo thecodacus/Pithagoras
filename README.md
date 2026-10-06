@@ -29,7 +29,7 @@ adds 150–300 tokens per tool.
 
 ```bash
 git clone https://github.com/thecodacus/pithagoras.git && cd pithagoras
-cp .env.example .env      # set PORTAL_PASSWORD, and WORKSPACES_DIR to where your repos are
+cp .env.example .env      # set PORTAL_PASSWORD (8+ characters, in single quotes if it has a $ or #; it will not start without), and uncomment WORKSPACES_DIR with the folder your repos are in
 docker compose up -d --build
 ```
 
@@ -97,8 +97,9 @@ on Tailscale/LAN rather than the public internet.
 |---|---|---|
 | `PORTAL_PASSWORD` | — | **Required** (or `PORTAL_ALLOW_NO_PASSWORD=1` behind an authenticating proxy). |
 | `PORTAL_SECRET` | random | HMAC key for the auth cookie. Set it so logins survive restarts. |
-| `WORKSPACES_DIR` | `/root/repos` | Host directory mounted at `/workspaces` (Compose only). |
+| `WORKSPACES_DIR` | — (required) | Host directory mounted at `/workspaces` (Compose only; it will not start without one). |
 | `PORTAL_DATA_DIR` | named volume | Host directory for the data volume, instead of a Docker volume (Compose only). |
+| `TZ` | UTC | Time zone of the portal's clock, such as `Europe/Berlin`: an agent's quiet hours and repeating routines are read on it. |
 | `EXECUTOR` | `host` | `host` or `container`. |
 | `PI_PROVIDER` / `PI_MODEL` / `PI_THINKING_LEVEL` | inherit | Overrides only; pi's `settings.json` decides when unset. |
 | `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY` | — | Provider credentials, forwarded to pi. |
@@ -142,3 +143,9 @@ Full docs live in `docs/` and are a VitePress site.
 npm run docs         # dev server
 npm run docs:build   # static build into docs/.vitepress/dist
 ```
+
+## License
+
+Pithagoras is licensed under the [Apache License 2.0](LICENSE) (see also [NOTICE](NOTICE)). The voice
+mode ships a voice activity model and a WebAssembly runtime from other projects, under their own
+licences: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

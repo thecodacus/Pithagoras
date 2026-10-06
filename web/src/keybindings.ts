@@ -90,7 +90,7 @@ export const FIXED: FixedShortcut[] = [
   { label: msg("Jump to the message box"), keys: { code: "Slash" }, scope: "Chat", command: true },
   { label: msg("Send the message"), keys: { code: "Enter" }, scope: "Chat" },
   { label: msg("New line in the message"), keys: { code: "Enter", shift: true }, scope: "Chat" },
-  { label: msg("Stop the run (with the message box empty)"), keys: { code: "Escape" }, scope: "Chat" },
+  { label: msg("Stop the run"), keys: { code: "Escape" }, scope: "Chat" },
 ];
 
 const STORE = "keybindings";
@@ -100,6 +100,12 @@ type Stored = Partial<Record<ActionId, Binding | null>>;
 
 const isBinding = (v: unknown): v is Binding => !!v && typeof (v as Binding).code === "string" && !!(v as Binding).code;
 
+/**
+ * Tab, alone or with Shift: how the keyboard moves from one button to the next,
+ * which no shortcut may take. One stored by an older version is not taken either.
+ */
+export const movesFocus = (b: { code: string; ctrl?: boolean; alt?: boolean; meta?: boolean }): boolean => b.code === "Tab" && !b.ctrl && !b.alt && !b.meta;
+
 /** What was chosen in this browser, as stored: only what differs from the defaults. */
 function stored(): Stored {
   try {
@@ -108,7 +114,7 @@ function stored(): Stored {
     for (const action of ACTIONS) {
       const v = raw?.[action.id];
       if (v === null) out[action.id] = null;
-      else if (isBinding(v)) out[action.id] = normalize(v);
+      else if (isBinding(v) && !movesFocus(v)) out[action.id] = normalize(v);
     }
     return out;
   } catch {
@@ -145,6 +151,7 @@ function save(choice: Stored) {
  * so that the person can be told.
  */
 export function assign(id: ActionId, binding: Binding | null, current: Stored = stored()): { choice: Stored; took?: ActionId } {
+  if (binding && movesFocus(binding)) return { choice: current };
   const resolved = resolve(current);
   const choice: Stored = { ...current };
   let took: ActionId | undefined;
@@ -186,9 +193,9 @@ export function matches(binding: Binding | null, e: { code: string; ctrlKey?: bo
   return same(binding, bindingOf(e) ?? null);
 }
 
+/** The keys that are a symbol, the same in every language: the ones with a word for a name are in SPOKEN. */
 const NAMES: Record<string, string> = {
-  Space: "Space", Escape: "Esc", Enter: "Enter", Backspace: "Backspace", Tab: "Tab", Delete: "Del",
-  ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→", Home: "Home", End: "End", PageUp: "Page up", PageDown: "Page down",
+  ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→",
   Comma: ",", Period: ".", Slash: "/", Semicolon: ";", Quote: "'", BracketLeft: "[", BracketRight: "]", Backslash: "\\", Minus: "-", Equal: "=", Backquote: "`",
 };
 

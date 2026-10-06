@@ -1,0 +1,117 @@
+import { type Page } from '@playwright/test';
+import { test, expect, mockPortal, reply, DONE } from './portal-mock';
+
+/** A portal with a password: signed in once the right one is posted, signed out again when `expired` says so, and not answering while `down`. */
+async function portal(page: Page, state: { authed: boolean; expired?: boolean; down?: boolean }) {
+  const calls = { status: 0, login: [] as unknown[], rename: 0 };
+  const session = { id: 's1', title: 'Old name', workspace: '/w/site', status: 'idle', kind: 'task', pinned: false, updated_at: new Date().toISOString() };
+  await mockPortal(page, async ({ path: p, method, route, json }) => {
+    // What a proxy answers while the portal behind it restarts: a page of its own, not JSON.
+    if (state.down && p.startsWith('/api/auth/')) {
+      if (p === '/api/auth/status') calls.status++;
+      await route.fulfill({ status: 502, contentType: 'text/html', body: '<h1>Bad Gateway</h1>' });
+      return DONE;
+    }
+    if (p === '/api/auth/status') { calls.status++; return { authRequired: true, authed: state.authed }; }
+    if (p === '/api/auth/login') {
+      const body = json();
+      calls.login.push(body);
+      if (body.password !== 'secret') return reply(401, { error: 'Wrong password' });
+      state.authed = true;
+      state.expired = false;
+      return { ok: true };
+    }
+    // The portal has forgotten this browser: what the server answers to a cookie it no longer takes.
+    if (state.expired) return reply(401, { error: 'Unauthorized' });
+    if (p === '/api/sessions' && method === 'GET') return { sessions: [session], executor: 'host' };
+    if (p === '/api/sessions/s1' && method === 'PATCH') { calls.rename++; return session; }
+    if (p === '/api/workspaces') return { root: '/w', workspaces: [] };
+  });
+  return calls;
+}
+
+test('without a login the page asks for the password, and the right one opens the portal', async ({ page }) => {
+  const state = { authed: false };
+  const calls = await portal(page, state);
+  await page.goto('/sessions');
+  const password = page.getByPlaceholder('Password');
+  const signIn = page.getByRole('button', { name: 'Sign in' });
+  await expect(password).toBeVisible();
+  await expect(page.getByText('Old name')).toHaveCount(0);
+  await expect(signIn).toBeDisabled();
+
+  await password.fill('secret');
+  await signIn.click();
+  // The password goes as the body's `password`, which is what the server reads.
+  await expect.poll(() => calls.login).toEqual([{ password: 'secret' }]);
+  await expect(page.getByRole('main').getByText('Old name')).toBeVisible();
+  await expect(password).toHaveCount(0);
+});
+
+test('a wrong password is said so, and asked again without looping on the 401', async ({ page }) => {
+  const calls = await portal(page, { authed: false });
+  await page.goto('/sessions');
+  await expect(page.getByPlaceholder('Password')).toBeVisible();
+  const asked = calls.status;
+  await page.getByPlaceholder('Password').fill('guess');
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page.getByText('Wrong password')).toBeVisible();
+  await expect(page.getByPlaceholder('Password')).toBeVisible();
+  // Settled: the refusal of the login itself is not the portal forgetting a login, which would ask the server again.
+  await page.waitForTimeout(500);
+  expect(calls.login).toEqual([{ password: 'guess' }]);
+  expect(calls.status).toBe(asked);
+});
+
+test('a login that runs out in the middle of the work returns to the form, and signing in again goes on', async ({ page }) => {
+  const state = { authed: true, expired: false };
+  const calls = await portal(page, state);
+  await page.goto('/sessions');
+  await expect(page.getByRole('main').getByText('Old name')).toBeVisible();
+
+  state.expired = true;
+  await page.getByRole('button', { name: 'Rename Old name' }).click();
+  const field = page.getByLabel('Session name');
+  await field.fill('New name');
+  await field.press('Enter');
+  await expect(page.getByPlaceholder('Password')).toBeVisible();
+  await expect(page.getByText(/HTTP 401|Unauthorized/)).toHaveCount(0);
+
+  await page.getByPlaceholder('Password').fill('secret');
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page.getByRole('main').getByText('Old name')).toBeVisible();
+  expect(calls.login).toEqual([{ password: 'secret' }]);
+});
+
+test('a portal that does not answer is not taken for a login that is gone, and is asked again', async ({ page }) => {
+  const state = { authed: true, down: true };
+  const calls = await portal(page, state);
+  await page.goto('/sessions');
+  await expect(page.getByText('Cannot reach the portal')).toBeVisible();
+  await expect(page.getByPlaceholder('Password')).toHaveCount(0);
+  const asked = calls.status;
+  // Asking again by hand, while it is still away.
+  await page.getByRole('button', { name: 'Try again' }).click();
+  await expect.poll(() => calls.status).toBeGreaterThan(asked);
+  await expect(page.getByText('Cannot reach the portal')).toBeVisible();
+  // Back: the page does not wait to be told, and the login the browser holds is still good.
+  state.down = false;
+  await expect(page.getByRole('main').getByText('Old name')).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByPlaceholder('Password')).toHaveCount(0);
+  expect(calls.login).toEqual([]);
+});
+
+test('a password sent while the portal is away says that, not the proxy\'s status', async ({ page }) => {
+  const state = { authed: false, down: false };
+  const calls = await portal(page, state);
+  await page.goto('/sessions');
+  await expect(page.getByPlaceholder('Password')).toBeVisible();
+  state.down = true;
+  await page.getByPlaceholder('Password').fill('secret');
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page.getByText('Cannot reach the portal')).toBeVisible();
+  await expect(page.getByText(/HTTP 502/)).toHaveCount(0);
+  // Still the form: nothing was refused.
+  await expect(page.getByPlaceholder('Password')).toBeVisible();
+  expect(calls.login).toEqual([]);
+});

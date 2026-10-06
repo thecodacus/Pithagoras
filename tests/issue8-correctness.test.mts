@@ -1,14 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,rmSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
-const temp=mkdtempSync(join(tmpdir(),'pitha-correctness-'));process.env.DATA_DIR=temp;process.env.SESSION_DIR=join(temp,'sessions');
+import { join } from 'node:path';
+import { inProcessHome } from './helpers.mts';
+const temp=inProcessHome('pitha-correctness-');
 const {SdkPiClient}=await import('../server/src/pi/sdk-client.ts');
 const {sessions}=await import('../server/src/session-manager.ts');
 const {getDb,pendingNotes,consumeNotes}=await import('../server/src/db.ts');
 const {buildTranscript}=await import('../web/src/transcript.ts');
-test.after(()=>{getDb().close();rmSync(temp,{recursive:true,force:true});});
+test.after(()=>getDb().close());
 
 test('answered dialog clears its timer and cannot cancel a later dialog',async(t)=>{
  t.mock.timers.enable({apis:['setTimeout']});

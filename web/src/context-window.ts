@@ -1,7 +1,7 @@
 import { language, t } from "./i18n";
 /** What a context window may be; the server refuses anything else, so the field can say so first. */
-export const WINDOW_MIN = 1_024;
-export const WINDOW_MAX = 10_000_000;
+const WINDOW_MIN = 1_024;
+const WINDOW_MAX = 10_000_000;
 
 export type ParsedWindow =
   | { kind: "empty" }

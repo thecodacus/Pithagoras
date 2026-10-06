@@ -10,6 +10,12 @@
  * Emptied rather than removed: React taking a title away is then a removal
  * that can be seen, where on a missing attribute it would do nothing, and the
  * old text would come back.
+ *
+ * A title is the only name an icon-only button has, and an emptied one names
+ * nothing: for a screen reader that follows the pointer, or a voice command
+ * that says "click Delete session", the button would be a bare "button" for as
+ * long as it is lifted. Its text is given as an `aria-label` meanwhile, to an
+ * element that has no name of its own.
  */
 const DELAY = 450;
 
@@ -22,6 +28,8 @@ export function installTooltips(): void {
 
   let owner: HTMLElement | null = null;
   let text = "";
+  /** Whether the lifted title is also the element's name, in `aria-label`, until it is put back. */
+  let named = false;
   let timer = 0;
   let watch = 0;
 
@@ -30,8 +38,10 @@ export function installTooltips(): void {
     window.clearInterval(watch);
     // Put back only if nothing set a new one, or took it away, meanwhile.
     if (owner && text && owner.getAttribute("title") === "") owner.setAttribute("title", text);
+    if (owner && named && owner.getAttribute("aria-label") === text) owner.removeAttribute("aria-label");
     owner = null;
     text = "";
+    named = false;
     tip.classList.remove("is-shown");
   };
 
@@ -67,6 +77,7 @@ export function installTooltips(): void {
       if (next) {
         owner.setAttribute("title", "");
         if (next !== text) {
+          if (named) owner.setAttribute("aria-label", next);
           text = next;
           place();
         }
@@ -91,6 +102,9 @@ export function installTooltips(): void {
       owner = el;
       text = t;
       el.setAttribute("title", "");
+      // Named by its text, or by a label of its own, it needs no help.
+      named = !el.hasAttribute("aria-label") && !el.hasAttribute("aria-labelledby") && !el.textContent?.trim();
+      if (named) el.setAttribute("aria-label", t);
       timer = window.setTimeout(place, DELAY);
     },
     true,

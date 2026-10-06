@@ -127,7 +127,10 @@ while a chat or a routine is working.
 
 React with react-router. Every meaningful view has a URL — a session, the
 sessions list, the agents page, each settings tab — so deep links and the back
-button work, with an SPA fallback on the server.
+button work, with an SPA fallback on the server. The first draw needs only the
+shell, the chat and the sign-in page: the other pages, Settings, the setup
+assistant, the terminal emulator and the text of the language in use are
+fetched when first needed (`lazyComponent` in `web/src/lazy.ts`).
 
 State is polled every five seconds and pushed over SSE for the open session.
 Text is translated in the browser: every English string goes through `t()`, and a

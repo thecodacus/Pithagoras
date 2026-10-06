@@ -10,11 +10,14 @@ import {
   pendingNotes,
   consumeNotes,
 } from "../db.js";
-import { resolveChannelSession, scopeKey } from "../agent.js";
-import { sessions, EXECUTOR_KIND, stripThinkingMarkers } from "../session-manager.js";
+import { resolveChannelSession, scopeKey, unscopeKey } from "../agent.js";
+import { EXECUTOR_KIND } from "../executor-kind.js";
+import { sessions, CommandFailed, stripThinkingMarkers } from "../session-manager.js";
+import { ruleApplies } from "../pi/guard.js";
 import { readAnswer, recordAnswer, type QuestionRow } from "../questions.js";
 import { recordApproval } from "../approvals.js";
 import {
+  getPerson,
   hasPrimary,
   lower,
   markAnnounced,
@@ -25,6 +28,8 @@ import {
   type PersonRow,
 } from "../people.js";
 import { loadChannels, type LoadedChannel } from "./loader.js";
+import { neutralise, notesBlock } from "./framing.js";
+import { parseConfig, type ChannelRow } from "./row.js";
 
 /**
  * Runs the enabled channels.
@@ -35,19 +40,6 @@ import { loadChannels, type LoadedChannel } from "./loader.js";
  */
 
 export type ChannelState = "running" | "stopped" | "starting" | "error";
-
-interface ChannelRow {
-  id: string;
-  slug: string;
-  kind: string;
-  name: string;
-  enabled: number;
-  config: string;
-  instructions: string;
-  relay_progress: number;
-  relay_tools: number;
-  updated_at: string;
-}
 
 interface Running {
   /** Restarted when this changes, so an edited token takes effect. */
@@ -67,7 +59,18 @@ interface Running {
   /** Optional: platform-native question rendering, with a text fallback. */
   prompt?: (
     target: string,
-    request: { id: string; method: string; question: string; options?: string[] }
+    request: {
+      id: string;
+      method: string;
+      question: string;
+      options?: string[];
+      /**
+       * Whether the sender with this platform id may answer: the person it was
+       * asked of, or the primary user. For a transport whose answers are taps
+       * that any member of a group can make.
+       */
+      canAnswer: (senderId: string) => boolean;
+    }
   ) => Promise<{ value?: unknown; cancelled?: boolean } | null>;
   log: { at: string; text: string }[];
 }
@@ -110,13 +113,21 @@ interface PendingUi {
   id: string;
   method: string;
   options?: string[];
+  /** Whose message raised it: only they, or the primary user, answer it. */
+  asker?: string;
 }
+
+/** May this sender answer the dialog? Anybody may where nobody was told apart. */
+const mayAnswer = (open: PendingUi, who: { key: string; role: string } | null | undefined): boolean =>
+  !open.asker || who?.key === open.asker || who?.role === "primary";
 
 class ChannelSupervisor {
   private running = new Map<string, Running>();
   private syncing: Promise<void> | null = null;
   /** Open dialogs, by session. The next message in that chat answers one. */
   private pendingUi = new Map<string, PendingUi>();
+  /** How long a package gets to stop before the portal goes on without it. */
+  stopGraceMs = 5000;
   /** Channels waiting to try starting again, with how many times they have failed. */
   private retries = new Map<string, { attempt: number; timer: NodeJS.Timeout }>();
 
@@ -259,6 +270,36 @@ class ChannelSupervisor {
     this.retries.delete(id);
   }
 
+  /**
+   * Tell the people whose conversation a restart cut off.
+   *
+   * The channel acknowledged what they said before the portal went down, and
+   * will not hand it over again: a run that was going is gone, and so is what
+   * they sent meanwhile. Without a word they would wait for an answer that
+   * never comes. Only a channel that can speak first is written to — what is
+   * left for one that cannot would go out with the answer to their next
+   * message, long after they had given up.
+   */
+  async tellRestart(sessionIds: string[]): Promise<void> {
+    for (const id of sessionIds) {
+      const session = getSession(id);
+      const live = session?.channel_slug ? this.liveBySlug(session.channel_slug) : undefined;
+      if (!session?.channel_slug || !session.channel_key || !live?.send) continue;
+      try {
+        // Not through send(): that keeps what it says as a note for the agent,
+        // and a note taints the conversation for good (see notesBlock) — which
+        // this sentence of the portal's own, with nothing from outside in it,
+        // would do to the primary user's. They will say it again anyway.
+        await live.send(
+          unscopeKey(session.channel_slug, session.channel_key),
+          "The portal restarted while I was working on this, so my answer was cut off. Please send your message again.",
+        );
+      } catch (e) {
+        console.error(`[portal] could not tell ${session.channel_key} about the restart: ${(e as Error).message}`);
+      }
+    }
+  }
+
   /** Can this channel speak first? Only running channels that implement send. */
   canSend(slug: string): boolean {
     return Boolean(this.liveBySlug(slug)?.send);
@@ -270,12 +311,20 @@ class ChannelSupervisor {
    * Deliberately not routed through a session: this is the portal talking, not
    * the agent mid-conversation, and pushing it through the channel's session
    * would leave a message in the transcript that nobody sent.
+   *
+   * What it says is kept as a note for the conversation it lands in, unless
+   * `note` is off. Words an outsider got into it — a guest's question to the
+   * primary user — are not for the agent: a note taints the conversation for
+   * good (see notesBlock), and the answer reaches the one who asked without it.
+   * Nor are the answer that is relayed back and the reply of the turn it
+   * resumes: the first is the primary user's own, the second the agent's.
    */
   async send(
     slug: string,
     target: string,
     text: string,
-    options?: { label: string; reply: string }[]
+    options?: { label: string; reply: string }[],
+    note = true
   ): Promise<"sent" | "queued"> {
     if (!text.trim()) return "sent";
     const live = this.liveBySlug(slug);
@@ -293,7 +342,7 @@ class ChannelSupervisor {
             : `Channel "${slug}" is not running`
         );
       }
-      addNote(session.id, text, true);
+      addNote(session.id, text, true, note);
       return "queued";
     }
 
@@ -301,7 +350,7 @@ class ChannelSupervisor {
     // The agent said this, so its conversation has to know it said it. Without
     // this, a routine reports into a chat and the follow-up question — "what did
     // you mean by that?" — reaches an agent with no idea what "that" is.
-    if (session) addNote(session.id, text);
+    if (session && note) addNote(session.id, text);
     return "sent";
   }
 
@@ -320,51 +369,79 @@ class ChannelSupervisor {
     approves: boolean
   ): Promise<void> {
     const who = primaryName();
+    const asker = question.person_name;
+    // A question without an action asked for a decision, not permission: nothing was held back, so the answer is an
+    // answer, whatever words it is in. One about an action is a permission, and only its words give it.
+    const verdict = !question.action
+      ? `Tell ${asker} what ${who} said, and go on as that answer says, within what you may do for them: ` +
+        `it allows nothing more than before.`
+      : approves
+        ? `That is an approval. You may run \`${question.action}\` once, now — exactly as ` +
+          `written. Do it, then tell ${asker} what came of it.`
+        : /^no\b/i.test(answer)
+          ? `That is a no. Tell ${asker} what ${who} said and do not attempt it. Do not ask again.`
+          : `That is not an approval: only "approve" and "always" are, so nothing ran and nothing is allowed. ` +
+            `Tell ${asker} what ${who} said. If you still need it, you may ask again, and ${who} has to answer ` +
+            `with approve or always (or no).`;
     const prompt = [
       "<answer-from-primary>",
       `${who} has answered the question you put to them: ${answer}`,
-      approves && question.action
-        ? `That is an approval. You may run \`${question.action}\` once, now — exactly as ` +
-          `written. Do it, then tell ${question.person_name} what came of it.`
-        : approves
-          ? `Carry on with what you were asked, then tell ${question.person_name}.`
-          : `That is not an approval. Tell ${question.person_name} what ${who} said and do not ` +
-            `attempt it. Do not ask again.`,
-      `Reply to ${question.person_name}, not to ${who} — this is their conversation.`,
+      verdict,
+      `Reply to ${asker}, not to ${who} — this is their conversation.`,
       "</answer-from-primary>",
     ].join("\n");
 
     try {
       const reply = stripThinkingMarkers((await sessions.ask(sessionId, () => {
         const pending = pendingNotes(sessionId);
-        const full = pending.length
-          ? `${prompt}\n\n<sent-since-you-last-spoke>\n${pending.map(n => n.text).join("\n\n---\n\n")}\n</sent-since-you-last-spoke>`
-          : prompt;
+        const full = pending.length ? `${prompt}\n\n${notesBlock(pending.map((n) => n.text))}` : prompt;
         return { message: full, onAccepted: () => consumeNotes(sessionId, pending.map(n => n.id)) };
       })) ?? "");
-      if (reply) await this.send(question.channel_slug, question.channel_key, reply);
+      // Not a note: the agent wrote it, so it is in its own transcript, and kept as a note it would
+      // taint the conversation at the next message and refuse the pushes it was just allowed.
+      if (reply) await this.send(question.channel_slug, question.channel_key, reply, undefined, false);
     } catch (e) {
       console.error(`[portal] could not resume ${sessionId}: ${(e as Error).message}`);
     }
   }
 
-  /** Tell the primary user that somebody new turned up — once per person. */
-  private async announce(person: PersonRow, slug: string): Promise<void> {
-    if (person.announced_at) return;
-    markAnnounced(person.key);
-    const to = getDefaultReportTo();
-    if (!to) return;
-    try {
-      await this.send(
-        to.channel,
-        to.target,
-        `${person.name} messaged me on ${slug} and I do not know them, so I said no. ` +
-          `Add them in Settings → People if they should get through.`
-      );
-    } catch {
-      // Nothing to do about it here; they are recorded either way.
-    }
+  /**
+   * Tell the primary user that somebody new turned up — once per person, once it
+   * got through. Whether they know: a person not announced yet is tried again
+   * with their next message, so that a report target set later, or a channel that
+   * is back, still brings the word.
+   *
+   * Not through send(): that keeps what it says as a note for the agent, and a note
+   * taints the conversation for good (see notesBlock) — here with the stranger's
+   * own name in it, which an outsider can set to anything and trigger as often as
+   * they have accounts. The agent has no need of it to answer the primary user.
+   */
+  private announce(person: PersonRow, slug: string): Promise<boolean> {
+    if (person.announced_at) return Promise.resolve(true);
+    // Two messages together are one announcement.
+    const going = this.announcing.get(person.key);
+    if (going) return going;
+    const attempt = (async () => {
+      const to = getDefaultReportTo();
+      const live = to ? this.liveBySlug(to.channel) : undefined;
+      if (!to || !live?.send) return false;
+      try {
+        await live.send(
+          to.target,
+          `${person.name} messaged me on ${slug} and I do not know them, so I said no. ` +
+            `Add them in Settings → People if they should get through.`
+        );
+      } catch (e) {
+        console.error(`[portal] could not tell ${to.channel} about ${person.key}: ${(e as Error).message}`);
+        return false;
+      }
+      markAnnounced(person.key);
+      return true;
+    })().finally(() => this.announcing.delete(person.key));
+    this.announcing.set(person.key, attempt);
+    return attempt;
   }
+  private announcing = new Map<string, Promise<boolean>>();
 
   private liveBySlug(slug: string): Running | undefined {
     for (const live of this.running.values()) {
@@ -377,11 +454,25 @@ class ChannelSupervisor {
     const live = this.running.get(id);
     if (!live) return;
     this.running.delete(id);
+    let timer: NodeJS.Timeout | undefined;
     try {
       live.controller.abort();
-      await live.stop?.();
+      // A package that waits for something to end (a webhook with a request open
+      // for the length of an agent turn) must not hold every later sync and the
+      // shutdown with it.
+      await Promise.race([
+        live.stop?.(),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(() => {
+            console.error(`[channel ${live.slug}] did not stop within ${this.stopGraceMs / 1000}s; carrying on without it`);
+            resolve();
+          }, this.stopGraceMs);
+        }),
+      ]);
     } catch (e) {
       console.error(`[channel ${live.slug}] stop failed: ${(e as Error).message}`);
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -410,6 +501,21 @@ class ChannelSupervisor {
       ? seen(personKey(row.slug, senderId), typeof from?.name === "string" ? from.name : "")
       : null;
 
+    if (!person && hasPrimary()) {
+      // Once somebody is named, nobody is let in unknown, and a message that says
+      // nothing of who sent it cannot be told from a stranger's. Said so, so that
+      // whoever set the channel up knows what to give it.
+      recordAudit({
+        kind: "stranger",
+        reason: `Turned away on ${row.slug}: the message named no sender`,
+        subject: text.slice(0, 200),
+      });
+      return (
+        "I only talk to people I have been introduced to, and this message did not say who " +
+        "sent it. If this channel is yours, have it name its sender."
+      );
+    }
+
     if (person && person.role === "unknown" && hasPrimary()) {
       recordAudit({
         kind: "stranger",
@@ -419,11 +525,12 @@ class ChannelSupervisor {
       });
       // Refused before a session exists: an unclassified sender never reaches
       // the agent at all, so there is nothing for them to talk it into.
-      await this.announce(person, row.slug);
-      return (
-        "I only talk to people I have been introduced to. I have let my primary user know you " +
-        "got in touch — if they add you, try again."
-      );
+      // Said as it is: with nobody to tell, "I have let them know" would have them wait for it.
+      return (await this.announce(person, row.slug))
+        ? "I only talk to people I have been introduced to. I have let my primary user know you " +
+            "got in touch — if they add you, try again."
+        : "I only talk to people I have been introduced to, and I could not reach my primary user " +
+            "about you. Ask them to add you, then try again.";
     }
 
     // The primary user answering a question a colleague's session raised. Handled
@@ -436,29 +543,41 @@ class ChannelSupervisor {
         const { question, answer, approves, always } = pending;
 
         const asking = findChannelSession(scopeKey(question.channel_slug, question.channel_key));
-        recordApproval(question, asking, approves, always);
         let how: "sent" | "queued";
         try {
+          // Not a note either: the primary user's own words are not somebody else's, and the resumed
+          // turn below hands the agent the answer. A note taints the conversation for good, and an
+          // approved push is refused in a tainted one after the approval has been spent on it.
           how = await this.send(
             question.channel_slug,
             question.channel_key,
             `${primaryName()} says: ${answer}` +
               (approves && question.action
                 ? `\n\n(Approved: you may now run \`${question.action}\` once.)`
-                : "")
+                : ""),
+            undefined,
+            false
           );
         } catch (e) {
+          // Nothing was written down, and the question is still open: answered again, it is passed on once it can be.
           return `Could not get that back to ${question.person_name}: ${(e as Error).message}`;
         }
+        // Only once the answer is on its way, so that an approval is never left standing for a refusal the
+        // primary user was told of. The relay is awaited and the grant follows it at once, before the person
+        // it is for can have read the answer.
+        recordApproval(question, asking, approves, always);
         recordAudit({
           kind: "answered",
           tool: question.action_tool || "",
           subject: question.action || question.question.slice(0, 200),
-          reason: always
-            ? `Always allowed for ${question.person_name}`
-            : approves
-              ? `Approved once for ${question.person_name}`
-              : `Refused for ${question.person_name}`,
+          // Only a question about an action can be refused: one for a decision was answered, whatever the answer was.
+          reason: !question.action
+            ? `Answered for ${question.person_name}`
+            : always
+              ? `Always allowed for ${question.person_name}`
+              : approves
+                ? `Approved once for ${question.person_name}`
+                : `Refused for ${question.person_name}`,
           personKey: question.person_key,
           sessionId: asking?.id ?? null,
         });
@@ -478,9 +597,12 @@ class ChannelSupervisor {
             ? `Approved — passed to ${question.person_name}, and ${scope}`
             : `Approved. ${question.person_name} will see it the next time they write.`;
         }
+        // An answer to a question about an action that is neither of the words that approve it nor a no: said, so that
+        // they do not think it ran. The question is answered, so the agent has to ask again.
+        const unclear = question.action && !/^no\b/i.test(answer) ? ` It was not an approval (only "approve" and "always" are), so nothing will run.` : "";
         return how === "sent"
-          ? `Passed on to ${question.person_name}.`
-          : `Saved for ${question.person_name} — they will see it the next time they write.`;
+          ? `Passed on to ${question.person_name}.${unclear}`
+          : `Saved for ${question.person_name} — they will see it the next time they write.${unclear}`;
       }
     }
 
@@ -500,13 +622,6 @@ class ChannelSupervisor {
       executor: EXECUTOR_KIND,
     });
 
-    // A conversation is only ever as trusted as its least trusted participant,
-    // and it does not recover: a group where a guest has spoken keeps serving
-    // guest-level context even when the next message is from the primary user.
-    // Before a primary is named nobody is a stranger, so nothing is downgraded
-    // either — otherwise the upgrade itself would quietly strip context from
-    // every existing conversation.
-
     // Everything below jumps the queue on purpose. ask() serialises per
     // session, so anything meant to affect the run in progress has to be
     // handled before it, or it waits behind the thing it is answering.
@@ -525,7 +640,13 @@ class ChannelSupervisor {
     }
 
     // Answering an extension's question, not starting a new turn. The reply
-    // travels back through the ask that is still running.
+    // travels back through the ask that is still running. Only by the one it
+    // was asked of, or the primary user: in a group the next message is
+    // anybody's, and a dialog that asks the owner to confirm something is not
+    // for a guest to say yes to.
+    if (open && !mayAnswer(open, person)) {
+      return `That question is waiting for ${getPerson(open.asker!)?.name ?? "somebody else"}. Your message was not taken as the answer.`;
+    }
     if (open) {
       // Anything that is not a valid answer cancels. Re-asking would trap the
       // conversation in a question nobody meant to be in — the run stays
@@ -563,6 +684,12 @@ class ChannelSupervisor {
       };
     }, {
       beforeTurn: async () => {
+        // A conversation is only ever as trusted as its least trusted participant,
+        // and it does not recover: a group where a guest has spoken keeps serving
+        // guest-level context even when the next message is from the primary user.
+        // Before a primary is named nobody is a stranger, so nothing is downgraded
+        // either — otherwise the upgrade itself would quietly strip context from
+        // every existing conversation.
         if (person && hasPrimary()) {
           const current = getSession(session.id);
           if (!current) throw new Error("Session no longer exists");
@@ -616,38 +743,31 @@ class ChannelSupervisor {
             method: request.method,
             question,
             options: request.options,
+            canAnswer: (senderId) => mayAnswer({ id: request.id, method: request.method, asker: person?.key }, getPerson(personKey(row.slug, senderId))),
           })
             .then((answer) => {
               if (!answer) {
                 // Declined it: fall back to asking in words.
-                this.pendingUi.set(session.id, {
-                  id: request.id,
-                  method: request.method,
-                  options: request.options,
-                });
+                this.pendingUi.set(session.id, { id: request.id, method: request.method, options: request.options, asker: person?.key });
                 void packageReply?.(question);
                 return;
               }
               sessions.respondUi(session.id, request.id, answer);
             })
             .catch(() => {
-              this.pendingUi.set(session.id, {
-                id: request.id,
-                method: request.method,
-                options: request.options,
-              });
+              this.pendingUi.set(session.id, { id: request.id, method: request.method, options: request.options, asker: person?.key });
               void packageReply?.(question);
             });
           return;
         }
 
-        this.pendingUi.set(session.id, {
-          id: request.id,
-          method: request.method,
-          options: request.options,
-        });
+        this.pendingUi.set(session.id, { id: request.id, method: request.method, options: request.options, asker: person?.key });
         void packageReply?.(question);
       },
+    }).catch((e) => {
+      // A command that was refused, said as the answer: it is what the sender asked for.
+      if (e instanceof CommandFailed) return e.message;
+      throw e;
     });
 
     // A channel with no way to relay mid-run had nowhere to put these, so they
@@ -735,18 +855,20 @@ function interpretAnswer(
 }
 
 /**
- * The channel's standing instructions, attached to each incoming message.
- *
- * Appended per message rather than set once as a system prompt: pi exposes
- * systemPrompt as a getter with no setter, and editing the instructions should
- * take effect on the next message rather than the next restart.
- */
-/**
  * The message, plus what the agent needs to know to answer it properly.
  *
  * Who is speaking is attached to every message rather than stated once at
  * session start, because in a group the sender changes between turns and an
  * agent working from the first one answers the wrong person.
+ *
+ * The channel's standing instructions go with each message rather than being
+ * set once as a system prompt: pi exposes systemPrompt as a getter with no
+ * setter, and editing the instructions should take effect on the next message
+ * rather than the next restart.
+ *
+ * Somebody who is not the primary user speaks after the portal has said who
+ * they are, never first: a message that began with their words could begin
+ * with a command. And their words cannot make one of the portal's blocks.
  */
 function withInstructions(
   text: string,
@@ -754,40 +876,24 @@ function withInstructions(
   person?: PersonRow | null,
   notes: string[] = []
 ): string {
-  const parts = [text];
-  if (notes.length) {
-    parts.push(
-      "<sent-since-you-last-spoke>\n" +
-        "You sent these into this conversation while it was idle — a routine's report, or an " +
-        "answer passed back. They are yours and the other person has already read them.\n\n" +
-        notes.join("\n\n---\n\n") +
-        "\n</sent-since-you-last-spoke>"
-    );
-  }
   const who = person
     ? senderFraming(
         person,
         primaryName(),
         Boolean(getDefaultReportTo()),
         listToolRules()
-          .filter((r) => r.role === person.role || r.role === "all")
+          .filter((r) => ruleApplies(r, person.role, person.key))
           .map((r) => `${r.tool}: ${r.pattern}`)
       )
     : "";
-  if (who) parts.push(`<speaker>\n${who}\n</speaker>`);
   const extra = (instructions ?? "").trim();
-  if (extra) parts.push(`<channel-instructions>\n${extra}\n</channel-instructions>`);
-  return parts.join("\n\n");
+  return [
+    ...(who ? [`<speaker>\n${who}\n</speaker>`] : []),
+    neutralise(text),
+    ...(notes.length ? [notesBlock(notes)] : []),
+    ...(extra ? [`<channel-instructions>\n${extra}\n</channel-instructions>`] : []),
+  ].join("\n\n");
 }
-
-const parseConfig = (raw: string): Record<string, unknown> => {
-  try {
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
-};
 
 /** Config or identity changing means the running channel is stale. */
 const signature = (row: ChannelRow) =>

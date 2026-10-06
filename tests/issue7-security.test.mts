@@ -1,17 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,symlinkSync,rmSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import { mkdirSync, writeFileSync, readFileSync, symlinkSync } from 'node:fs';
+import { join } from 'node:path';
 import express from 'express';
-const temp=mkdtempSync(join(tmpdir(),'pitha-security-'));
-process.env.DATA_DIR=join(temp,'data');process.env.CHANNELS_DIR=join(temp,'channels');process.env.PI_CODING_AGENT_DIR=join(temp,'agent');process.env.SESSION_DIR=join(temp,'sessions');
+import { inProcessHome } from './helpers.mts';
+const temp = inProcessHome('pitha-security-');
 const {removeChannelPackage,isPackageName,channelPackageTarget}=await import('../server/src/channels/loader.ts');
 const {guardExtension}=await import('../server/src/pi/guard.ts');
 const {skillsRouter}=await import('../server/src/api/skills.ts');
 const {bindHost,loginThrottle,portalSecurityHeaders}=await import('../server/src/http-security.ts');
 const {getDb}=await import('../server/src/db.ts');
-test.after(()=>{getDb().close();rmSync(temp,{recursive:true,force:true});});
+test.after(()=>getDb().close());
 
 test('reject traversal and npm flags before package removal; permit scoped names',async()=>{
  const sentinel=join(temp,'keep');writeFileSync(sentinel,'safe');

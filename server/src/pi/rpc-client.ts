@@ -15,6 +15,13 @@ export interface PiMessage {
 }
 
 /**
+ * How long a command that does its work before it answers may take: pi replies to `compact` once the summary
+ * is written, and to `reload` once everything is read again. The default would give up on a local model
+ * that needs minutes, while pi goes on and the chat is already shown idle.
+ */
+const LONG_COMMAND_MS = 30 * 60_000;
+
+/**
  * Client for `pi --mode rpc`: newline-delimited JSON over the child's stdio.
  *
  * Framing note from pi's docs: records are separated by LF only. Node's
@@ -133,8 +140,8 @@ export class PiRpcClient extends EventEmitter implements PiClient {
 
   // --- config, expressed as RPC commands ---
 
-  private async data<T>(type: string, params: Record<string, unknown> = {}): Promise<T> {
-    const res = await this.send(type, params);
+  private async data<T>(type: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<T> {
+    const res = await this.send(type, params, timeoutMs);
     if (res.success === false) throw new Error(res.error || `pi rejected '${type}'`);
     return res.data as T;
   }
@@ -144,7 +151,9 @@ export class PiRpcClient extends EventEmitter implements PiClient {
   }
 
   async getStats(): Promise<PiStats> {
-    return this.data<PiStats>("get_session_stats");
+    const d = await this.data<Partial<PiStats> | undefined>("get_session_stats");
+    // pi leaves the usage out with no model, or a window of 0; the readers of the stats take it to be there, as the SDK client's always is.
+    return { ...d, contextUsage: d?.contextUsage ?? { tokens: null, contextWindow: 0, percent: null } } as PiStats;
   }
 
   async getThinkingLevels(): Promise<string[]> {
@@ -180,11 +189,11 @@ export class PiRpcClient extends EventEmitter implements PiClient {
   }
 
   async compact(): Promise<void> {
-    await this.data("compact");
+    await this.data("compact", {}, LONG_COMMAND_MS);
   }
 
   async reload(): Promise<void> {
-    await this.data("reload");
+    await this.data("reload", {}, LONG_COMMAND_MS);
   }
 
   async exportSession(): Promise<string> {

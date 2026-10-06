@@ -1,6 +1,8 @@
 import { t } from "./i18n";
+import { samplesWav } from "./voice";
 import type { Host, VoiceChoice } from "../../server/src/voice-engines";
 import type { OrbStyle } from "../../server/src/orb-style";
+import type { OutputFormat } from "../../server/src/image-settings";
 export type SessionStatus = "idle" | "running" | "error" | "interrupted";
 
 export interface Session {
@@ -58,6 +60,12 @@ export interface FoundSkill {
   from: string;
 }
 
+/** A skill of a repository that was not taken, and why. */
+export interface SkippedSkill {
+  name: string;
+  reason: string;
+}
+
 export interface SkillDiagnostic {
   type: string;
   message: string;
@@ -105,7 +113,8 @@ export interface Routine {
 export interface AgentSetup {
   home: string;
   initialised: boolean;
-  files: { name: string; exists: boolean; content: string }[];
+  /** `mtime`: when the file last changed, 0 where there is none. A save sends it back, so the agent's own writes are not lost. `link`: it is a link, which is left alone: not shown, not written. */
+  files: { name: string; exists: boolean; content: string; mtime: number; link?: boolean }[];
   /** Where the agent's memory is kept: while it is Understory, MEMORY.md is not read. */
   memory?: "file" | "understory";
 }
@@ -134,6 +143,8 @@ export interface Agent {
     /** "HH:MM", both or neither. */
     quietStart: string;
     quietEnd: string;
+    /** The time zone of the server's clock, which the quiet hours are read on. */
+    timeZone: string;
     last: string | null;
     status: string | null;
     running: boolean;
@@ -300,12 +311,30 @@ export interface PortalEvent {
  */
 export const SIGNED_OUT = "pithagoras:signed-out";
 
+/**
+ * A request, as every one the page makes is: the portal being away is said in words
+ * (what the browser says of it is "Failed to fetch", "Load failed" or
+ * "NetworkError…", in English, whatever language is shown), and a login that is
+ * gone is told to the page.
+ */
+async function send(url: string, init?: RequestInit): Promise<Response> {
+  let res: Response;
+  try {
+    res = await fetch(url, init);
+  } catch (e) {
+    // Aborting is the caller's own doing, and says so itself.
+    if ((e as Error)?.name === "AbortError") throw e;
+    throw new ApiError(t("Cannot reach the portal"), 0, {});
+  }
+  if (res.status === 401 && !url.startsWith("/api/auth/")) window.dispatchEvent(new Event(SIGNED_OUT));
+  return res;
+}
+
 export async function json<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, {
+  const res = await send(url, {
     ...init,
     headers: { "Content-Type": "application/json", ...init?.headers },
   });
-  if (res.status === 401 && !url.startsWith("/api/auth/")) window.dispatchEvent(new Event(SIGNED_OUT));
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new ApiError(body.error || `HTTP ${res.status}`, res.status, body);
@@ -322,6 +351,14 @@ export class ApiError extends Error {
     this.status = status;
     this.body = body;
   }
+}
+
+/** A file's bytes as they are, always a plain stream: what the file calls itself is not how it is sent. */
+async function uploadBytes(url: string, file: File, name: string): Promise<any> {
+  const res = await send(url, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new ApiError(body.error || t("Could not upload {name} ({status})", { name, status: res.status }), res.status, body);
+  return body;
 }
 
 export const DEFAULT_VAD = { positiveSpeechThreshold: 0.65, negativeSpeechThreshold: 0.35, minSpeechMs: 256, preSpeechPadMs: 320, redemptionMs: 1000 };
@@ -381,18 +418,8 @@ export const api = {
    * A file from this computer into the chat's folder. A taken name gets a
    * number rather than replacing anything; the answer says what it is called.
    */
-  uploadFile: async (sessionId: string, dir: string, file: File, name = file.name): Promise<{ path: string; size: number }> => {
-    const res = await fetch(`/api/sessions/${sessionId}/upload?path=${encodeURIComponent(dir)}&name=${encodeURIComponent(name)}`, {
-      method: "POST",
-      // Always a plain stream of bytes: what the file calls itself is not how it is sent.
-      headers: { "Content-Type": "application/octet-stream" },
-      body: file,
-    });
-    if (res.status === 401) window.dispatchEvent(new Event(SIGNED_OUT));
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(body.error || t("Could not upload {name} ({status})", { name, status: res.status }));
-    return body;
-  },
+  uploadFile: (sessionId: string, dir: string, file: File, name = file.name): Promise<{ path: string; size: number }> =>
+    uploadBytes(`/api/sessions/${sessionId}/upload?path=${encodeURIComponent(dir)}&name=${encodeURIComponent(name)}`, file, name),
   /** What deleting `file` would lose that nothing else has (see Unsaved), null for nothing. */
   fileUnsaved: (sessionId: string, file: string) =>
     json<{ unsaved: Unsaved | null }>(`/api/sessions/${sessionId}/unsaved?path=${encodeURIComponent(file)}`),
@@ -411,16 +438,21 @@ export const api = {
   /** Removes the voice container and puts the settings back; `removeData` deletes the downloaded engines and models too. */
   uninstallVoice: (removeData: boolean) => json<{ok:boolean}>('/api/voice/uninstall', {method:'POST', body: JSON.stringify({removeData})}),
   connectVoice: () => json<VoiceConfig>('/api/voice/connect', {method:'POST'}),
+  /** What was said in `samples` (16 kHz mono), in words, and how long the speech server says it took. */
+  transcribe: async (sessionId: string, samples: Float32Array, signal?: AbortSignal): Promise<{ text: string; serverTiming: string }> => {
+    const res = await send(`/api/sessions/${sessionId}/voice/transcribe`, { method: "POST", headers: { "Content-Type": "audio/wav" }, body: samplesWav(samples), signal });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new ApiError(body.error || t("Transcription failed"), res.status, body);
+    return { text: String(body.text ?? ""), serverTiming: res.headers.get("server-timing") ?? "" };
+  },
   setVoiceGpu: (gpu: string) => json<{ selected: string; restarting: boolean }>('/api/voice/gpu', { method: 'PUT', body: JSON.stringify({ gpu }) }),
   voice: () => json<VoiceConfig>("/api/voice"),
   setVoice: (value: VoiceConfig) => json<VoiceConfig>("/api/voice", { method: "PUT", body: JSON.stringify(value) }),
-  authStatus: () => json<{ authRequired: boolean; authed: boolean }>("/api/auth/status"),
+  authStatus: () => json<{ authRequired: boolean; authed: boolean; shortPassword?: boolean }>("/api/auth/status"),
   login: (password: string) =>
     json<{ ok: true }>("/api/auth/login", { method: "POST", body: JSON.stringify({ password }) }),
   logout: () => json<{ ok: true }>("/api/auth/logout", { method: "POST" }),
   workspaces: () => json<{ root: string; workspaces: Workspace[] }>("/api/workspaces"),
-  createWorkspace: (name: string) =>
-    json<Workspace>("/api/workspaces", { method: "POST", body: JSON.stringify({ name }) }),
   sessions: () => json<{ sessions: Session[]; executor: string }>("/api/sessions"),
   /** Without a workspace the chat starts in Home. */
   createSession: (workspace?: string, title?: string) =>
@@ -439,11 +471,12 @@ export const api = {
     }),
   projectContents: (name: string) => json<ProjectContents>(`/api/projects/${encodeURIComponent(name)}`),
   projectInstructions: (name: string) =>
-    json<{ text: string }>(`/api/projects/${encodeURIComponent(name)}/instructions`),
-  setProjectInstructions: (name: string, text: string) =>
+    json<{ text: string; mtime: number }>(`/api/projects/${encodeURIComponent(name)}/instructions`),
+  /** `mtime` is the file's as it was read; a file the agent has written since is refused (409). Without it the save replaces what is there. */
+  setProjectInstructions: (name: string, text: string, mtime?: number) =>
     json<{ ok: true }>(`/api/projects/${encodeURIComponent(name)}/instructions`, {
       method: "PUT",
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, mtime }),
     }),
   /** What chats in the project start with: the same list as a chat's, `live` always false. */
   projectTools: (name: string) =>
@@ -458,7 +491,7 @@ export const api = {
     }),
   /** `discard` says that unsaved work in the folder (see ProjectContents) may go with it; without it the server refuses. */
   deleteProject: (name: string, discard = false) =>
-    json<{ ok: true; sessionsDeleted: number }>(`/api/projects/${encodeURIComponent(name)}${discard ? "?discard=1" : ""}`, {
+    json<{ ok: true; sessionsDeleted: number; jobsStopped: number }>(`/api/projects/${encodeURIComponent(name)}${discard ? "?discard=1" : ""}`, {
       method: "DELETE",
     }),
   renameSession: (id: string, title: string) =>
@@ -567,14 +600,15 @@ export const api = {
   skills: () =>
     json<{ root: string; skills: Skill[]; diagnostics: SkillDiagnostic[] }>("/api/skills"),
   previewSkillImport: (spec: string) =>
-    json<{ spec: string; found: FoundSkill[] }>("/api/skills/preview-import", {
+    json<{ spec: string; sha: string; found: FoundSkill[]; skipped: SkippedSkill[] }>("/api/skills/preview-import", {
       method: "POST",
       body: JSON.stringify({ spec }),
     }),
-  importSkills: (spec: string, only: string[], overwrite: boolean) =>
-    json<{ ok: true; imported: string[]; skipped: { name: string; reason: string }[] }>(
+  // `sha` is the commit the look saw, so that what is installed is what was shown.
+  importSkills: (spec: string, only: string[], overwrite: boolean, sha?: string) =>
+    json<{ ok: true; imported: string[]; skipped: SkippedSkill[] }>(
       "/api/skills/import",
-      { method: "POST", body: JSON.stringify({ spec, only, overwrite }) }
+      { method: "POST", body: JSON.stringify({ spec, only, overwrite, sha }) }
     ),
   updateSkill: (name: string) =>
     json<{ ok: true; imported: string[] }>(`/api/skills/${encodeURIComponent(name)}/update`, {
@@ -636,8 +670,10 @@ export const api = {
   subagentFeature: () => json<{ subagent: SubagentFeature }>("/api/features/subagent"),
   /** Image generation alone: nothing of Understory or Docker asked for. */
   imagesFeature: () => json<{ images: ImagesFeature }>("/api/features/images"),
-  /** Only whether each is on — cheap, for the sidebar and the chat's menus. */
-  /** `images`: image generation is on and has an address, which is when the Images page is in the sidebar. */
+  /**
+   * Only whether each is on — cheap, for the sidebar and the chat's menus.
+   * `images`: image generation is on and has an address, which is when the Images page is in the sidebar.
+   */
   featureFlags: () => json<{ subagent: { enabled: boolean }; understory: { enabled: boolean }; images?: { enabled: boolean } }>("/api/features/flags"),
   /** What a chat's subagents run on: its own choice (null follows `default`). */
   subagentModel: (id: string) => json<{ model: string | null; default: string }>(`/api/sessions/${id}/subagent-model`),
@@ -675,9 +711,10 @@ export const api = {
       body: JSON.stringify(patch),
     }),
   /** A page of the gallery, newest first; `before` is the `next` of the page before. */
-  galleryPage: (query: { origin?: PictureOrigin; kind?: PictureKind; before?: string; limit?: number } = {}) => {
+  galleryPage: (query: { origin?: PictureOrigin; kind?: PictureKind; before?: string; limit?: number; again?: boolean } = {}) => {
     const params = new URLSearchParams();
-    for (const [name, value] of Object.entries(query)) if (value !== undefined) params.set(name, String(value));
+    // `again` is a switch the server reads as 1: the page asks again for a list it has, and the files are not looked through again at once.
+    for (const [name, value] of Object.entries(query)) if (value !== undefined && value !== false) params.set(name, value === true ? "1" : String(value));
     return json<GalleryPage>(`/api/images${params.size ? `?${params}` : ""}`);
   },
   /** Some pictures of the gallery by their ids, as far as they are there. */
@@ -692,18 +729,7 @@ export const api = {
   changePicture: (request: ChangeRequest) =>
     json<{ jobs: PictureJob[] }>("/api/images/edit", { method: "POST", body: JSON.stringify(request) }),
   /** A picture from this computer, into the gallery to be changed. */
-  uploadPicture: async (file: File): Promise<GalleryPicture> => {
-    const res = await fetch(`/api/images/upload?name=${encodeURIComponent(file.name)}`, {
-      method: "POST",
-      // Always the bytes themselves: the portal says what they are.
-      headers: { "Content-Type": "application/octet-stream" },
-      body: file,
-    });
-    if (res.status === 401) window.dispatchEvent(new Event(SIGNED_OUT));
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(body.error || t("Could not upload {name} ({status})", { name: file.name, status: res.status }));
-    return body.picture;
-  },
+  uploadPicture: async (file: File): Promise<GalleryPicture> => (await uploadBytes(`/api/images/upload?name=${encodeURIComponent(file.name)}`, file, file.name)).picture,
   /** The picture as the file it is. Its address never changes what it shows, unless it is in a chat's folder, which the browser then asks about. */
   galleryFileUrl: (id: string) => `/api/images/${id}/file`,
   /** Each as asked, files and all: what could not be deleted is said for each. */
@@ -758,13 +784,14 @@ export const api = {
     }),
   deleteToolRule: (id: string) =>
     json<{ rules: ToolRule[] }>(`/api/tool-rules/${id}`, { method: "DELETE" }),
-  updatePerson: (key: string, patch: { name?: string; role?: Role; notes?: string }) =>
+  /** `force` confirms taking the last primary user's role away: see the people route. */
+  updatePerson: (key: string, patch: { name?: string; role?: Role; notes?: string; force?: boolean }) =>
     json<{ person: Person }>(`/api/people/${encodeURIComponent(key)}`, {
       method: "PATCH",
       body: JSON.stringify(patch),
     }),
-  forgetPerson: (key: string) =>
-    json<{ ok: true }>(`/api/people/${encodeURIComponent(key)}`, { method: "DELETE" }),
+  forgetPerson: (key: string, force = false) =>
+    json<{ ok: true }>(`/api/people/${encodeURIComponent(key)}${force ? "?force=1" : ""}`, { method: "DELETE" }),
 
   routines: () => json<{ routines: Routine[] }>("/api/routines"),
   reportTargets: () =>
@@ -814,12 +841,12 @@ export const api = {
   agents: () => json<{ agents: Agent[] }>("/api/agents"),
   /** A new agent, set up with the wizard's answers. */
   createAgent: (setup: AgentWizard) =>
-    json<Agent>("/api/agents", { method: "POST", body: JSON.stringify({ name: setup.agentName, setup }) }),
+    json<Agent & { kept: string[] }>("/api/agents", { method: "POST", body: JSON.stringify({ name: setup.agentName, setup }) }),
   renameAgent: (id: string, name: string) =>
     json<Agent>(`/api/agents/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify({ name }) }),
   /** The agent and its chats; its folder too when `folder` is "delete". */
   deleteAgent: (id: string, folder: "keep" | "delete") =>
-    json<{ ok: true; sessionsDeleted: number; routinesSwitchedOff: string[] }>(
+    json<{ ok: true; sessionsDeleted: number; routinesSwitchedOff: string[]; routinesDeleted: string[]; jobsStopped: number }>(
       `/api/agents/${encodeURIComponent(id)}?folder=${folder}`,
       { method: "DELETE" }
     ),
@@ -835,11 +862,12 @@ export const api = {
   setAgentOrb: (agent: string, style: OrbStyle) =>
     json<OrbStyle>(`/api/agents/${encodeURIComponent(agent)}/orb`, { method: "PUT", body: JSON.stringify(style) }),
   runAgentWizard: (agent: string, input: AgentWizard) =>
-    json<AgentSetup>(`/api/agents/${encodeURIComponent(agent)}/setup`, { method: "POST", body: JSON.stringify(input) }),
-  saveAgentFile: (agent: string, name: string, content: string) =>
+    json<AgentSetup & { kept: string[] }>(`/api/agents/${encodeURIComponent(agent)}/setup`, { method: "POST", body: JSON.stringify(input) }),
+  /** `mtime` is the file's as it was read; a file the agent has written since is refused (409). Without it the save replaces what is there. */
+  saveAgentFile: (agent: string, name: string, content: string, mtime?: number) =>
     json<AgentSetup>(`/api/agents/${encodeURIComponent(agent)}/files/${encodeURIComponent(name)}`, {
       method: "PUT",
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, mtime }),
     }),
 
   /** Any session by id, including agent and routine ones the task list omits. */
@@ -1124,7 +1152,7 @@ export interface Channel {
   config: Record<string, string>;
   /** Which secret fields have a value stored. */
   secretsSet: string[];
-  /** Appended to the agent's system prompt for messages arriving here. */
+  /** Appended to each message arriving here, in a <channel-instructions> block. */
   instructions: string;
   /** Relay what the agent says between tool calls, not just the final answer. */
   relayProgress: boolean;
@@ -1258,7 +1286,6 @@ export interface ToolRule {
   pattern: string;
   /** Set when the rule is for one person rather than a whole role. */
   person_key: string | null;
-  person_name: string | null;
   note: string;
   created_at: string;
 }
@@ -1318,6 +1345,8 @@ export interface ImagesFeature {
   editKeySet: boolean;
   /** How long a request for a picture, made or edited, may take, in whole seconds. */
   timeoutSeconds: number;
+  /** Whether pictures can be made: switched on, and with an address to ask. The portal says it, so that the page does not work it out again. */
+  ready: boolean;
   /** Whether the agent has an edit tool: switched on, and with an address to ask. */
   editReady: boolean;
   /** The endpoint is stable-diffusion.cpp's server: the page shows, and sends, the settings that only it reads. Off by default. */
@@ -1388,7 +1417,7 @@ export interface PictureJob {
 }
 
 /** The file formats of the OpenAI image format. */
-export type OutputFormat = "png" | "jpeg" | "webp";
+export type { OutputFormat };
 
 /**
  * What the page asks of the portal for one picture beyond its description, and
@@ -1569,7 +1598,8 @@ export interface BrowserStatus {
   /** How and whether a browser can run here at all. */
   install: {
     available: boolean;
-    mode?: "docker" | "local";
+    /** "external": a browser the deployment runs itself, which the portal only looks at. */
+    mode?: "docker" | "local" | "external";
     image: boolean;
     container: "absent" | "stopped" | "running" | "unavailable";
     binary?: string | null;

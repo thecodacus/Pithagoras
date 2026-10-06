@@ -3,6 +3,9 @@ services:
     build: .
     container_name: pithagoras
     restart: unless-stopped
+    # Docker's own init as PID 1: it collects the processes the agent's jobs and the terminal's shells
+    # leave behind, which the portal never waits for and which would stay as zombies until a restart.
+    init: true
     network_mode: host
     volumes:
       # Database, pi's settings and packages, sessions. A named volume unless
@@ -10,8 +13,9 @@ services:
       - ${PORTAL_DATA_DIR:-portal-data}:/data
       # Certificates, when you have them. Empty by default.
       - ${PORTAL_TLS_DIR:-/dev/null}:/certs:ro
-      # Workspaces pi works in. Read-write: the whole point is that it edits code.
-      - ${WORKSPACES_DIR:-/root/repos}:/workspaces
+      # Workspaces pi works in. Read-write: the whole point is that it edits code,
+      # so there is no default: a path nobody chose would be made and mounted empty.
+      - ${WORKSPACES_DIR:?Set WORKSPACES_DIR to the folder on this host that holds your repositories}:/workspaces
       # Required for managed Browser/Voice add-ons and EXECUTOR=container.
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
@@ -26,8 +30,19 @@ services:
       # only for a portal behind a reverse proxy which authenticates already;
       # then nothing here stops whoever reaches the port.
       PORTAL_ALLOW_NO_PASSWORD: ${PORTAL_ALLOW_NO_PASSWORD:-}
+      # Without a password the portal listens on 127.0.0.1 only, which a proxy on
+      # this host reaches and one in another container does not. Set this to 1 for
+      # that proxy; then nothing but the proxy's own login stands in the way.
+      ALLOW_OPEN: ${ALLOW_OPEN:-}
       # Keeps logins valid across restarts; generate with: openssl rand -hex 32
       PORTAL_SECRET: ${PORTAL_SECRET:-}
+      # The time zone of the portal's clock, such as Europe/Berlin. It is UTC unless
+      # this says otherwise, and the quiet hours of an agent's heartbeat and a
+      # repeating routine's schedule are read on that clock.
+      TZ: ${TZ:-UTC}
+      # "skip" upgrades the database without the backup it is otherwise made first,
+      # for a volume with no room for the copy. See docs/guide/upgrading.md.
+      PORTAL_UPGRADE_BACKUP: ${PORTAL_UPGRADE_BACKUP:-}
       # host = pi runs in this container | container = one container per task
       EXECUTOR: ${EXECUTOR:-host}
       PI_IMAGE: ${PI_IMAGE:-pithagoras-runner:latest}
@@ -39,7 +54,11 @@ services:
       PI_PROVIDER: ${PI_PROVIDER:-}
       PI_MODEL: ${PI_MODEL:-}
       PI_THINKING_LEVEL: ${PI_THINKING_LEVEL:-}
+      # Provider keys, passed on to pi. For another provider, add its variable
+      # here, or save the key under Settings -> Providers.
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       # Serve the portal over TLS when both are given. Needed for the embedded
       # browser: the VNC client refuses to run unless every page above it is
       # secure.
@@ -47,9 +66,10 @@ services:
       PORTAL_TLS_KEY: ${PORTAL_TLS_KEY:-}
       # Where a local llama.cpp server is listening. Host networking means the
       # box's own address works from inside the container unchanged.
-      LLAMA_DISK_CACHE_MODELS: ${LLAMA_DISK_CACHE_MODELS:-}
       LLAMA_BASE_URL: ${LLAMA_BASE_URL:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Comma-separated llama.cpp model names whose prompt cache is kept on disk
+      # between chats; the server needs --parallel 1 and a --slot-save-path.
+      LLAMA_DISK_CACHE_MODELS: ${LLAMA_DISK_CACHE_MODELS:-}
       # Managed voice, when more than one GPU is in the box: the GPU index it uses
       # (as nvidia-smi lists them), and memory in MiB to keep free on it for
       # something else. Left empty, the card with the most room is used.

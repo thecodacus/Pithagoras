@@ -24,7 +24,9 @@ agent takes them in after the step it is on, instead of when the whole run is
 over. Until then the message sits in the transcript marked *Waiting — goes in
 after the current step*. A message that did not get that far — the run was
 stopped, or the portal restarted, before the agent took it in — says so and has
-a button to send it again. **Stop** aborts the current run. In
+a button to send it again. **Stop** aborts the current run, and pressed while pi
+is still starting for a message, it keeps that message from being sent at all:
+the message comes back as not sent, rather than being answered seconds later. In
 [voice mode](/guide/voice#pictures-tool-cards-and-controls) what you say stops
 the task by default, and its settings have a switch to add it to the running task
 instead.
@@ -77,7 +79,7 @@ Two keys work from anywhere on the page:
 | Key | Does |
 | --- | --- |
 | `/` | Jump to the message box with the command list open. Not while you are typing somewhere else, where it is a character. It is the [command character](/guide/commands#the-command-character), so it is another key if you chose one |
-| `Esc` | In the message box, **stop the run**. Only when the box is empty — the moment the send button is a stop button — so it can never cost you words |
+| `Esc` | In the message box, **stop the run**, whatever is typed: the words stay in the box, so it costs you nothing. Not while an input method is composing a word, and not while the command list is open, where it closes the list |
 
 ## Looking at a picture
 
@@ -293,12 +295,16 @@ a match, open; one shut during a search is shut only until the search ends.
 The chat's name at the top of the conversation renames it too: click it.
 A name is at most 120 characters, wherever it is given — `/name` included.
 
-Hovering a session gives you pin, rename and delete. Renaming turns the name into
-a field where it stands — Enter or clicking away keeps the new one, Escape puts
-the old one back — and double-clicking the name does the same. Delete asks in the
-portal's own dialog, with the button saying what it will do — and **Settings →
-This browser → Confirmations** turns that question off, for chats, messages, files,
-skills, routines, projects, voices and channels alike. It is kept per browser.
+Hovering a session gives you pin, rename and delete; with the keyboard, a row is
+reached with `Tab` and opened with `Enter` or `Space`, and its buttons show as
+soon as one of them has the focus. One the server refuses — pin, rename or
+delete — says so in an alert, with the reason, beside the list, and the row
+stays as it was. Renaming turns the name into a field where it stands — Enter or
+clicking away keeps the new one, Escape puts the old one back — and
+double-clicking the name does the same. Delete asks in the portal's own dialog,
+with the button saying what it will do — and **Settings → This browser →
+Confirmations** turns that question off, for chats, messages, files, skills,
+routines, projects, voices and channels alike. It is kept per browser.
 Discarding unsaved changes is still asked about. The Agents page's conversations
 can be renamed and deleted the same way, from the row.
 
@@ -412,7 +418,32 @@ before it was a feature:
   log, which is what replay reads.
 
 If the server restarts mid-run, that session is marked `interrupted` rather than
-left spinning. Send a message to carry on.
+left spinning. The run is stopped first, as Stop would, so what the agent had
+written so far is kept in the transcript and in its own record of the
+conversation, not lost with the process. Send a message to carry on.
+
+A chat's pi is let go after twenty minutes without use: nothing running, no
+command or question waiting, no subagent working in the background, and nothing
+this chat started that is still running in its folder (a dev server, a build, a
+job an extension started during one of its tool calls; see
+[Subagents and background jobs](/guide/extensions#subagents-and-background-jobs)).
+Every pi is a whole agent in memory (or a container), and a portal with many
+conversations would otherwise hold them all until it stopped. Nothing is lost —
+the next message starts pi again from the conversation's file, which takes a few
+seconds on a cold start. That is why a chat with a job running is not let go:
+an extension that started the job stops it when its pi goes, and the
+message it would have sent when the job ended would have nobody to receive it. Only the
+chat that started a job is kept for it. The other chats in the same folder, such as the
+conversations of one agent, are let go as usual. A chat with `EXECUTOR=container` is not let go: pi in a container
+does not pick the conversation up again when it is started anew, so the agent
+would have forgotten it, and the container stays until the chat is deleted. Picking a model or opening the command list also starts it. A
+routine that runs in a clean session each time lets its pi go as soon as the run
+ends.
+
+pi's file for the chat (`/data/sessions/<id>`, see
+[Deploying](/guide/deploying#volumes)) is what the agent remembers. When it is
+gone, the chat still shows its transcript, but the agent starts over, and a
+notice in the chat says so.
 
 ## The tab
 
@@ -427,7 +458,10 @@ when you come back to it. A tab left in the background asks for nothing.
 
 If the connection to a chat breaks, the page reconnects — after two seconds,
 then four, eight and at most fifteen — and says so once a second attempt has
-failed. It is not shown for a blip.
+failed. It is not shown for a blip. A chat the portal no longer has — deleted
+on another device while this one still had it open — is not an outage: the page
+says **This chat no longer exists** and offers the way back to Sessions, instead
+of trying to reconnect.
 
 ## Status dots
 
@@ -459,7 +493,9 @@ The buttons above the list filter it: **Everything**, **Refused**, **Allowed**
 (every kind of allowed) or **Strangers**, with counts of each and how many are shown. The
 page shows the latest 300 and refreshes every ten seconds while it is visible.
 Who is named is who they are called now: renaming a person renames them through
-the history.
+the history. A filter that shows nothing says "Nothing matches this filter"; a
+log that could not be read says so, with **Try again**, rather than "Nothing
+recorded".
 
 **Clear the log** empties it, after a confirmation. It deletes every recorded
 decision, not only the ones the filter shows, but not one made while the question

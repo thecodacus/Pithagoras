@@ -1,4 +1,5 @@
-import { test, expect, type Page } from '@playwright/test';
+import { type Page } from '@playwright/test';
+import { test, expect, mockPortal, reply } from './portal-mock';
 
 type Unsaved = { changed: number; unpushed: number; stashes: number; unknown?: true };
 
@@ -9,32 +10,26 @@ type Unsaved = { changed: number; unpushed: number; stashes: number; unknown?: t
 async function portal(page: Page, opts: { unsaved?: Unsaved; found?: Unsaved; asks?: boolean } = {}) {
   const deletes: string[] = [];
   let gone = false;
-  await page.route('**/api/**', async (route) => {
-    const url = new URL(route.request().url());
-    const p = url.pathname;
-    const method = route.request().method();
-    let reply: unknown = {};
-    if (p === '/api/auth/status') reply = { authed: true, authRequired: false };
-    else if (p === '/api/sessions') reply = { sessions: [], executor: 'host' };
-    else if (p === '/api/projects') {
-      reply = { root: '/w', home: '/h', projects: gone ? [] : [{ name: 'demo', path: '/w/demo', isGit: true, hasInstructions: false, sessions: 0, lastActive: null }] };
-    } else if (p === '/api/projects/demo' && method === 'GET') {
-      reply = { name: 'demo', path: '/w/demo', sessions: 0, routines: [], files: 3, bytes: 300, complete: true, ...(opts.unsaved ? { unsaved: opts.unsaved } : {}) };
-    } else if (p === '/api/projects/demo' && method === 'DELETE') {
+  await mockPortal(page, async ({ path: p, method, url }) => {
+    if (p === '/api/projects') {
+      return { root: '/w', home: '/h', projects: gone ? [] : [{ name: 'demo', path: '/w/demo', isGit: true, hasInstructions: false, sessions: 0, lastActive: null }] };
+    }
+    if (p === '/api/projects/demo' && method === 'GET') {
+      return { name: 'demo', path: '/w/demo', sessions: 0, routines: [], files: 3, bytes: 300, complete: true, ...(opts.unsaved ? { unsaved: opts.unsaved } : {}) };
+    }
+    if (p === '/api/projects/demo' && method === 'DELETE') {
       deletes.push(url.search);
       const found = opts.found ?? opts.unsaved;
       const held = found && (found.changed || found.unpushed || found.stashes || found.unknown);
       if (held && url.searchParams.get('discard') !== '1') {
-        return route.fulfill({ status: 409, json: { error: 'This folder holds work that exists nowhere else. Delete it only when that is meant.', code: 'unsaved-work', unsaved: found } });
+        return reply(409, { error: 'This folder holds work that exists nowhere else. Delete it only when that is meant.', code: 'unsaved-work', unsaved: found });
       }
       gone = true;
-      reply = { ok: true, sessionsDeleted: 0 };
-    } else if (p === '/api/models') reply = { models: [], providers: {} };
-    await route.fulfill({ json: reply });
-  });
+      return { ok: true, sessionsDeleted: 0 };
+    }
+    if (p === '/api/models') return { models: [], providers: {} };
+  }, { settings: true });
   await page.addInitScript((asks) => {
-    (window as any).EventSource = class { onmessage: any; onopen: any; onerror: any; addEventListener() {} close() {} };
-    localStorage.setItem('pithagoras.setup', 'done');
     if (!asks) localStorage.setItem('confirmDeletes', 'off');
   }, opts.asks ?? true);
   await page.goto('/projects');
@@ -48,6 +43,8 @@ test('a clean repository is deleted with the plain question', async ({ page }) =
   await page.getByRole('button', { name: 'Delete demo' }).click();
   await expect(dialog(page)).toContainText('Delete the project "demo"?');
   await expect(dialog(page)).toContainText('Files git ignores, such as .env, are not looked at.');
+  // What runs in the folder goes with it, and the question is where it is said.
+  await expect(dialog(page)).toContainText('The background jobs running in its folder, a dev server for example, are stopped too.');
   await dialog(page).getByRole('button', { name: 'Delete project' }).click();
   await expect.poll(() => deletes).toEqual(['']);
 });

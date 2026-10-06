@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { api } from "./api";
 
 /**
  * What Settings shows, kept between one opening and the next.
@@ -103,4 +104,27 @@ export function useCached<T>(key: string, fetcher: () => Promise<T>, { freshMs =
   /** Fetched again, after a change: never answered by a fetch that started before it. */
   const reload = useCallback(() => fetch(0, true), [fetch]);
   return { value, failed, reload };
+}
+
+/**
+ * For `onError`: only the failure of a refresh, which a page shows as a banner
+ * over what it has. A first read that failed is the page's to say, where the
+ * page would be, with a way to try again (`failed`, `LoadFailed`); a banner on
+ * top of that would stay after the retry worked.
+ */
+export const refreshFailed = (key: string, onError: (message: string) => void) => (e: Error) => {
+  if (peek(key) !== undefined) onError(e.message);
+};
+
+/**
+ * What Settings needs first, fetched before it is opened — a moment after the
+ * portal loads — so that opening it draws the page rather than a placeholder.
+ */
+export function prefetchSettings() {
+  const quietly = (p: Promise<unknown>) => void p.catch(() => {});
+  quietly(load("extensions", api.extensions, 30_000));
+  quietly(load("settings", api.settings, 30_000));
+  quietly(load("models", api.allModels, 30_000));
+  quietly(load("report-targets", api.reportTargets, 30_000));
+  quietly(load("providers", api.providers, 30_000));
 }

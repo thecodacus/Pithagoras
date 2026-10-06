@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
 import path from "node:path";
+import { fakeModel, resultsIn } from "./fake-model.mjs";
+import { inProcessHome } from "./server-harness.mjs";
 
 /**
  * The edit_image tool as pi runs it: a model that calls it, an endpoint that
@@ -12,13 +13,7 @@ import path from "node:path";
  * own client, so the tool's parameters are checked by pi as they are for a
  * real model.
  */
-const home = mkdtempSync(path.join(tmpdir(), "pithagoras-edit-image-"));
-process.env.DATA_DIR = home;
-process.env.WORKSPACE_ROOT = path.join(home, "ws");
-process.env.PI_CODING_AGENT_DIR = path.join(home, "agent");
-process.env.SESSION_DIR = path.join(home, "sessions");
-mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
-mkdirSync(process.env.WORKSPACE_ROOT, { recursive: true });
+const home = inProcessHome("pithagoras-edit-image-");
 
 const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(64)]);
 const JPEG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(64)]);
@@ -30,25 +25,12 @@ let named = "edit_image";
 /** The tools each request offered, by name, and as the model got them. */
 const offered = [];
 const definitions = [];
-const model = createServer((req, res) => {
-  let body = "";
-  req.on("data", (d) => { body += d; });
-  req.on("end", () => {
-    const request = JSON.parse(body);
-    offered.push((request.tools ?? []).map((t) => t.function?.name));
-    definitions.push(request.tools ?? []);
-    res.writeHead(200, { "Content-Type": "text/event-stream" });
-    const chunk = (delta, finish = null) =>
-      `data: ${JSON.stringify({ id: "x", object: "chat.completion.chunk", created: 0, model: "m", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
-    // A call first; once its result is in the conversation, an answer.
-    const answered = request.messages.some((m) => m.role === "tool");
-    res.end(answered
-      ? chunk({ role: "assistant", content: "Done." }) + chunk({}, "stop") + "data: [DONE]\n\n"
-      : chunk({ role: "assistant", tool_calls: [{ index: 0, id: "call-1", type: "function", function: { name: named, arguments: JSON.stringify(call) } }] }) + chunk({}, "tool_calls") + "data: [DONE]\n\n");
-  });
+const model = await fakeModel((request) => {
+  offered.push((request.tools ?? []).map((t) => t.function?.name));
+  definitions.push(request.tools ?? []);
+  // A call first; once its result is in the conversation, an answer.
+  return resultsIn(request) > 0 ? "Done." : { name: named, args: call };
 });
-model.listen(0, "127.0.0.1");
-await once(model, "listening");
 
 /** The image endpoint: what it was asked, and what it answers with. */
 const asked = [];
@@ -58,21 +40,16 @@ const endpoint = createServer((req, res) => {
   req.on("data", (c) => chunks.push(c));
   req.on("end", () => {
     asked.push({ url: req.url, auth: req.headers.authorization, type: req.headers["content-type"], body: Buffer.concat(chunks) });
+    // Only a picture to be made or edited is asked of it: any other call is a mistake, and not a picture.
+    if (req.method !== "POST" || !["/v1/images/edits", "/v1/images/generations"].includes(req.url)) return void res.writeHead(500, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: `no ${req.method} ${req.url} here` } }));
     res.writeHead(answer.status, { "Content-Type": "application/json" }).end(JSON.stringify(answer.body()));
   });
 });
 endpoint.listen(0, "127.0.0.1");
 await once(endpoint, "listening");
-after(() => { model.close(); endpoint.close(); });
+after(() => endpoint.close());
 
-writeFileSync(path.join(process.env.PI_CODING_AGENT_DIR, "models.json"), JSON.stringify({
-  providers: {
-    fake: {
-      baseUrl: `http://127.0.0.1:${model.address().port}/v1`, api: "openai-completions", apiKey: "none",
-      models: [{ id: "m", name: "M", reasoning: false, input: ["text"], contextWindow: 10000, maxTokens: 100 }],
-    },
-  },
-}));
+writeFileSync(path.join(process.env.PI_CODING_AGENT_DIR, "models.json"), JSON.stringify(model.models()));
 
 const { SdkPiClient } = await import("../dist/pi/sdk-client.js");
 const { saveImageGeneration } = await import("../dist/image-generation.js");

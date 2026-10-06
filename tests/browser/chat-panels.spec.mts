@@ -1,4 +1,5 @@
-import { test, expect, type Page } from '@playwright/test';
+import { type Page } from '@playwright/test';
+import { test, expect } from './portal-mock';
 
 const box = async (page: Page, selector: string) => (await page.locator(selector).first().boundingBox())!;
 /** The panels in one place; with all of them in one place, the panels. */
@@ -644,7 +645,9 @@ test('a panel carried elsewhere is moved, not taken off the page: the browser in
   // Across the phone's width and back, where they all go to one place and back again.
   await place(page, 'Left', 'Browser');
   await page.setViewportSize({ width: 390, height: 780 });
-  await expect.poll(async () => (await panels(page).boundingBox())!.x).toBe(0);
+  // The left place is drawn again as the one place there is, a new element: a look at the old one, as it goes, finds no box.
+  await expect(placeAt(page, 'right')).toBeVisible();
+  await expect.poll(async () => (await panels(page).boundingBox())?.x).toBe(0);
   await page.setViewportSize({ width: 1300, height: 800 });
   await expect(placeAt(page, 'left')).toBeVisible();
   expect(await kept()).toEqual(['this page', 400]);

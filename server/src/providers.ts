@@ -1,6 +1,7 @@
-import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { writeFileAtomic } from "./atomic-write.js";
 import { piAgentDir } from "./pi-settings.js";
 import { piEntry } from "./pi/package.js";
 
@@ -155,9 +156,7 @@ function readJson(file: string): Json {
 /** Through a temp file and a rename, so pi never reads half a file; readable by its owner only, as pi makes them. */
 function writeJson(file: string, data: Json) {
   mkdirSync(path.dirname(file), { recursive: true });
-  const temp = `${file}.${process.pid}.tmp`;
-  writeFileSync(temp, JSON.stringify(data, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
-  renameSync(temp, file);
+  writeFileAtomic(file, JSON.stringify(data, null, 2) + "\n", 0o600);
 }
 
 /**
@@ -259,18 +258,32 @@ function kindOf(id: string, baseUrl: string | undefined, kinds: Json): ProviderK
   return SERVER_KINDS.has(saved) ? saved : inferKind(id, baseUrl);
 }
 
+/**
+ * Whether a provider is a llama.cpp server, or a llama-swap gateway in front of
+ * one: by the kind saved for it in Settings, else by what its name says. What
+ * reports the progress of a prompt and what thinking is switched off for
+ * go by this, so they agree with the Providers page.
+ */
+export function isLlamaProvider(id: string | undefined): boolean {
+  if (!id) return false;
+  const kind = kindOf(id, readModelsJson().providers?.[id]?.baseUrl, readJson(kindsJsonPath()));
+  return kind === "llama-cpp" || kind === "llama-swap";
+}
+
+/** A key that names an environment variable, as pi reads one: `$NAME` or `${NAME}`. */
+const ENV_REF = /^\$\{?([A-Z_][A-Z0-9_]*)\}?$/i;
+
 export function keyHint(value: unknown): string | undefined {
   if (typeof value !== "string" || !value) return undefined;
   if (value.startsWith("!")) return "from a command";
-  if (/^\$\{?[A-Z_][A-Z0-9_]*\}?$/i.test(value)) return value.replace(/[${}]/g, "");
+  const env = ENV_REF.exec(value);
+  if (env) return env[1];
   if (value.length <= 8) return "••••";
   return `${value.slice(0, 4)}…${value.slice(-4)}`;
 }
 
 /** A key that only exists because pi wants one, not because the server does. */
 const isPlaceholder = (key: unknown) => typeof key === "string" && ["none", "ollama", "local", "sk-no-key-required"].includes(key);
-
-const presetFor = (kind: ProviderKind) => PRESETS.find((p) => p.kind === kind)!;
 
 /**
  * Everything set up: servers from models.json, and keys from auth.json.
@@ -340,7 +353,7 @@ export function parseModels(json: unknown): ModelEntry[] {
     const entry: ModelEntry = { id };
     if (typeof item === "object") {
       // llama-swap lists each alias as a model of its own, with the name of the model it stands for: every preset
-      // behind one llama.cpp router was "llama.cpp router (models.ini presets)". An alias is known by its own name.
+      // behind one llama.cpp router carried the router's name. An alias is known by its own name.
       const alias = item.meta?.llamaswap?.type === "alias";
       if (!alias && typeof item.name === "string" && item.name !== id) entry.name = item.name;
       const ctx = num(item.context_length) ?? num(item.max_model_len) ?? num(item.context_window) ?? num(item.meta?.n_ctx) ?? num(item.meta?.n_ctx_train);
@@ -364,10 +377,8 @@ export function normalizeBaseUrl(raw: string, kind: ProviderKind): string {
   return url.replace(/\/models$/, "");
 }
 
-const ENV_REF = /^\$\{?([A-Z_][A-Z0-9_]*)\}?$/i;
-
-/** A stored key as pi would read it: an environment variable is looked up, a command is not run here. */
-function resolveKey(key: string | undefined): string | undefined {
+/** A stored key as pi would read it: `$NAME` and `${NAME}` are looked up in the environment, anything else is the key as it stands, and a command is not run here. */
+export function resolveKey(key: string | undefined): string | undefined {
   if (!key || isPlaceholder(key)) return undefined;
   const env = ENV_REF.exec(key);
   if (env) return process.env[env[1]];

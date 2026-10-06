@@ -1,20 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { inProcessHome } from "./server-harness.mjs";
 
 // A home of its own: who commits, and no config of the person running the tests.
-const home = mkdtempSync(path.join(tmpdir(), "pithagoras-files-delete-"));
+const home = inProcessHome("pithagoras-files-delete-");
 process.env.HOME = home;
 process.env.GIT_CONFIG_GLOBAL = path.join(home, ".gitconfig");
 process.env.GIT_CONFIG_NOSYSTEM = "1";
 writeFileSync(process.env.GIT_CONFIG_GLOBAL, "[user]\n\tname = Tester\n\temail = t@example.com\n[init]\n\tdefaultBranch = main\n");
-process.env.DATA_DIR = home;
-process.env.WORKSPACE_ROOT = path.join(home, "ws");
-process.env.PI_CODING_AGENT_DIR = path.join(home, "agent");
-mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
 
 const { default: express } = await import("express");
 const { filesRouter } = await import("../dist/api/files.js");
@@ -128,6 +124,7 @@ test("a refusal for another reason is not taken for unsaved work", async () => {
   await withApi(async (base) => {
     const res = await del(base, "nothing-here");
     assert.equal(res.status, 404);
-    assert.equal(res.code, undefined);
+    // Every refusal names its kind; only "unsaved" is the question about work that would be lost.
+    assert.equal(res.code, "missing");
   });
 });

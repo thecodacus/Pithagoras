@@ -30,8 +30,18 @@ The local path is mostly the portal run from source. It goes headless when there
 is no display, and says so — sign-in pages refuse headless browsers often
 enough to matter.
 
+Install is the same on **Settings → Add-ons** and on the Browser page, and the
+button waits while it runs, so a second click cannot start a second download. The
+image is 4.6 GB; its progress is shown on both pages, and what went wrong if the
+download fails. Once it is installed the agent is connected to it, and when it is
+removed the agent is disconnected, whichever page you used.
+
 **Remove** takes the container away and keeps the profile, so installing again
 finds the logins still there.
+
+The Browser page only says the browser is not answering when its container is up
+and does not answer. A browser you stopped, one that is not installed, and the
+machine's own Chrome are not broken.
 
 ## Logging in
 
@@ -43,7 +53,11 @@ then close the tab. The profile lives on its own volume and survives restarts.
 
 The portal proxies the browser's UI at `/browser-ui`, so **Open browser** shows
 it inline with a fullscreen button, using the portal's own certificate and
-credential. No second password, no second certificate. The frame switches on like
+credential. No second password, no second certificate. The page and its
+websocket sit behind the portal's login like everything else: without the login
+they answer 401, and a websocket opened from another site is refused. Behind a reverse
+proxy that rewrites the `Host` header, have it send the host the visitor asked for
+as `X-Forwarded-Host`: the page's origin is compared with that as well. The frame switches on like
 a screen when it opens, unless [the animations](/guide/interface#animations) are
 off.
 
@@ -144,7 +158,7 @@ the field keeps it.
   glow in light mode.
 
 Each move takes about a third of a second, which the action waits for. To turn
-it off, clear **Browser → Show the agent's cursor**; the actions then do not wait.
+it off, use the **Browser → Show the agent's cursor** switch; the actions then do not wait.
 
 ### Upgrading from the Playwright MCP
 

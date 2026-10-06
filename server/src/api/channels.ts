@@ -1,25 +1,25 @@
 import express, { type Router } from "express";
 import { nanoid } from "nanoid";
-import { countChannelSessions, deleteSession, getDb } from "../db.js";
+import { BROWSER_CHANNEL, countChannelSessions, deleteSession, getDb } from "../db.js";
 import { sessions } from "../session-manager.js";
-import { agentHome } from "../agent.js";
+import { agentHome } from "../agent-home.js";
 import { DEFAULT_AGENT, getAgent } from "../agents.js";
-import { isValidSlug, slugify } from "../slug.js";
+import { freeSlug, isValidSlug, slugify } from "../slug.js";
 import { channelSupervisor } from "../channels/supervisor.js";
+import { parseConfig, type ChannelRow } from "../channels/row.js";
 import {
   channelsDir,
   isPackageName,
   installChannelPackage,
   loadChannels,
   removeChannelPackage,
-  type ChannelField,
   type LoadedChannel,
 } from "../channels/loader.js";
 
 /**
  * A channel is a two-way link into the agent: messages arrive through it and
- * the agent's replies go back out the same way. Every channel points at the
- * same agent session, so they are different doors into one conversation.
+ * the agent's replies go back out the same way. Each conversation on a channel
+ * has its own session, under the agent the channel talks as.
  *
  * The kinds on offer are whatever channel packages are loaded — the builtins in
  * the repo and anything installed from GitHub or npm. Nothing is hardcoded
@@ -40,30 +40,6 @@ const kindToApi = (k: LoadedChannel) => ({
   builtin: k.builtin,
   runnable: Boolean(k.start),
 });
-
-interface ChannelRow {
-  id: string;
-  slug: string;
-  kind: string;
-  name: string;
-  enabled: number;
-  config: string;
-  instructions: string;
-  relay_progress: number;
-  relay_tools: number;
-  agent_id: string;
-  created_at: string;
-  updated_at: string;
-}
-
-const parseConfig = (raw: string): Record<string, unknown> => {
-  try {
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
-};
 
 /**
  * Strip secrets before anything leaves the process. The browser is told which
@@ -103,24 +79,6 @@ function toApi(row: ChannelRow, kind?: LoadedChannel) {
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
-}
-
-/**
- * A slug that is free. Agent sessions are keyed on it, so it must be unique —
- * two channels sharing one would merge their conversations.
- */
-function freeSlug(desired: string, exceptId?: string): string {
-  const base = slugify(desired) || "channel";
-  const taken = new Set(
-    (getDb().prepare("SELECT id, slug FROM channels").all() as { id: string; slug: string }[])
-      .filter((c) => c.id !== exceptId)
-      .map((c) => c.slug)
-  );
-  if (!taken.has(base)) return base;
-  for (let n = 2; n < 500; n++) {
-    if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
-  }
-  throw new Error(`Could not find a free slug for "${desired}"`);
 }
 
 /** How an agent is kept on a channel: empty for the first, as every channel was before there were others. Undefined for one there is not. */
@@ -169,7 +127,11 @@ export function channelsRouter(): Router {
     // An explicit slug reconnects a channel to the conversations it had before
     // it was deleted; without one it is derived from the name.
     const wanted = typeof req.body?.slug === "string" && req.body.slug.trim() ? req.body.slug : label;
-    const slug = freeSlug(wanted);
+    // Agent sessions are keyed on the slug, so two channels sharing one would merge their conversations.
+    // The Agent page's own slug is not for a channel: its conversations are the owner's.
+    const taken = (getDb().prepare("SELECT slug FROM channels").all() as { slug: string }[]).map((c) => c.slug);
+    taken.push(BROWSER_CHANNEL);
+    const slug = freeSlug(wanted, taken, "channel");
 
     const agentId = req.body?.agentId === undefined ? "" : storedAgent(req.body.agentId);
     if (agentId === undefined) return res.status(400).json({ error: "No such agent" });
@@ -205,6 +167,7 @@ export function channelsRouter(): Router {
       const clash = getDb()
         .prepare("SELECT id FROM channels WHERE slug = ? AND id != ?")
         .get(next, row.id);
+      if (next === BROWSER_CHANNEL) return res.status(409).json({ error: `"${next}" is the name of the portal's own chats, not of a channel` });
       if (clash) return res.status(409).json({ error: `Another channel already uses "${next}"` });
       sets.push("slug = ?");
       values.push(next);
@@ -279,6 +242,7 @@ export function channelsRouter(): Router {
           for (const s of ids) deleteSession(s.id);
         })();
       } catch (e) {
+        sessions.reopen(ids.map((s) => s.id));
         return res.status(500).json({ error: (e as Error).message });
       }
       for (const s of ids) sessions.removeFiles(s.id);

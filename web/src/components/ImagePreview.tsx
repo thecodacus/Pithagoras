@@ -7,7 +7,7 @@ import { t } from "../i18n";
 
 export type PreviewState = "making" | "done" | "failed";
 
-export interface ImagePreviewProps {
+interface ImagePreviewProps {
   state: PreviewState;
   /** An edit of a picture rather than a new one: what the label says, and what is shown under the wait. */
   edit?: boolean;

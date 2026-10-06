@@ -1,19 +1,21 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { LuCircleAlert, LuFilter, LuMessagesSquare, LuPencil, LuPin, LuPinOff, LuSearch, LuTrash2, LuX } from "react-icons/lu";
+import { LuFilter, LuMessagesSquare, LuPin, LuSearch, LuX } from "react-icons/lu";
 import { PageHeader, Stat } from "./PageHeader";
 import type { Session } from "../api";
 import { when } from "../time";
 import { filterSessions } from "../session-filter";
-import { confirmDialog } from "./ConfirmDialog";
+import { SessionActions, sessionError } from "./SessionActions";
+import { ErrorBanner } from "./SettingsUi";
 import { StatusDot, workingText } from "./StatusDot";
 import { TitleInput } from "./TitleInput";
 import { ChatsHeading, FolderTree } from "./FolderTree";
 import { RowsSkeleton } from "./Skeleton";
 import { HOME, folderFrom, folderKeys, folderName, groupByFolder, sortFolders, type Places } from "../session-folders";
 import { useFolderPrefs, useOpenFolders } from "../use-session-folders";
-import { keep, useFlip } from "../motion";
-import { t } from "../i18n";
+import { useFlip } from "../motion";
+import { useNow } from "../use-now";
+import { t, useLanguage } from "../i18n";
 
 /**
  * How long a click on a name waits for a second one. The chat opens on a click
@@ -27,7 +29,7 @@ const DOUBLE_CLICK_MS = 300;
  * unreachable once they fall off the end. Gathered by folder as the sidebar
  * has them, or as one list; `?folder=` shows only one folder's.
  */
-export function SessionsPage({
+export const SessionsPage = memo(function SessionsPage({
   sessions,
   places,
   onSelect,
@@ -46,6 +48,9 @@ export function SessionsPage({
   onPin: (id: string, pinned: boolean) => Promise<void>;
   onRename: (id: string, title: string) => Promise<void>;
 }) {
+  useLanguage();
+  // How long ago each chat changed is told in minutes, from the clock when it is drawn: and a list that has not changed is not drawn again.
+  useNow(true, 60_000);
   const [query, setQuery] = useState("");
   /** The session whose name is being edited in place. */
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -67,8 +72,9 @@ export function SessionsPage({
     setRenaming(null);
     const n = ++renames.current;
     setPending({ id: s.id, title, n });
+    setError(null);
     onRename(s.id, title)
-      .catch((e) => setError(t("Could not rename \"{name}\": {error}", { name: s.title, error: (e as Error).message })))
+      .catch((e) => setError(sessionError("rename", s.title, e)))
       // Only its own: a later rename's name stays until that one is done.
       .finally(() => setPending((p) => (p?.n === n ? null : p)));
   };
@@ -139,6 +145,15 @@ export function SessionsPage({
           }
           onSelect(s.id);
         }}
+        // A row with buttons in it, so not a button itself: reached with Tab and opened with Enter, as in the sidebar.
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.target !== e.currentTarget) return;
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onSelect(s.id);
+          }
+        }}
         className="group flex cursor-pointer items-center gap-3 rounded-xl border border-line bg-raised/40 px-3 py-2.5 transition hover:bg-fg/5"
       >
         <StatusDot status={s.status} />
@@ -177,51 +192,8 @@ export function SessionsPage({
           <p className="truncate font-mono text-[11px] text-fg-faint">{s.workspace}</p>
         </div>
         <span className="shrink-0 text-[11px] text-fg-faint">{when(s.updated_at)}</span>
-        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition group-hover:opacity-100 [@media(hover:none)]:opacity-100">
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onPin(s.id, !s.pinned);
-            }}
-            className="rounded p-1.5 text-fg-subtle hover:text-accent"
-            title={s.pinned ? t("Unpin") : t("Pin")}
-          >
-            {s.pinned ? <LuPinOff className="h-3.5 w-3.5" /> : <LuPin className="h-3.5 w-3.5" />}
-          </button>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              setRenaming(s.id);
-            }}
-            className="rounded p-1.5 text-fg-subtle hover:text-accent"
-            title={t("Rename")}
-            aria-label={t("Rename {name}", { name: s.title })}
-          >
-            <LuPencil className="h-3.5 w-3.5" />
-          </button>
-          <button
-            onClick={async (e) => {
-              e.stopPropagation();
-              const row = e.currentTarget;
-              if (
-                await confirmDialog({
-                  title: t("Delete \"{name}\"?", { name: s.title }),
-                  message: t("It is stopped if it is running, and its transcript is removed."),
-                  confirmLabel: t("Delete"),
-                  danger: true,
-                  deletes: true,
-                })
-              ) {
-                // A picture of the row, to break apart where it was once it is gone (see motion.ts).
-                const gone = keep(row?.closest("li") ?? null, row?.closest<HTMLElement>(".sessions-list"));
-                onDelete(s.id).then(() => gone("row"));
-              }
-            }}
-            className="rounded p-1.5 text-fg-subtle hover:text-danger"
-            title={t("Delete session")}
-          >
-            <LuTrash2 className="h-3.5 w-3.5" />
-          </button>
+        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
+          <SessionActions session={s} onPin={onPin} onStartRename={() => setRenaming(s.id)} onDelete={onDelete} onError={setError} />
         </div>
       </li>
   );
@@ -252,6 +224,7 @@ export function SessionsPage({
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder={t("Search by name or workspace…")}
+              aria-label={t("Search by name or workspace…")}
               className="w-full rounded-lg border border-line bg-raised/60 py-2 pl-9 pr-3 text-sm outline-none placeholder:text-fg-faint focus:border-accent/60"
             />
             {query && (
@@ -261,14 +234,8 @@ export function SessionsPage({
             )}
           </div>
 
-          {error && (
-            <div role="alert" className="mt-3 flex items-start gap-2 rounded-xl border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
-              <LuCircleAlert className="mt-0.5 h-4 w-4 shrink-0" />
-              <span className="min-w-0 flex-1">{error}</span>
-              <button onClick={() => setError(null)} aria-label={t("Dismiss")}>✕</button>
-            </div>
-          )}
-          {startError && <p role="alert" className="mt-3 rounded-lg bg-danger/10 px-3 py-2 text-xs text-danger">{startError}</p>}
+          {error && <ErrorBanner className="mt-3" onClose={() => setError(null)}>{error}</ErrorBanner>}
+          {startError && <ErrorBanner className="mt-3" onClose={() => setStartError(null)}>{startError}</ErrorBanner>}
 
           {asked !== null ? (
             <div className="mt-3 flex items-center gap-1">
@@ -336,4 +303,4 @@ export function SessionsPage({
       </div>
     </div>
   );
-}
+});

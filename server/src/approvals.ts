@@ -1,7 +1,7 @@
 import { nanoid } from "nanoid";
 import { addGrant, addToolRule } from "./db.js";
-import { getPerson } from "./people.js";
-import { rulePatterns } from "./pi/guard.js";
+import { literalPattern, rulePatterns } from "./pi/guard.js";
+import { runsAsPrimary } from "./pi/runs-as-primary.js";
 import type { QuestionRow } from "./questions.js";
 
 /**
@@ -14,20 +14,25 @@ import type { QuestionRow } from "./questions.js";
  */
 export function recordApproval(question: QuestionRow, asking: { id: string } | undefined, approves: boolean, always: boolean): void {
   const tool = question.action_tool || "bash";
+  // Nothing opens these for anybody but the primary user, so there is nothing to write down: a rule would be listed as
+  // working and never apply (ask_primary does not offer them, a question from before that was added may still be open).
+  if (runsAsPrimary(tool)) return;
   // An approval is a permission, not a sentence. Bound to the exact action
   // that was shown, the conversation that asked, one use, fifteen minutes
   // — so "yes" cannot be stretched into a standing role change.
   if (approves && question.action && asking) addGrant(nanoid(10), asking.id, tool, question.action);
   // Standing permission, narrowed to the person who asked. Recorded as an
   // ordinary rule so it shows up in Settings → People beside the ones
-  // written by hand, and is revoked the same way.
+  // written by hand, and is revoked the same way. What was shown is what is
+  // permitted, to the letter: a `*` in a command is a star, not a wildcard.
   if (always && question.action) {
     for (const pattern of rulePatterns(tool, question.action)) {
       addToolRule({
         id: nanoid(10),
-        role: getPerson(question.person_key)?.role || "colleague",
+        // Whatever their role becomes: a rule naming a person applies to them (see ruleApplies).
+        role: "all",
         tool,
-        pattern,
+        pattern: literalPattern(pattern),
         person_key: question.person_key,
         note: `Approved for ${question.person_name}`,
       });

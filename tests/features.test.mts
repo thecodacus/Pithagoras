@@ -1,16 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import path from "node:path";
+import { inProcessHome, scratch } from "./helpers.mts";
 
-const temp = mkdtempSync(path.join(tmpdir(), "pitha-features-"));
-process.env.DATA_DIR = temp;
-process.env.SESSION_DIR = path.join(temp, "sessions");
-const agentDir = path.join(temp, "agent");
-mkdirSync(agentDir);
-process.env.PI_CODING_AGENT_DIR = agentDir;
-process.env.AGENT_HOME = path.join(temp, "agent-home");
+const temp = inProcessHome("pitha-features-");
+const agentDir = process.env.PI_CODING_AGENT_DIR!;
 delete process.env.MEMORY_UNDERSTORY_URL;
 
 const {
@@ -98,7 +93,7 @@ test("Understory's entry puts its tools in front of the agent, and names its tok
 });
 
 test("while Understory is the memory, MEMORY.md is not read; switched off, it is again", () => {
-  const home = mkdtempSync(path.join(tmpdir(), "pitha-home-"));
+  const home = scratch("pitha-home-");
   for (const f of ["SOUL.md", "PrimaryUser.md", "MEMORY.md"]) writeFileSync(path.join(home, f), `# ${f}\n`);
   const names = (role?: string) => extraContextFiles(home, role).map((f) => path.basename(f.path));
 
@@ -183,18 +178,31 @@ test("the Understory the portal runs: its model from a provider or an address of
 
   writeFileSync(
     path.join(agentDir, "models.json"),
-    JSON.stringify({ providers: { "llama-swap": { baseUrl: "http://gpu:8080/v1", api: "openai-completions", models: [{ id: "Ornith" }] }, claude: { baseUrl: "https://api.anthropic.com", api: "anthropic-messages", apiKey: "CLAUDE_KEY", models: [{ id: "sonnet" }] } } }),
+    JSON.stringify({ providers: { "llama-swap": { baseUrl: "http://gpu:8080/v1", api: "openai-completions", models: [{ id: "model-a" }] }, claude: { baseUrl: "https://api.anthropic.com", api: "anthropic-messages", apiKey: "$CLAUDE_KEY", models: [{ id: "sonnet" }] } } }),
   );
   process.env.CLAUDE_KEY = "sk-from-env";
-  assert.deepEqual(service.llmEnv({ source: "provider", provider: "llama-swap", model: "Ornith" }), { baseUrl: "http://gpu:8080/v1", apiKey: "none", model: "Ornith", format: "openai" });
+  assert.deepEqual(service.llmEnv({ source: "provider", provider: "llama-swap", model: "model-a" }), { baseUrl: "http://gpu:8080/v1", apiKey: "none", model: "model-a", format: "openai" });
   assert.deepEqual(service.llmEnv({ source: "provider", provider: "claude", model: "sonnet" }), { baseUrl: "https://api.anthropic.com", apiKey: "sk-from-env", model: "sonnet", format: "anthropic" });
   assert.throws(() => service.llmEnv({ source: "provider", provider: "gone", model: "x" }), /no provider "gone"/);
+  // A key is read as pi reads it: "$NAME" and "${NAME}" name a variable, a word in capitals is a key that happens to look like one, and a command is pi's to run.
+  const keyed = (apiKey: string) => {
+    writeFileSync(path.join(agentDir, "models.json"), JSON.stringify({ providers: { keyed: { baseUrl: "http://gpu:8080/v1", api: "openai-completions", apiKey, models: [{ id: "m" }] } } }));
+    return service.llmEnv({ source: "provider", provider: "keyed", model: "m" }).apiKey;
+  };
+  assert.equal(keyed("${CLAUDE_KEY}"), "sk-from-env");
+  assert.equal(keyed("CLAUDE_KEY"), "CLAUDE_KEY", "a bare word is the key itself, not the variable of that name");
+  assert.equal(keyed("$NOT_SET_ANYWHERE"), "none", "a variable that is not set is no key, not the text of its name");
+  assert.throws(() => keyed("!pass show llm"), /command pi runs/);
+  writeFileSync(
+    path.join(agentDir, "models.json"),
+    JSON.stringify({ providers: { "llama-swap": { baseUrl: "http://gpu:8080/v1", api: "openai-completions", models: [{ id: "model-a" }] }, claude: { baseUrl: "https://api.anthropic.com", api: "anthropic-messages", apiKey: "$CLAUDE_KEY", models: [{ id: "sonnet" }] } } }),
+  );
 
   const token = service.token();
   assert.equal(service.token(), token, "made once");
-  const env = service.spec({ llm: { source: "provider", provider: "llama-swap", model: "Ornith" }, dreamInterval: "6h" }, token).Env;
-  for (const line of ["BUNDLE_ROOT=/bundle", `AUTH_TOKEN=${token}`, "LLM_API_BASE_URL=http://gpu:8080/v1", "LLM_MODEL=Ornith", "DREAM_INTERVAL=6h"]) assert.ok(env.includes(line), line);
-  assert.ok(!service.spec({ llm: { source: "provider", provider: "llama-swap", model: "Ornith" }, dreamInterval: "" }, token).Env.some((l) => l.startsWith("DREAM_INTERVAL")), "never is no interval at all");
+  const env = service.spec({ llm: { source: "provider", provider: "llama-swap", model: "model-a" }, dreamInterval: "6h" }, token).Env;
+  for (const line of ["BUNDLE_ROOT=/bundle", `AUTH_TOKEN=${token}`, "LLM_API_BASE_URL=http://gpu:8080/v1", "LLM_MODEL=model-a", "DREAM_INTERVAL=6h"]) assert.ok(env.includes(line), line);
+  assert.ok(!service.spec({ llm: { source: "provider", provider: "llama-swap", model: "model-a" }, dreamInterval: "" }, token).Env.some((l) => l.startsWith("DREAM_INTERVAL")), "never is no interval at all");
 
   // A key the page never holds is kept when it sends none.
   service.saveConfig({ llm: { source: "custom", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat", format: "openai", apiKey: "sk-1" }, dreamInterval: "1d" });
@@ -277,12 +285,12 @@ test("Understory thinking with the chat's model: the chat whose memory tool runs
     path.join(agentDir, "models.json"),
     JSON.stringify({
       providers: {
-        fake: { baseUrl: `http://127.0.0.1:${up}/v1`, api: "openai-completions", apiKey: "sk-fake", models: [{ id: "qwen3.8" }] },
+        fake: { baseUrl: `http://127.0.0.1:${up}/v1`, api: "openai-completions", apiKey: "sk-fake", models: [{ id: "model-b" }] },
         claude: { baseUrl: "https://api.anthropic.com", api: "anthropic-messages", apiKey: "x", models: [{ id: "sonnet" }] },
       },
     }),
   );
-  let chatModel = { provider: "fake", id: "qwen3.8" };
+  let chatModel = { provider: "fake", id: "model-b" };
   const app = express().use(llm.memoryLlmRouter(async (id) => (id === "chat-a" ? chatModel : undefined)));
   const portal = app.listen(0, "127.0.0.1");
   await new Promise((r) => portal.once("listening", r));
@@ -302,7 +310,7 @@ test("Understory thinking with the chat's model: the chat whose memory tool runs
     assert.equal(answer.status, 200, answer.status === 200 ? "" : await answer.clone().text());
     assert.match(answer.headers.get("content-type") ?? "", /event-stream/);
     assert.match(await answer.text(), /"he"[\s\S]*"llo"[\s\S]*\[DONE\]/);
-    assert.deepEqual(seen[0], { body: { model: "qwen3.8", stream: true, messages: [{ role: "user", content: "hi" }] }, auth: "Bearer sk-fake" });
+    assert.deepEqual(seen[0], { body: { model: "model-b", stream: true, messages: [{ role: "user", content: "hi" }] }, auth: "Bearer sk-fake" });
 
     // Understory hanging up mid-answer ends the stream here, and nothing else.
     const hangUp = new AbortController();
@@ -403,9 +411,9 @@ test("the page is shown the three defaults it edits, and nothing else the settin
   service.token();
   service.llmToken();
   service.saveConfig({ llm: { source: "custom", baseUrl: "https://a/v1", model: "m", format: "openai", apiKey: "sk-secret" }, dreamInterval: "", dreamAt: "" });
-  setSettings({ provider: "llama-swap", model: "Ornith" });
+  setSettings({ provider: "llama-swap", model: "model-a" });
   const shown = shownStoredSettings();
-  assert.deepEqual(shown, { provider: "llama-swap", model: "Ornith" });
+  assert.deepEqual(shown, { provider: "llama-swap", model: "model-a" });
   assert.doesNotMatch(JSON.stringify(shown), /sk-secret|understory/);
 });
 

@@ -1,9 +1,9 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import express, { type Router } from "express";
-import { piSettingsPath, updatePiSettings } from "../pi-settings.js";
+import { piSettingsPath, readPiSettings, updatePiSettings } from "../pi-settings.js";
 import { extensionStash, setExtensionStash } from "../db.js";
 import { isFiltered, isSwitchedOff, setPackageEnabled, sourceOf } from "../extension-switch.js";
 import { sessions } from "../session-manager.js";
@@ -32,23 +32,6 @@ export interface ExtensionInfo {
   enabled?: boolean;
   /** Some of its files are off by hand; switching it off and on must not lose that. */
   filtered?: boolean;
-}
-
-const settingsFile = piSettingsPath;
-
-function readSettings(): Record<string, unknown> {
-  try {
-    const raw = readFileSync(settingsFile(), "utf8");
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function writeSettings(next: Record<string, unknown>): void {
-  mkdirSync(path.dirname(settingsFile()), { recursive: true });
-  writeFileSync(settingsFile(), JSON.stringify(next, null, 2) + "\n", "utf8");
 }
 
 /**
@@ -221,7 +204,7 @@ export function extensionsRouter(): Router {
 
   router.get("/extensions", async (_req, res) => {
     try {
-      const settings = readSettings();
+      const settings = readPiSettings();
       const packages = await installedPackages(settings);
       const listed = Array.isArray(settings.packages) ? settings.packages : [];
 
@@ -268,7 +251,7 @@ export function extensionsRouter(): Router {
         return info;
       });
 
-      res.json({ extensions: infos, settingsPath: settingsFile() });
+      res.json({ extensions: infos, settingsPath: piSettingsPath() });
     } catch (e) {
       res.status(500).json({ error: (e as Error).message });
     }
@@ -295,16 +278,17 @@ export function extensionsRouter(): Router {
   });
 
   /** Write one settings key. Empty string removes it, so a field can be cleared. */
-  router.put("/extensions/settings", (req, res) => {
+  router.put("/extensions/settings", async (req, res) => {
     const { key, value } = req.body ?? {};
     if (typeof key !== "string" || !/^[A-Za-z_$][\w$]*$/.test(key)) {
       return res.status(400).json({ error: "Invalid settings key" });
     }
     try {
-      const settings = readSettings();
-      if (value === "" || value === null || value === undefined) delete settings[key];
-      else settings[key] = value;
-      writeSettings(settings);
+      // Through the same read, backup and write chain as every other change of the file.
+      const settings = await updatePiSettings((all) => {
+        if (value === "" || value === null || value === undefined) delete all[key];
+        else all[key] = value;
+      });
       res.json({ ok: true, settings });
     } catch (e) {
       res.status(500).json({ error: (e as Error).message });

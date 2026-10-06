@@ -1,20 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
+import { createServer } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
+import { inProcessHome } from "./helpers.mts";
 
-const temp = mkdtempSync(path.join(tmpdir(), "pitha-images-"));
-process.env.DATA_DIR = temp;
-process.env.SESSION_DIR = path.join(temp, "sessions");
-process.env.PI_CODING_AGENT_DIR = path.join(temp, "agent");
-process.env.AGENT_HOME = path.join(temp, "agent-home");
+const temp = inProcessHome("pitha-images-");
 
 const { getSetting, putSetting } = await import("../server/src/db.ts");
 const gen = await import("../server/src/image-generation.ts");
 const { GENERATED_PICTURE_MARK } = await import("../server/src/generated-picture.ts");
-const { GenerateImageTool, GENERATED_DIR, takenByAnother } = await import("../server/src/pi/generate-image-tool.ts");
+const { GenerateImageTool, takenByAnother } = await import("../server/src/pi/generate-image-tool.ts");
+const { GENERATED_DIR } = await import("../server/src/image-gallery.ts");
 const editing = await import("../server/src/image-editing.ts");
 const { EditImageTool, editedName } = await import("../server/src/pi/edit-image-tool.ts");
 
@@ -77,7 +74,7 @@ const config = (baseUrl: string, more: Partial<ReturnType<typeof gen.imageGenera
 });
 /** What the page is told of a fresh install, with `more` changed. */
 const fresh = (more: Record<string, unknown> = {}) => ({
-  enabled: false, baseUrl: "", model: "", size: "", keySet: false, editEnabled: false, editBaseUrl: "", editModel: "", editMultiple: false, editMaxSize: "", timeoutSeconds: 300, sdExtras: false, editKeySet: false, editReady: false, ...more,
+  enabled: false, baseUrl: "", model: "", size: "", keySet: false, editEnabled: false, editBaseUrl: "", editModel: "", editMultiple: false, editMaxSize: "", timeoutSeconds: 300, sdExtras: false, editKeySet: false, ready: false, editReady: false, ...more,
 });
 
 test("a request is checked: the address is a base with no secret in it, the size a real one", () => {
@@ -90,6 +87,10 @@ test("a request is checked: the address is a base with no secret in it, the size
     assert.equal(typeof parse({ baseUrl: bad }), "string", bad);
   }
   assert.equal(typeof parse({ size: "huge" }), "string");
+  // A default size is one the Images page takes as well: each side from 64 to 8192, or auto.
+  for (const bad of ["16x16", "99999x99999", "63x64", "1024x8193"]) assert.match(String(parse({ size: bad })), /each side from 64 to 8192/, bad);
+  for (const good of ["auto", "64x64", "8192x8192", " 1024x768 "]) assert.equal((parse({ size: good }) as { size: string }).size, good.trim(), good);
+  assert.equal((parse({ size: "  " }) as { size: string }).size, "", "emptied is the way back to none");
   assert.equal(typeof parse({ enabled: "yes" }), "string");
   assert.equal(typeof parse({ model: 5 }), "string");
 });
@@ -113,6 +114,7 @@ test("it is off until switched on with an address, and the key is kept but never
   assert.equal(gen.imageGenerationReady(), true);
   const state = gen.imageGenerationState();
   assert.equal(state.keySet, true);
+  assert.equal(state.ready, true, "the page is told whether pictures can be made, and does not work it out");
   assert.ok(!("apiKey" in state));
   assert.ok(!JSON.stringify(state).includes(KEY), "nothing the page is given holds the key");
 
@@ -144,6 +146,18 @@ test("a key saved before any address goes with the first address, and is dropped
   gen.saveImageGeneration({ baseUrl: "https://elsewhere.example.org/v1", model: "image-model", size: "" });
   assert.equal(gen.imageGenerationState().keySet, false);
   gen.saveImageGeneration({ baseUrl: "", apiKey: "" });
+});
+
+test("a default size saved before sizes were limited, and outside the limits, is none", () => {
+  const was = getSetting("image_generation");
+  try {
+    putSetting("image_generation", JSON.stringify({ baseUrl: "https://images.example.com/v1", size: "16x16" }));
+    assert.equal(gen.imageGenerationConfig().size, "", "the gallery would refuse it for every picture asked without a size");
+    putSetting("image_generation", JSON.stringify({ baseUrl: "https://images.example.com/v1", size: "1024x1024" }));
+    assert.equal(gen.imageGenerationConfig().size, "1024x1024");
+  } finally {
+    putSetting("image_generation", was ?? "{}");
+  }
 });
 
 test("a picture comes back as base64 and is asked for with the model, the prompt and the key", async () => {
@@ -190,6 +204,8 @@ test("a picture sent as a data URL is read, one that is not base64 is refused", 
   const { origin, server } = await fake((_req, res) => json(res, answer));
   try {
     assert.equal((await gen.generateImage(config(origin), { prompt: "p" })).ext, "png");
+    answer = { data: [{ b64_json: b64(PNG).replace(/(.{16})/g, "$1\r\n") }] };
+    assert.deepEqual((await gen.generateImage(config(origin), { prompt: "p" })).bytes, PNG, "wrapped lines are read as the other paths read them");
     answer = { data: [{ b64_json: "!!! not base64 !!!" }] };
     await assert.rejects(gen.generateImage(config(origin), { prompt: "p" }), /not base64/);
     for (const empty of [{ data: [] }, { data: [{}] }, {}, { data: "x" }]) {
@@ -483,6 +499,8 @@ test("the tool fails loudly: a bad ask, an endpoint with no picture, an add-on s
     await assert.rejects(call({ prompt: "   " }), /prompt is required/);
     await assert.rejects(call({ prompt: "x".repeat(4001) }), /over 4000 characters/);
     await assert.rejects(call({ prompt: "p", size: "huge" }), /1024x1024/);
+    // The sides the gallery takes, no others: the agent cannot ask for what the page refuses.
+    for (const size of ["99999x99999", "16x16", "1024x8193"]) await assert.rejects(call({ prompt: "p", size }), /each side from 64 to 8192/, size);
     answer = { data: [{ b64_json: b64(SVG) }] };
     await assert.rejects(call({ prompt: "p" }), /not a PNG, JPEG, GIF or WebP/);
     assert.equal(existsSync(path.join(folder, GENERATED_DIR)), false, "what is not a picture is not kept");

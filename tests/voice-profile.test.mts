@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {VoiceProfiler,voiceProfileSummary} from '../web/src/voice-profile.ts';
+import {VoiceProfiler,replyMarks,voiceProfileSummary} from '../web/src/voice-profile.ts';
 test('latency percentages partition wall time and exclude speculative STT and filler',()=>{
  let now=0;const p=new VoiceProfiler(()=>{},()=>now);const t=p.begin();
  now=100;p.mark('stt_request');now=200;p.lastSpeech();now=800;p.mark('stt_result');
@@ -22,4 +22,15 @@ test('speech segments merge before dispatch and measurements stay bounded',()=>{
  const p=new VoiceProfiler();const t=p.begin();assert.equal(p.begin(),t);
  for(let i=0;i<2050;i++)p.mark('prefill_progress');assert.equal(t.marks.length,2000);
  p.close('stopped');assert.equal(t.status,'stopped');assert.notEqual(p.begin(),t);
+});
+test('the first tokens of a reply are seen in a token, and in the reply written so far as one entry',()=>{
+ const token=(type:string,delta:string)=>({type:'message_update',payload:{assistantMessageEvent:{type,delta}}});
+ assert.deepEqual(replyMarks(token('text_delta','Hi')),['first_model_token','first_text']);
+ assert.deepEqual(replyMarks(token('thinking_delta','hm')),['first_model_token','first_thinking_token']);
+ const written=(...content:object[])=>({type:'message_snapshot',payload:{message:{role:'assistant',content}}});
+ assert.deepEqual(replyMarks(written({type:'text',text:'Hi'})),['first_model_token','first_text']);
+ assert.deepEqual(replyMarks(written({type:'thinking',thinking:'hm'})),['first_model_token','first_thinking_token']);
+ assert.deepEqual(replyMarks(written({type:'toolCall'})),['first_model_token']);
+ assert.deepEqual(replyMarks(written()),[]);
+ assert.deepEqual(replyMarks({type:'agent_end',payload:{}}),[]);
 });

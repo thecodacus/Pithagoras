@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   LuCheck,
   LuChevronLeft,
@@ -15,15 +15,14 @@ import {
 } from "react-icons/lu";
 import { api, type Agent, type BrokenChannelPackage, type Channel, type ChannelKind } from "../api";
 import { Select } from "./Select";
+import { LoadFailed, Switch, SwitchTrack, btnCls, inputCls, primaryCls } from "./SettingsUi";
 import { confirmDialog } from "./ConfirmDialog";
+import { useUnsavedDraft } from "./Modal";
 import { pollWhileVisible } from "../poll";
 import { isEnter } from "../shortcuts";
 import { formatTime, labelOf, msg, t, tp, tx } from "../i18n";
+import { useFlash } from "../use-flash";
 
-const inputCls =
-  "w-full rounded-lg border border-line bg-raised/60 px-3 py-2 text-sm outline-none transition placeholder:text-fg-faint focus:border-accent/60";
-const btnCls =
-  "inline-flex items-center gap-1.5 rounded-lg bg-fg/5 px-3 py-2 text-sm text-fg transition hover:bg-fg/10 disabled:opacity-40";
 const STATE_STYLE: Record<string, string> = {
   running: "text-ok",
   starting: "text-warn",
@@ -38,8 +37,6 @@ const STATE_LABEL: Record<string, string> = {
 };
 const stateLabel = (state: string) => labelOf(STATE_LABEL, state);
 
-const primaryCls =
-  "inline-flex items-center gap-1.5 rounded-lg bg-accent/12 px-3 py-2 text-sm text-accent ring-1 ring-inset ring-accent/25 transition hover:bg-accent/20 disabled:opacity-40";
 
 /**
  * Channels are two-way links into an agent: each talks as one, the first
@@ -54,19 +51,28 @@ export function ChannelsPanel({ onError }: { onError: (e: string) => void }) {
   const [home, setHome] = useState("");
   const [spec, setSpec] = useState("");
   const [installing, setInstalling] = useState(false);
+  // The same, readable by a second Enter that comes before the draw.
+  const installingNow = useRef(false);
   const [loading, setLoading] = useState(true);
+  // Why the first read failed: "No channels yet" would say that none were set up.
+  const [failed, setFailed] = useState<string | null>(null);
+  const had = useRef(false);
   const [adding, setAdding] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
 
   const load = async () => {
     try {
       const r = await api.channels();
+      had.current = true;
+      setFailed(null);
       setChannels(r.channels);
       setKinds(r.kinds);
       setBroken(r.broken ?? []);
       setHome(r.agentHome);
     } catch (e) {
-      onError((e as Error).message);
+      // A refresh of what is shown goes to the banner; with nothing read yet the page says it itself.
+      if (had.current) onError((e as Error).message);
+      else setFailed((e as Error).message);
     } finally {
       setLoading(false);
     }
@@ -90,6 +96,9 @@ export function ChannelsPanel({ onError }: { onError: (e: string) => void }) {
   };
 
   const install = async () => {
+    // Enter in the field gets here without the disabled button's say.
+    if (installingNow.current) return;
+    installingNow.current = true;
     setInstalling(true);
     try {
       await api.installChannelPackage(spec.trim());
@@ -98,6 +107,7 @@ export function ChannelsPanel({ onError }: { onError: (e: string) => void }) {
     } catch (e) {
       onError((e as Error).message);
     } finally {
+      installingNow.current = false;
       setInstalling(false);
     }
   };
@@ -140,6 +150,10 @@ export function ChannelsPanel({ onError }: { onError: (e: string) => void }) {
 
         {loading ? (
           <p className="mt-2 text-sm text-fg-subtle">{t("Loading…")}</p>
+        ) : failed && !had.current ? (
+          <div className="mt-2">
+            <LoadFailed error={failed} onRetry={load} />
+          </div>
         ) : channels.length === 0 ? (
           <div className="mt-2 rounded-xl border border-dashed border-line px-3 py-6 text-center text-sm text-fg-subtle">
             {t("No channels yet.")}
@@ -167,6 +181,7 @@ export function ChannelsPanel({ onError }: { onError: (e: string) => void }) {
           {kinds.map((k) => (
             <button
               key={k.id}
+              aria-pressed={adding === k.id}
               onClick={() => setAdding(adding === k.id ? null : k.id)}
               className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm transition ${
                 adding === k.id
@@ -206,6 +221,7 @@ export function ChannelsPanel({ onError }: { onError: (e: string) => void }) {
             onChange={(e) => setSpec(e.target.value)}
             onKeyDown={(e) => isEnter(e) && spec.trim() && install()}
             placeholder="user/repo"
+            aria-label={t("GitHub repo of a channel package")}
             className={`${inputCls} font-mono text-xs`}
           />
           <button
@@ -265,6 +281,7 @@ export function ChannelsPanel({ onError }: { onError: (e: string) => void }) {
                   }}
                   className="shrink-0 rounded p-1 text-fg-subtle hover:text-danger"
                   title={t("Uninstall")}
+                  aria-label={t("Uninstall")}
                 >
                   <LuTrash2 className="h-3.5 w-3.5" />
                 </button>
@@ -278,6 +295,7 @@ export function ChannelsPanel({ onError }: { onError: (e: string) => void }) {
             {broken.map((b) => (
               <li
                 key={b.packageName}
+                role="alert"
                 className="flex items-start gap-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger"
               >
                 <LuCircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -315,6 +333,8 @@ function Toggle({
   return (
     <button
       type="button"
+      role="switch"
+      aria-checked={on}
       onClick={() => onChange(!on)}
       className="flex w-full items-center gap-3 rounded-lg px-1 py-1.5 text-left transition hover:bg-fg/5"
     >
@@ -322,17 +342,7 @@ function Toggle({
         <p className="text-sm text-fg">{label}</p>
         <p className="text-[11px] text-fg-subtle">{hint}</p>
       </div>
-      <span
-        className={`relative h-5 w-9 shrink-0 rounded-full transition ${
-          on ? "bg-accent" : "bg-raised"
-        }`}
-      >
-        <span
-          className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${
-            on ? "left-[1.125rem]" : "left-0.5"
-          }`}
-        />
-      </span>
+      <SwitchTrack on={on} />
     </button>
   );
 }
@@ -409,30 +419,50 @@ function ChannelDetail({
   const [agentId, setAgentId] = useState(ch.agentId);
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [busy, setBusy] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [saved, flashSaved] = useFlash();
 
+  // Whether the fields say something other than `from` does: a draft, against what they were filled from.
+  const differs = (from: Channel) =>
+    name !== from.name ||
+    slug !== from.slug ||
+    relayProgress !== from.relayProgress ||
+    relayTools !== from.relayTools ||
+    agentId !== from.agentId ||
+    instructions !== (from.instructions ?? "") ||
+    kind?.fields.some((f) => (values[f.key] ?? "") !== (from.config[f.key] ?? ""));
+  const dirty = differs(ch);
+  useUnsavedDraft(!!dirty);
+
+  const fill = (from: Channel) => {
+    setName(from.name);
+    setValues({ ...from.config });
+    setInstructions(from.instructions ?? "");
+    setSlug(from.slug);
+    setRelayProgress(from.relayProgress);
+    setRelayTools(from.relayTools);
+    setAgentId(from.agentId);
+  };
+  // The fields as they are now, for a save that finishes after more was typed.
+  const live = useRef({ name, values, instructions, slug, relayProgress, relayTools, agentId });
+  live.current = { name, values, instructions, slug, relayProgress, relayTools, agentId };
+
+  // What the form was last filled from: the fields are filled again from the channel
+  // for another channel, after this form's own save (see `save`), or when nothing typed
+  // would be lost, that is, when they still say what the channel said before. A change
+  // of `updated_at` that is no save of this form (the enable switch saves at once, and
+  // another admin or tab can change a channel) must not take a draft away, and must not
+  // be missed by a form that has none.
+  const filled = useRef({ id: ch.id, from: ch });
   useEffect(() => {
-    setName(ch.name);
-    setValues({ ...ch.config });
-    setInstructions(ch.instructions ?? "");
-    setSlug(ch.slug);
-    setRelayProgress(ch.relayProgress);
-    setRelayTools(ch.relayTools);
-    setAgentId(ch.agentId);
+    const was = filled.current;
+    if (ch.id === was.id && differs(was.from) && dirty) return;
+    filled.current = { id: ch.id, from: ch };
+    fill(ch);
   }, [ch.id, ch.updated_at]);
 
   useEffect(() => {
     api.agents().then((r) => setAgents(r.agents), () => setAgents([]));
   }, []);
-
-  const dirty =
-    name !== ch.name ||
-    slug !== ch.slug ||
-    relayProgress !== ch.relayProgress ||
-    relayTools !== ch.relayTools ||
-    agentId !== ch.agentId ||
-    instructions !== (ch.instructions ?? "") ||
-    kind?.fields.some((f) => (values[f.key] ?? "") !== (ch.config[f.key] ?? ""));
 
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -448,7 +478,8 @@ function ChannelDetail({
 
   const save = () =>
     act(async () => {
-      await api.updateChannel(ch.id, {
+      const sent = JSON.stringify(live.current);
+      const stored = await api.updateChannel(ch.id, {
         name,
         slug,
         config: values,
@@ -457,8 +488,16 @@ function ChannelDetail({
         relayTools,
         ...(agentId !== ch.agentId ? { agentId } : {}),
       });
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
+      // What the server kept is what the form is filled from now, as the channel's
+      // own poll may have brought it before this answer, and the reload that follows
+      // may then have nothing new in it for the effect to see. Not for a channel the
+      // form has moved on from while this was on its way. The server trims, so unless
+      // more was typed since, the fields show what it kept.
+      if (filled.current.id === stored.id) {
+        filled.current = { id: stored.id, from: stored };
+        if (JSON.stringify(live.current) === sent) fill(stored);
+      }
+      flashSaved();
     });
 
   return (
@@ -486,7 +525,8 @@ function ChannelDetail({
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="w-full bg-transparent text-sm font-medium text-fg outline-none"
+            aria-label={t("Channel name")}
+            className="w-full rounded bg-transparent text-sm font-medium text-fg outline-none focus-visible:ring-2 focus-visible:ring-accent"
           />
           <p className="truncate text-xs text-fg-subtle">
             {kind?.label ?? ch.kind} ·{" "}
@@ -494,25 +534,19 @@ function ChannelDetail({
             {ch.since && ch.state === "running" ? ` ${t("since {time}", { time: formatTime(ch.since) })}` : ""}
           </p>
         </div>
-        <button
-          onClick={() => act(() => api.updateChannel(ch.id, { enabled: !ch.enabled }))}
+        <Switch
+          on={ch.enabled}
+          onChange={() => act(() => api.updateChannel(ch.id, { enabled: !ch.enabled }))}
           disabled={busy}
+          label={ch.name}
           title={ch.enabled ? t("Disable") : t("Enable")}
-          className={`relative mt-1 h-5 w-9 shrink-0 rounded-full transition disabled:opacity-40 ${
-            ch.enabled ? "bg-accent" : "bg-raised"
-          }`}
-        >
-          <span
-            className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${
-              ch.enabled ? "left-[1.125rem]" : "left-0.5"
-            }`}
-          />
-        </button>
+          className="mt-1"
+        />
       </div>
 
       {ch.error && (
-        <div className="mb-5 flex items-start gap-2 rounded-xl border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
-          <LuCircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+        <div role="alert" className="mb-5 flex items-start gap-2 rounded-xl border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
+          <LuCircleAlert aria-hidden className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <p className="min-w-0">{ch.error}</p>
         </div>
       )}
@@ -525,6 +559,7 @@ function ChannelDetail({
         <input
           value={slug}
           onChange={(e) => setSlug(e.target.value)}
+          aria-label={t("Slug")}
           className={`${inputCls} mt-2 font-mono text-xs`}
         />
         <p className="mt-1 text-[11px] text-fg-faint">
@@ -579,11 +614,12 @@ function ChannelDetail({
           {t("Instructions")}
         </h3>
         <p className="mt-0.5 text-xs text-fg-subtle">
-          {t("Appended to the agent's system prompt for every message that arrives through this channel. Use it for standing guidance that only applies here — the shape of the reply, who is on the other end, what to leave out.")}
+          {t("Added to every message that arrives through this channel. Use it for standing guidance that only applies here — the shape of the reply, who is on the other end, what to leave out.")}
         </p>
         <textarea
           value={instructions}
           onChange={(e) => setInstructions(e.target.value)}
+          aria-label={t("Instructions")}
           rows={6}
           placeholder={t("You are answering over {channel}. Keep replies short — they are read on a phone. Never paste secrets or full file contents.", { channel: kind?.label ?? t("this channel") })}
           className={`${inputCls} mt-2 resize-y text-xs leading-relaxed`}
@@ -614,6 +650,7 @@ function ChannelDetail({
                   type={f.secret ? "password" : "text"}
                   value={values[f.key] ?? ""}
                   onChange={(e) => setValues({ ...values, [f.key]: e.target.value })}
+                  aria-label={f.label}
                   placeholder={
                     f.secret && ch.secretsSet.includes(f.key)
                       ? t("leave blank to keep the stored value")
@@ -629,8 +666,8 @@ function ChannelDetail({
       )}
 
       {!kind && (
-        <div className="mb-6 flex items-start gap-2 rounded-xl border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
-          <LuCircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+        <div role="alert" className="mb-6 flex items-start gap-2 rounded-xl border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
+          <LuCircleAlert aria-hidden className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <p>
             {t("No installed package provides “{kind}”. Reinstall it to edit this channel, or delete the channel below.", { kind: ch.kind })}
           </p>
@@ -712,6 +749,7 @@ function NewChannelForm({
   const [name, setName] = useState(kind.label);
   const [values, setValues] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
+  useUnsavedDraft(!busy && (name !== kind.label || Object.values(values).some((v) => v.trim() !== "")));
 
   useEffect(() => {
     setName(kind.label);
@@ -739,6 +777,7 @@ function NewChannelForm({
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
+          aria-label={t("Name")}
           className={`${inputCls} mt-1`}
         />
       </div>
@@ -753,6 +792,7 @@ function NewChannelForm({
             type={f.secret ? "password" : "text"}
             value={values[f.key] ?? ""}
             onChange={(e) => setValues({ ...values, [f.key]: e.target.value })}
+            aria-label={f.label}
             placeholder={f.placeholder}
             className={`${inputCls} mt-1 font-mono text-xs`}
           />

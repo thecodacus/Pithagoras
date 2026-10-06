@@ -4,6 +4,7 @@ import path from "node:path";
 import { fieldsOf, signalSession, statOf } from "./proc-stat.js";
 import { within } from "./paths.js";
 import { realPath } from "./within.js";
+import { EXECUTOR_KIND } from "./executor-kind.js";
 
 /**
  * What the agent left running in a workspace: background shells, servers,
@@ -21,6 +22,9 @@ import { realPath } from "./within.js";
  * not in this /proc with paths that mean anything here.
  */
 export const MARKER = "PITHAGORAS_AGENT=1";
+
+/** Whether this portal can see the agent's processes at all: not a container's, and not off Linux. */
+export const BACKGROUND_SUPPORTED = EXECUTOR_KIND !== "container" && process.platform === "linux";
 
 export interface BackgroundJob {
   /**
@@ -73,6 +77,41 @@ function bootTime(): number {
 }
 /** Clock ticks per second; 100 on every Linux the portal runs on. */
 const HZ = 100;
+
+/** /proc/uptime in ms: the time since boot, on the clock that counts the time the host slept. */
+function uptimeMs(): number | undefined {
+  try {
+    const ms = Number(readFileSync("/proc/uptime", "utf8").split(" ")[0]) * 1000;
+    return Number.isFinite(ms) ? ms : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * How far /proc/uptime is from the clock the start times are on. Nothing on a
+ * host, but a container that is given an uptime of its own is off by how long its
+ * host ran before it began. Read once, as the portal starts, before a sleep can
+ * come between the two clocks.
+ */
+const UPTIME_OFFSET_MS = (() => {
+  const started = Number(statOf(process.pid)?.[19]) * (1000 / HZ);
+  const up = uptimeMs();
+  return Number.isFinite(started) && up !== undefined ? started + process.uptime() * 1000 - up : undefined;
+})();
+
+/**
+ * When a job began, as `Date.now()` counts: how long ago it did, read off the
+ * kernel's clock that the start times are on. That one counts the time the host
+ * slept, and `process.uptime()` does not: after a night's sleep every job lay that
+ * much after the call that started it. `startedAt` goes through the boot time
+ * /proc reports, which cancels out here.
+ */
+export function startedWhen(job: BackgroundJob): number {
+  const now = uptimeMs();
+  if (now === undefined || UPTIME_OFFSET_MS === undefined) return job.startedAt;
+  return Date.now() - (now + UPTIME_OFFSET_MS - (job.startedAt - bootTime()));
+}
 
 /**
  * A workspace as /proc names a process's folder: its real path. As written, a
@@ -198,10 +237,11 @@ function describe(argv: string[]): string {
 /**
  * The jobs in a workspace, running and recently finished, newest first.
  * `callsRunning`: whether a tool call is running in the chat asking.
+ * `fresh`: read the processes now, not as they were up to a second ago.
  */
-export async function listJobs(workspace: string, callsRunning = false): Promise<BackgroundJob[]> {
+export async function listJobs(workspace: string, callsRunning = false, fresh = false): Promise<BackgroundJob[]> {
   const root = rootOf(workspace);
-  const procs = await scan(root);
+  const procs = await scan(root, fresh);
   const groups = new Map<number, Proc[]>();
   for (const p of procs) {
     const list = groups.get(p.sid);
@@ -337,4 +377,23 @@ export async function stopJob(workspace: string, key: string): Promise<boolean> 
     }
   }, 3000).unref();
   return true;
+}
+
+/**
+ * Stops the jobs that are running in a folder that is being deleted, with the chats that started them: with the
+ * chats gone nothing would list them or stop them, and they would keep their ports and memory in a folder that is
+ * no more. How many were stopped. Never fails: a job that cannot be read is left, as it would be by any stop.
+ */
+export async function stopJobsIn(workspace: string): Promise<number> {
+  if (!BACKGROUND_SUPPORTED) return 0;
+  let stopped = 0;
+  try {
+    // Read now: a job started in the second after somebody's last look (a jobs panel asks every few seconds) would be left running.
+    for (const job of await listJobs(workspace, false, true)) {
+      if (job.state !== "exited" && (await stopJob(workspace, job.key))) stopped++;
+    }
+  } catch {
+    // What could not be read is not stopped.
+  }
+  return stopped;
 }

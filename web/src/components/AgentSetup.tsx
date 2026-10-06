@@ -58,8 +58,9 @@ export function AgentSetup({
       await onSubmit({ agentName, vibe, userName, userAbout, userPrefers });
     } catch (e) {
       setError((e as Error).message);
-      setBusy(false);
     }
+    // Whatever the answer: where it makes this page go away, setting it is nothing, and where the wizard stays the form is not left disabled.
+    setBusy(false);
   };
 
   return (
@@ -179,7 +180,7 @@ export function AgentSetup({
       )}
 
       <p className="mt-8 text-[11px] leading-relaxed text-fg-faint">
-        {t("Writes SOUL.md, PrimaryUser.md and MEMORY.md into the agent's home directory. All three are handed to pi as context whenever a conversation starts, and stay editable here. An existing MEMORY.md is never overwritten.")}
+        {t("Writes SOUL.md, PrimaryUser.md and MEMORY.md into the agent's home directory. All three are handed to pi as context whenever a conversation starts, and stay editable here. A file that is already there is never overwritten.")}
       </p>
     </div>
   );

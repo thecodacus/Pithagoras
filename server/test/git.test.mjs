@@ -1,16 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { scratch } from "./server-harness.mjs";
 
 // A home of its own: who commits, what a new repository's branch is called,
 // and no config of the person running the tests.
-const home = mkdtempSync(path.join(tmpdir(), "pithagoras-git-"));
+const home = scratch("pithagoras-git-");
 process.env.HOME = home;
 process.env.GIT_CONFIG_GLOBAL = path.join(home, ".gitconfig");
 process.env.GIT_CONFIG_NOSYSTEM = "1";
+// Nor the repository that the temp folder may lie in: a developer's TMPDIR can be inside a work tree.
+process.env.GIT_CEILING_DIRECTORIES = path.dirname(home);
 writeFileSync(process.env.GIT_CONFIG_GLOBAL, "[user]\n\tname = Tester\n\temail = t@example.com\n[init]\n\tdefaultBranch = main\n");
 // A gh of our own, first on the PATH: it writes down what it was asked and answers as GitHub would.
 const bin = path.join(home, "bin");
@@ -68,6 +70,30 @@ test("what changed: staged and not, new files, renames and names with spaces, wi
   assert.equal(by["d e.txt"].from, "b c.txt");
   assert.equal(by["new file.md"].kind, "untracked");
   assert.deepEqual(by["staged.txt"].staged, { added: 1, removed: 0, binary: false });
+});
+
+test("a status too long to read whole is cut, says so, keeps what is changed, and lists no half of a file", async () => {
+  const dir = repo();
+  writeFileSync(path.join(dir, "a.txt"), "one\nTWO\nthree\n");
+  // Paths of 750 characters: fewer files than are ever listed, and more than a refresh should read.
+  const deep = path.join(dir, "d".repeat(250), "e".repeat(250));
+  mkdirSync(deep, { recursive: true });
+  const made = new Set();
+  for (let i = 0; i < 1500; i++) {
+    const name = `${"f".repeat(240)}${String(i).padStart(10, "0")}`;
+    writeFileSync(path.join(deep, name), "");
+    made.add(path.relative(dir, path.join(deep, name)));
+  }
+  const s = await g.status(await open(dir));
+  assert.equal(s.truncated, true);
+  assert.ok(s.files.length < 1500, `read ${s.files.length}`);
+  // What is changed comes first and is still there, with its counts; every untracked file is a whole one.
+  assert.deepEqual(s.files[0].unstaged, { added: 1, removed: 1, binary: false });
+  assert.equal(s.files.filter((f) => f.kind === "untracked").every((f) => made.has(f.path)), true);
+  // A repository that fits is not said to be cut.
+  const small = repo();
+  writeFileSync(path.join(small, "new.txt"), "x\n");
+  assert.equal((await g.status(await open(small))).truncated, false);
 });
 
 test("diffs of one file: in the tree, in the index, and a new one — and nothing outside what changed", async () => {
@@ -285,6 +311,21 @@ test("pull requests go through gh: a branch not on GitHub is pushed first, the b
   assert.match(asked, /STDIN:Why:\n- because; \$\(rm -rf \/\)/);
   assert.deepEqual(await g.pulls(r), [{ number: 7, title: "Add a thing", state: "OPEN" }]);
   await assert.rejects(g.pullRequest(r, "7; ls"), { status: 400 });
+});
+
+test("a pull request is asked for with whether its branch is in a fork, which its name alone does not say", async () => {
+  const remote = path.join(home, `remote${++n}.git`);
+  execFileSync("git", ["init", "-q", "--bare", remote]);
+  const dir = repo();
+  sh(dir, "remote", "add", "origin", remote);
+  sh(dir, "push", "-q", "-u", "origin", "main");
+  const r = await open(dir);
+  await g.ghState(r, true);
+  writeFileSync(ghLog, "");
+  await g.pullRequest(r, 7);
+  const fields = /^pr view 7 --json (.+)$/m.exec(readFileSync(ghLog, "utf8"))?.[1].split(",");
+  assert.ok(fields?.includes("isCrossRepository"), "a fork's `main` is not the branch called main here");
+  assert.ok(fields?.includes("headRefName"));
 });
 
 test("without gh, pull requests say how to get them", async () => {

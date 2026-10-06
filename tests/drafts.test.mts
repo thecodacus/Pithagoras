@@ -64,6 +64,24 @@ test("drafts still work while the page is open when storage is blocked", () => {
   assert.equal(d.get("a"), "kept in memory");
 });
 
+test("a store with a prefix of its own keeps its entries apart from the message boxes'", () => {
+  const raw = mapStorage();
+  const boxes = createDrafts(guarded(() => raw));
+  const git = createDrafts(guarded(() => raw), undefined, "pithagoras.git-draft.");
+  boxes.set("s", "a message");
+  git.set("s", "a commit message");
+  assert.equal(boxes.get("s"), "a message");
+  assert.equal(git.get("s"), "a commit message");
+  assert.deepEqual([...raw.map.keys()].sort(), ["pithagoras.draft.s", "pithagoras.git-draft.s"]);
+  // And one that tells nobody of its changes: no extension reads a commit message.
+  const told: string[] = [];
+  createDrafts(guarded(() => raw), (id) => told.push(id), "x.").set("a", "b");
+  assert.deepEqual(told, ["a"]);
+  git.set("s", "");
+  assert.equal(git.get("s"), "");
+  assert.equal(boxes.get("s"), "a message");
+});
+
 test("an unsent message goes back before what was typed since", () => {
   assert.equal(withUnsent("", "hello"), "hello");
   assert.equal(withUnsent("   ", "hello"), "hello");

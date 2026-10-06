@@ -1,16 +1,16 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, mockPortal } from './portal-mock';
 
 const session = { id: 'phone', title: 'Typing on a phone', workspace: '/workspaces/demo', status: 'idle', kind: 'task', pinned: false };
 
 const open = async (page: import('@playwright/test').Page) => {
   await page.setViewportSize({ width: 390, height: 780 });
-  await page.route('**/api/**', async (route) => {
-    const p = new URL(route.request().url()).pathname;
-    const value = p.endsWith('/auth/status') ? { authed: true } : p === '/api/sessions' ? { sessions: [session], executor: 'host' } : p.endsWith('/commands') ? { commands: [] } : p === '/api/voice' ? { enabled: false } : p.endsWith('/canvases') ? [] : p === '/api/browser' ? { running: false } : session;
-    await route.fulfill({ json: value });
+  await mockPortal(page, ({ path: p }) => {
+    if (p === '/api/sessions') return { sessions: [session], executor: 'host' };
+    if (p === `/api/sessions/${session.id}`) return session;
+    if (p.endsWith('/commands')) return { commands: [] };
+    if (p.endsWith('/canvases')) return [];
   });
   await page.addInitScript(() => {
-    (window as any).EventSource = class { onmessage: any; onopen: any; onerror: any; addEventListener() {} close() {} };
     localStorage.setItem('sidebarCollapsed', 'true');
     // Safari's keyboard: the page keeps its height, the visual viewport above the keyboard gets shorter.
     const visual = Object.assign(new EventTarget(), { height: innerHeight, width: innerWidth, offsetTop: 0, offsetLeft: 0, pageTop: 0, pageLeft: 0, scale: 1 });

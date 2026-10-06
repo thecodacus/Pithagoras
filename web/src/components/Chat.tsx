@@ -1,10 +1,10 @@
-import { CompactionMarker, StatusIndicator, ThinkingBlock, ToolCall } from "./ChatActivity";
-import { PictureCall } from "./PictureCall";
-import { isPictureCall } from "../picture-call";
+import { StatusIndicator } from "./ChatActivity";
+import { TranscriptRow, type RowActions } from "./TranscriptRow";
+import { useStableActions } from "../use-stable-actions";
+import { splitContext } from "../context-blocks";
 import { workingText } from "./StatusDot";
 import { VoiceTerminal } from "./VoiceTerminal";
 import { RunningTray } from "./RunningTray";
-import { CommandLine } from "./CommandLine";
 import { mentionsCommand } from "../status-commands";
 import { SubagentPanel } from "./SubagentPanel";
 import { BackgroundJobs } from "./BackgroundJobs";
@@ -13,43 +13,46 @@ import { useBackground } from "../use-background";
 import { useWorkPanels } from "../use-work-panels";
 import { useFollowBottom } from "../use-follow-bottom";
 import { CanvasPanel } from "./CanvasPanel";
-import { assistantText } from "../voice";
 import { latestBrowserActivity, latestTerminalActivity } from "../voice-browser";
 import { VoiceControl } from "./VoiceControl";
 import { DictationButton, DictationStrip } from "./Dictation";
 import { insertAtCaret } from "../dictation";
 import { useDictation } from "../use-dictation";
 import { createPortal } from "react-dom";
-import { Fragment, cloneElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Streamdown, type DiagramPlugin } from "streamdown";
+import { Fragment, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import type { DiagramPlugin } from "streamdown";
 import { followPointer } from "../pointer-drag";
-import { LuGripVertical, LuMenu, LuBot, LuArrowDown, LuCheck, LuChevronLeft, LuChevronRight, LuClock, LuCopy, LuFolderOpen, LuGlobe, LuSquareTerminal, LuSquare, LuFileText, LuGitBranch, LuArrowUp, LuAudioLines, LuPaperclip, LuPencil, LuRotateCw, LuTrash2, LuX } from "react-icons/lu";
+import { LuGripVertical, LuMenu, LuBot, LuArrowDown, LuFolderOpen, LuGlobe, LuSquareTerminal, LuSquare, LuFileText, LuGitBranch, LuArrowUp, LuPaperclip, LuX } from "react-icons/lu";
 import { api, type PiCommand, type PortalEvent, type PromptOptions, type Session } from "../api";
 import { pending, refetchImage, sortFiles, uploadedNote, type Attachment } from "../attachments";
-import { activity, buildTranscript, type Item, type SentImage } from "../transcript";
+import { activity, buildTranscript, keepItems, type Item, type SentImage } from "../transcript";
 import { HAS_MERMAID, loadMermaidPlugin } from "../mermaid";
 import { useResolvedTheme } from "../theme";
 import { ComposerBar } from "./ComposerBar";
-import { PictureButton, useChatPictures } from "./ChatPictures";
-import { sentPictureId, shownPictureId } from "../chat-pictures";
+import { useChatPictures } from "./ChatPictures";
 import { confirmDialog } from "./ConfirmDialog";
+import { ErrorBoundary, PartFailed } from "./ErrorBoundary";
 import { moveHighlight, paletteMatches, slashToken, typedCommand } from "../slash-palette";
 import { useCommandTrigger } from "../command-trigger";
-import { TerminalPanel } from "./TerminalPanel";
+import { lazyComponent } from "../lazy";
+import { forgetFileDraft } from "../file-drafts";
 import { FilesPanel } from "./FilesPanel";
 import { GIT_TABS, GitPanel, type GitTab } from "./git/GitPanel";
 import { TitleInput } from "./TitleInput";
-import { latestFileActivity } from "../file-activity";
+import { keepFileActivity, latestFileActivity, type FileActivity } from "../file-activity";
 import { caretFrom, drafts, withUnsent } from "../drafts";
 import { onFill } from "../editor-fills";
 import { local } from "../safe-storage";
 import { fancy, glide, launch, leaveRef, mark, settle, useLeaveRef, type Mark } from "../motion";
-import { copyText } from "../clipboard";
 import { CLIENT_COMMANDS, isClientCommand, isCommand } from "../client-commands";
-import { isComposing, isEnter, isEscape, opensComposer, stopsRun } from "../shortcuts";
-import { DOCKED_MIN, EDGE, KEEP, across, dockedFrameAmong, dockedSize, dropTarget, fitFrame, groupPanels, isDock, readFrame, readFrames, readPlaceSizes, readPlaces, spreadFrames, type Dock, type Frame, type Frames, type PlaceSizes, type Places, type Size } from "../panel-dock";
-import { msg, t, tp } from "../i18n";
-import { ReplyStatsLine } from "./ReplyStats";
+import { isComposing, isEnter, opensComposer, stopsRun } from "../shortcuts";
+import { DOCKED_MIN, EDGE, KEEP, SPLIT, SPLIT_LEAST, across, dockedFrameAmong, dockedSize, dropTarget, fitFrame, groupPanels, isDock, readFrame, readFrames, readPlaceSizes, readPlaces, spreadFrames, type Dock, type Frame, type Frames, type PlaceSizes, type Places, type Size } from "../panel-dock";
+import { labelOf, msg, t } from "../i18n";
+import { tabKeys } from "../tab-keys";
+import { STEP, arrowSteps } from "../resize-keys";
+
+// The terminal emulator is large and only a chat that opens a shell needs it.
+const TerminalPanel = lazyComponent(() => import("./TerminalPanel"), "TerminalPanel");
 
 /** How many messages are drawn at first, and added each time you scroll up to the edge. */
 const PAGE = 40;
@@ -82,6 +85,14 @@ const PANEL: Record<AsidePanel, { label: string; close: string }> = {
   files: { label: msg("Files"), close: msg("Close the files") },
   git: { label: msg("Git"), close: msg("Close the git panel") },
   terminal: { label: msg("Terminal"), close: msg("Close the terminal") },
+};
+
+/** Where a slash command comes from; one a newer portal adds is shown as it is named. */
+const COMMAND_SOURCE: Record<string, string> = {
+  builtin: msg("builtin"),
+  extension: msg("extension"),
+  prompt: msg("prompt"),
+  skill: msg("skill"),
 };
 
 type Movable = HTMLElement & { moveBefore?: (node: Node, child: Node | null) => void };
@@ -160,65 +171,10 @@ function persistComposerHeight(height: number) {
   local.set(COMPOSER_HEIGHT_KEY, String(Math.round(height)));
 }
 
-/**
- * Context the portal attaches to a message, and what to call it.
- *
- * The agent needs to be told who is speaking and what it said while nobody was
- * talking to it. A person reading the transcript does not — they wrote the
- * message, so seeing their own words buried under three framing blocks is
- * noise. Folded away rather than dropped: it is still what the model saw, and
- * when a reply looks strange this is usually why.
- */
-/** Keep in step with what the server attaches — see channels/supervisor.ts. */
-const CONTEXT_BLOCKS: { tag: string; label: string }[] = [
-  { tag: "speaker", label: msg("Speaker") },
-  { tag: "sent-since-you-last-spoke", label: msg("Sent while idle") },
-  { tag: "answer-from-primary", label: msg("Answer") },
-  { tag: "channel-instructions", label: msg("Channel instructions") },
-  { tag: "routine", label: msg("Routine") },
-];
-
-function splitContext(raw: string): { text: string; blocks: { label: string; body: string }[] } {
-  let text = raw;
-  const blocks: { label: string; body: string }[] = [];
-  for (const { tag, label } of CONTEXT_BLOCKS) {
-    // The opening tag may carry attributes, as <routine name="..."> does.
-    const re = new RegExp(`<${tag}(\\s[^>]*)?>[\\s\\S]*?</${tag}>`, "g");
-    text = text.replace(re, (match) => {
-      const body = match
-        .replace(new RegExp(`^<${tag}(\\s[^>]*)?>`), "")
-        .replace(new RegExp(`</${tag}>$`), "")
-        .trim();
-      if (body) blocks.push({ label, body });
-      return "";
-    });
-  }
-  return { text: text.trim(), blocks };
-}
-
-function ContextChip({ label, body }: { label: string; body: string }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      <button
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        className={`rounded-full px-2 py-0.5 text-[11px] transition ${
-          open
-            ? "bg-accent/20 text-accent"
-            : "bg-fg/5 text-fg-faint hover:bg-fg/10 hover:text-fg-muted"
-        }`}
-        title={t("Context the portal attached to this message")}
-      >
-        {label}
-      </button>
-      {open && (
-        <pre className="mt-1 w-full whitespace-pre-wrap rounded-lg bg-fg/5 p-2 text-left text-[11px] leading-relaxed text-fg-muted">
-          {body}
-        </pre>
-      )}
-    </>
-  );
+/** `list` with one `id` taken out. */
+function without(list: string[], id: string): string[] {
+  const at = list.indexOf(id);
+  return at < 0 ? list : list.filter((_, i) => i !== at);
 }
 
 export function Chat({
@@ -273,7 +229,10 @@ export function Chat({
   const [voiceMode, setVoiceMode] = useState(false);
   const [canvasOpen, setCanvasOpen] = useState(false);
   const [voiceHost, setVoiceHost] = useState<HTMLDivElement | null>(null);
-  const [sending, setSending] = useState(false);
+  // Sends and uploads on their way, by the chat they are for: this is one component for every chat, and what is
+  // still going on in one must not hold up another (one id for each thing going on).
+  const [sendingIn, setSendingIn] = useState<string[]>([]);
+  const sending = sendingIn.includes(session.id);
   // Which sent message is being rewritten, and what went wrong with the last
   // thing done to one — shown in the transcript, where the message is.
   const [editing, setEditing] = useState<number | null>(null);
@@ -286,7 +245,8 @@ export function Chat({
   // Pictures waiting to go with the next message, kept per chat like the words.
   const [attached, setAttached] = useState<Attachment[]>(() => pending.get(session.id));
   // Pictures being read or files being uploaded: the message waits for them.
-  const [adding, setAdding] = useState(0);
+  const [addingIn, setAddingIn] = useState<string[]>([]);
+  const adding = addingIn.filter((id) => id === session.id).length;
   const [dragging, setDragging] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
   const [boxOf, setBoxOf] = useState(session.id);
@@ -344,7 +304,9 @@ export function Chat({
   const [files, setFiles] = useState(false);
   // Whether Files has an edit that is not saved: closing it would lose it.
   const [filesDirty, setFilesDirty] = useState(false);
-  const fileActivity = useMemo(() => latestFileActivity(events, session.workspace), [events, session.workspace]);
+  // The same entry while it has not changed, so that Files and Git, which are given it, are not drawn for every event.
+  const lastFile = useRef<FileActivity | null>(null);
+  const fileActivity = useMemo(() => (lastFile.current = keepFileActivity(lastFile.current, latestFileActivity(events, session.workspace))), [events, session.workspace]);
   // A file Git asked Files to show, by its path in the chat's folder; `seq` makes the same file asked twice a new ask.
   const [fileAsked, setFileAsked] = useState<{ path: string; seq: number } | null>(null);
   const [git, setGit] = useState(false);
@@ -381,6 +343,8 @@ export function Chat({
     ) {
       return;
     }
+    // Given up on: the panel's unmounting would otherwise keep the edit for the next time it opens.
+    forgetFileDraft(session.id);
     setFiles(false);
   };
   // Beside the conversation, top to bottom in this order.
@@ -405,7 +369,7 @@ export function Chat({
   const [sizes, setSizes] = useState<PlaceSizes>(() => readPlaceSizes(local.get("panelSizes")));
   // Between the two panels in one place. One for all places: no more than two
   // panels are open (useWorkPanels), so only one place ever holds two.
-  const [split, setSplit] = useState(() => Number(local.get("panelSplit")) || 0.55);
+  const [split, setSplit] = useState(() => Number(local.get("panelSplit")) || SPLIT);
   const [frames, setFrames] = useState<Frames>(() => readFrames(local.get("panelFloats")));
   useEffect(() => local.set("panelPlaces", JSON.stringify(places)), [places]);
   useEffect(() => local.set("panelSizes", JSON.stringify(sizes)), [sizes]);
@@ -548,6 +512,23 @@ export function Chat({
     if (el) Object.assign(el.style, { left: `${f.x}px`, top: `${f.y}px`, width: `${f.w}px`, height: `${f.h}px` });
   };
 
+  /**
+   * What a side can be made, from the width drawn — at both sides, what the two
+   * gave way to. Made wider, the other side gives way, as far as it would for
+   * the side sized last (see sideStyle); the conversation keeps its room. No
+   * narrower than of use, unless drawn narrower already: then from there, not
+   * with a jump to the least.
+   */
+  const sideRange = (place: "left" | "right", el: HTMLElement, area: HTMLElement) => {
+    const other: "left" | "right" = place === "left" ? "right" : "left";
+    const them = asides.current[other];
+    const mine = el.getBoundingClientRect().width;
+    const room = area.clientWidth - KEEP.w - (them ? 2 : 1) * EDGE;
+    const least = Math.min(DOCKED_MIN.w, mine);
+    const most = Math.max(least, room - (them ? Math.min(DOCKED_MIN.w, widthAt(other), room) : 0));
+    return { other, them, mine, least, most };
+  };
+
   /** The edge between the conversation and the panels in a place: their width, or their height at the bottom. */
   const dragSize = (place: Exclude<Dock, "float">) => (e: React.PointerEvent) => {
     const el = asides.current[place], area = body.current;
@@ -570,17 +551,8 @@ export function Chat({
       );
       return;
     }
-    // From the width drawn — at both sides, what the two gave way to. Made
-    // wider, the other side gives way, as far as it would for the side sized
-    // last (see sideStyle); the conversation keeps its room. No narrower than
-    // of use, unless drawn narrower already: then from there, not with a
-    // jump to the least. Let go, this side is the one sized last.
-    const other: "left" | "right" = place === "left" ? "right" : "left";
-    const them = asides.current[other];
-    const mine = el.getBoundingClientRect().width;
-    const room = area.clientWidth - KEEP.w - (them ? 2 : 1) * EDGE;
-    const least = Math.min(DOCKED_MIN.w, mine);
-    const most = Math.max(least, room - (them ? Math.min(DOCKED_MIN.w, widthAt(other), room) : 0));
+    // Let go, this side is the one sized last.
+    const { other, them, mine, least, most } = sideRange(place, el, area);
     const after = (to: number): PlaceSizes => ({ ...sizes, [place]: to, lead: place });
     const draw = (s: PlaceSizes) => {
       Object.assign(el.style, sideStyle(place, s));
@@ -619,11 +591,52 @@ export function Chat({
     drag(
       e,
       (dx, dy) => {
-        ratio = Math.min(Math.max(across(place) ? (x + dx - box.left) / box.width : (y + dy - box.top) / box.height, 0.15), 0.85);
+        ratio = Math.min(Math.max(across(place) ? (x + dx - box.left) / box.width : (y + dy - box.top) / box.height, SPLIT_LEAST), 1 - SPLIT_LEAST);
         draw(ratio);
       },
       (cancelled) => (cancelled ? draw(split) : setSplit(ratio)),
     );
+  };
+
+  /**
+   * The keys of the edge between the conversation and the panels, for whoever has no pointer: an arrow
+   * moves the edge that way by a step (four with Shift), Home gives the place its first size back.
+   */
+  const keySize = (place: Exclude<Dock, "float">) => (e: React.KeyboardEvent) => {
+    const area = body.current;
+    if (!area) return;
+    const bottom = place === "bottom";
+    if (e.key === "Home") {
+      e.preventDefault();
+      return setSizes((s) => ({ ...s, [place]: undefined }));
+    }
+    const steps = arrowSteps(e, bottom ? "y" : "x");
+    if (!steps) return;
+    e.preventDefault();
+    // The edge goes the way the arrow points, as it does with the pointer: a panel at the right is wider for a move to the left.
+    const delta = steps * STEP * (place === "right" || bottom ? -1 : 1);
+    if (bottom) {
+      const within = { w: area.clientWidth, h: area.clientHeight };
+      const from = dockedSize({ width: 0, height: heightAt() }, within).height;
+      const to = dockedSize({ width: 0, height: from + delta }, within).height;
+      return setSizes((s) => ({ ...s, bottom: to }));
+    }
+    const el = asides.current[place];
+    if (!el) return;
+    const { mine, least, most } = sideRange(place, el, area);
+    setSizes({ ...sizes, [place]: Math.round(Math.min(most, Math.max(least, mine + delta))), lead: place });
+  };
+
+  /** The keys of the edge between two panels in one place: an arrow moves it that way, Home puts it back in the middle. */
+  const keySplit = (place: Dock) => (e: React.KeyboardEvent) => {
+    if (e.key === "Home") {
+      e.preventDefault();
+      return setSplit(SPLIT);
+    }
+    const steps = arrowSteps(e, across(place) ? "x" : "y");
+    if (!steps) return;
+    e.preventDefault();
+    setSplit(Math.min(Math.max(split + steps * 0.05, SPLIT_LEAST), 1 - SPLIT_LEAST));
   };
 
   /** Done carrying or sizing: the room measured again, for whatever changed meanwhile. */
@@ -652,6 +665,21 @@ export function Chat({
         stopMoving();
       },
     );
+  };
+
+  /** The keys of a floating window's corner: an arrow makes it larger or smaller by a step, Home, Enter or Space give it the size it first had. */
+  const keyFrame = (kind: AsidePanel) => (e: React.KeyboardEvent) => {
+    const from = placed(kind);
+    const reset = e.key === "Home" || e.key === "Enter" || e.key === " ";
+    const wide = arrowSteps(e, "x"), tall = arrowSteps(e, "y");
+    if (!reset && !wide && !tall) return;
+    e.preventDefault();
+    // The size it had before it was ever sized by hand.
+    const first = fitFrame(before.frame, room);
+    const w = reset ? first.w : from.w + wide * STEP, h = reset ? first.h : from.h + tall * STEP;
+    const at = fitFrame({ ...from, w: Math.min(w, room.w - from.x), h: Math.min(h, room.h - from.y) }, room);
+    setFrames((f) => ({ ...f, [kind]: at }));
+    setOnTop(kind);
   };
 
   /**
@@ -728,7 +756,9 @@ export function Chat({
   const lastSpoken = useRef<string | null>(null);
   // Interrupted or failed, the process is gone: nothing it started is still going.
   const ended = session.status === "interrupted" || session.status === "error";
-  const items = useMemo(() => buildTranscript(events, { ended }), [events, ended]);
+  // Entries that have not changed are the same entries as in the last draw, so that their rows are not drawn again (see TranscriptRow).
+  const lastItems = useRef<Item[]>([]);
+  const items = useMemo(() => (lastItems.current = keepItems(lastItems.current, buildTranscript(events, { ended }))), [events, ended]);
   // A click on a picture opens it over the chat, not in a tab of its own.
   const pictures = useChatPictures(items, session);
   // What arrived while the chat was open slides in; what was there when it
@@ -927,6 +957,9 @@ export function Chat({
   // What it is doing, and for how long. The clock ticks only while something is
   // running, so an idle session re-renders no more than it used to.
   const phase = useMemo(() => (running ? activity(events) : null), [running, events]);
+  // Scans of every event, for the voice view: with the box's text in this component, they would run for each key typed.
+  const browserActivity = useMemo(() => latestBrowserActivity(events), [events]);
+  const terminalActivity = useMemo(() => latestTerminalActivity(events), [events]);
   // Beside the conversation: subagents, jobs left running, extension statuses.
   // The same entry for a subagent whose own events have not changed: an open
   // panel draws its transcript again only when there is more of it, not on
@@ -955,14 +988,29 @@ export function Chat({
     () => hasEarlier || items.some((item) => item.kind === "user" || item.kind === "assistant" || item.kind === "command"),
     [items, hasEarlier],
   );
-  const [now, setNow] = useState(() => Date.now());
+  // A screen reader is told when a run ends, with the start of the reply it ended on: once, and not
+  // as the words stream in, which a live region over the transcript would read out a few at a time.
+  const [heard, setHeard] = useState<{ id: string; text: string } | null>(null);
+  // Not kept: back on the chat it was said in, it would be put into the region again, and read out as a run that had just ended.
   useEffect(() => {
-    if (!running) return;
-    setNow(Date.now());
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, [running]);
-
+    if (!heard) return;
+    const timer = setTimeout(() => setHeard(null), 10_000);
+    return () => clearTimeout(timer);
+  }, [heard]);
+  useEffect(() => setHeard(null), [session.id]);
+  const wasRunning = useRef({ id: session.id, running });
+  useEffect(() => {
+    const before = wasRunning.current;
+    wasRunning.current = { id: session.id, running };
+    if (before.id !== session.id || !before.running || running) return;
+    const id = session.id;
+    // The status comes at once and the last words a frame later (see App's drain), so the reply is read once they are drawn.
+    const timer = setTimeout(() => {
+      const reply = [...lastItems.current].reverse().find((item) => item.kind === "assistant" && item.text.trim());
+      setHeard({ id, text: reply?.kind === "assistant" ? reply.text.trim().slice(0, 300) : t("The run has finished.") });
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [running, session.id]);
   // Commands come from pi at runtime, so anything a newly installed package
   // registers shows up here without the portal knowing about it in advance.
   //
@@ -1042,6 +1090,8 @@ export function Chat({
     setPaletteShut(false);
   }, [slashText]);
   const matches = paletteShut ? [] : allMatches;
+  // The list is the message box's to the screen reader: which command the arrows are on is what it reads out.
+  const paletteId = useId();
   const paletteBox = useRef<HTMLDivElement>(null);
   // Shut, the command list and the way back to the end drop away as pictures of themselves (see motion.ts).
   const paletteRef = useLeaveRef<HTMLDivElement>("menu", paletteBox);
@@ -1150,7 +1200,7 @@ export function Chat({
           else await onClientCommand(command.name, command.args);
           return;
         }
-        setSending(true);
+        setSendingIn((l) => [...l, sent]);
         try {
           // Mid-run, typed words steer the run — taken in after the step it is on
           // — rather than waiting for it to finish, which on a long run looked
@@ -1163,7 +1213,7 @@ export function Chat({
               : undefined,
           );
         } finally {
-          setSending(false);
+          setSendingIn((l) => without(l, sent));
         }
       } catch (e) {
         if (fromBox) putBack(sent, msg, images);
@@ -1208,13 +1258,65 @@ export function Chat({
   };
 
   const attempt = async (fn: () => Promise<void>) => {
+    const id = session.id;
     setActionError(null);
     try {
       await fn();
     } catch (e) {
-      setActionError((e as Error).message);
+      // What was asked may be answered when another chat is open: the complaint is not for that one.
+      if (currentSession.current === id) setActionError((e as Error).message);
     }
   };
+
+  // What the rows can do. Rows are drawn only when what they show changes, so they are handed one object
+  // that stays the same, whose functions do what these do now (see useStableActions).
+  const rowActions = useStableActions<RowActions>({
+    openPicture: pictures.open,
+    showInTerminal,
+    openAgent,
+    edit: setEditing,
+    cancelEdit: () => setEditing(null),
+    saveEdit: (seq, next) => {
+      const id = session.id;
+      return attempt(async () => {
+        await onEditMessage(seq, next);
+        // Not the message of that number in the chat open now.
+        if (currentSession.current === id) setEditing(null);
+      });
+    },
+    // The same as editing without changing a word. After a Stop this is what clears the half-finished
+    // answer out of the agent's memory instead of stacking a second question on top of it.
+    retry: (seq, text) => {
+      takeOut();
+      void attempt(() => onEditMessage(seq, text));
+    },
+    again: (item, text) => attempt(() => sendAgain(item, text)),
+    remove: async (seq) => {
+      if (
+        await confirmDialog({
+          title: t("Delete this message?"),
+          message: t("The agent's reply to it goes too, and the agent forgets both."),
+          confirmLabel: t("Delete"),
+          danger: true,
+          deletes: true,
+        })
+      ) {
+        takeOut();
+        void attempt(() => onDeleteMessage(seq));
+      }
+    },
+    switchVersion: (seq, to) => {
+      setSwitching(seq);
+      void attempt(async () => {
+        try {
+          await api.switchVersion(session.id, seq, to);
+        } catch (e) {
+          setSwitching(null);
+          throw e;
+        }
+      });
+    },
+  });
 
   const send = async () => {
     const msg = input.trim();
@@ -1238,7 +1340,7 @@ export function Chat({
     const id = session.id;
     const { images, others } = sortFiles(files);
     setActionError(null);
-    setAdding((n) => n + 1);
+    setAddingIn((l) => [...l, id]);
     const problems: string[] = [];
     try {
       problems.push(...(await pending.add(id, images)));
@@ -1256,7 +1358,7 @@ export function Chat({
         else drafts.set(id, drafts.get(id).trim() ? `${drafts.get(id).trimEnd()}\n${note}` : note);
       }
     } finally {
-      setAdding((n) => n - 1);
+      setAddingIn((l) => without(l, id));
       if (problems.length && currentSession.current === id) setActionError(problems.join(" "));
     }
   };
@@ -1373,23 +1475,23 @@ export function Chat({
           <LuGripVertical aria-hidden className="h-3.5 w-3.5" />
         </span>
         {kind === "terminal" ? (
-          <div className="chat-tabs" role="tablist" aria-label={t("Terminals")}>
-            <button type="button" role="tab" aria-selected={terminalTab === "agent"} onClick={() => setTerminalTab("agent")}>
+          <div className="chat-tabs" role="tablist" aria-label={t("Terminals")} onKeyDown={tabKeys}>
+            <button type="button" role="tab" aria-selected={terminalTab === "agent"} tabIndex={terminalTab === "agent" ? 0 : -1} onClick={() => setTerminalTab("agent")}>
               {t("Agent")}
-              {running && <i className="chat-tab-live" aria-label={t("Running")} />}
+              {running && <i className="chat-tab-live" role="img" aria-label={t("Running")} />}
             </button>
-            <button type="button" role="tab" aria-selected={terminalTab === "jobs"} onClick={() => setTerminalTab("jobs")}>
+            <button type="button" role="tab" aria-selected={terminalTab === "jobs"} tabIndex={terminalTab === "jobs" ? 0 : -1} onClick={() => setTerminalTab("jobs")}>
               {t("Background")}
-              {background.jobs.some((j) => j.state === "running" && !j.attached) && <i className="chat-tab-live" aria-label={t("Running")} />}
+              {background.jobs.some((j) => j.state === "running" && !j.attached) && <i className="chat-tab-live" role="img" aria-label={t("Running")} />}
             </button>
-            <button type="button" role="tab" aria-selected={terminalTab === "shell"} onClick={() => setTerminalTab("shell")}>
+            <button type="button" role="tab" aria-selected={terminalTab === "shell"} tabIndex={terminalTab === "shell" ? 0 : -1} onClick={() => setTerminalTab("shell")}>
               {t("Your shell")}
             </button>
           </div>
         ) : kind === "git" ? (
-          <div className="chat-tabs" role="tablist" aria-label={t("Git")}>
+          <div className="chat-tabs" role="tablist" aria-label={t("Git")} onKeyDown={tabKeys}>
             {GIT_TABS.map((tab) => (
-              <button key={tab.id} type="button" role="tab" aria-selected={gitTab === tab.id} onClick={() => setGitTab(tab.id)}>
+              <button key={tab.id} type="button" role="tab" aria-selected={gitTab === tab.id} tabIndex={gitTab === tab.id ? 0 : -1} onClick={() => setGitTab(tab.id)}>
                 {t(tab.label)}
                 {tab.id === "changes" && gitCount > 0 && <span className="ml-1 rounded-full bg-fg/10 px-1 text-[10px]">{gitCount}</span>}
               </button>
@@ -1437,7 +1539,7 @@ export function Chat({
       {kind === "files" && (
         <div className="min-h-0 flex-1 bg-surface">
           {/* Not before the chat's events are here: what it did earlier is not news. */}
-          {!loading && <FilesPanel key={session.id} sessionId={session.id} folder={session.workspace} activity={fileActivity} reveal={fileAsked} onRevealed={fileAnswered} onDirtyChange={setFilesDirty} />}
+          {!loading && <FilesPanel key={session.id} sessionId={session.id} folder={session.workspace} activity={fileActivity} reveal={fileAsked} onRevealed={fileAnswered} onDirtyChange={setFilesDirty} keepDraft />}
         </div>
       )}
       {kind === "git" && (
@@ -1457,7 +1559,12 @@ export function Chat({
           </div>
           {shellStarted && (
             <div className={terminalTab === "shell" ? "chat-terminal-pane" : "chat-terminal-pane is-hidden"}>
-              <TerminalPanel sessionId={session.id} />
+              {/* Its code is fetched when the tab is first opened: a file that is gone must not take the chat with it. */}
+              <ErrorBoundary resetKey={session.id} fallback={(error) => <div className="p-4"><PartFailed error={error} /></div>}>
+                <Suspense fallback={null}>
+                  <TerminalPanel sessionId={session.id} />
+                </Suspense>
+              </ErrorBoundary>
             </div>
           )}
         </div>
@@ -1476,8 +1583,16 @@ export function Chat({
         {i > 0 && (
           <div
             onPointerDown={dragSplit(place)}
+            onKeyDown={keySplit(place)}
             title={t("Drag to resize")}
-            className={`shrink-0 touch-none bg-line transition hover:bg-accent/40 ${across(place) ? "w-1 cursor-col-resize" : "h-1 cursor-row-resize"}`}
+            role="separator"
+            tabIndex={0}
+            aria-label={t("Space between the two panels")}
+            aria-orientation={across(place) ? "vertical" : "horizontal"}
+            aria-valuenow={Math.round(split * 100)}
+            aria-valuemin={Math.round(SPLIT_LEAST * 100)}
+            aria-valuemax={Math.round((1 - SPLIT_LEAST) * 100)}
+            className={`shrink-0 touch-none bg-line transition hover:bg-accent/40 focus-visible:bg-accent ${across(place) ? "w-1 cursor-col-resize" : "h-1 cursor-row-resize"}`}
           />
         )}
         <div
@@ -1511,8 +1626,16 @@ export function Chat({
     const edge = (
       <div
         onPointerDown={dragSize(place)}
+        onKeyDown={keySize(place)}
         title={t("Drag to resize")}
-        className={`chat-aside-edge shrink-0 touch-none bg-line transition hover:bg-accent/40 max-md:hidden ${wide ? "h-1 cursor-row-resize" : "w-1 cursor-col-resize"}`}
+        role="separator"
+        tabIndex={0}
+        aria-label={wide ? t("Height of the panels at the bottom") : place === "left" ? t("Width of the panels on the left") : t("Width of the panels on the right")}
+        aria-orientation={wide ? "horizontal" : "vertical"}
+        aria-valuenow={Math.round(wide ? heightAt() : widthAt(place))}
+        aria-valuemin={wide ? DOCKED_MIN.h : DOCKED_MIN.w}
+        aria-valuemax={Math.max(Math.round(wide ? heightAt() : widthAt(place)), wide ? innerHeight : innerWidth)}
+        className={`chat-aside-edge shrink-0 touch-none bg-line transition hover:bg-accent/40 focus-visible:bg-accent max-md:hidden ${wide ? "h-1 cursor-row-resize" : "w-1 cursor-col-resize"}`}
       />
     );
     return place === "left" ? <>{aside}{edge}</> : <>{edge}{aside}</>;
@@ -1531,7 +1654,16 @@ export function Chat({
         className={`chat-aside flex flex-col overflow-hidden ${ASIDE.float} ${onTop === kind ? "!z-[21]" : ""} ${COVER}`}
       >
         {slotsIn("float", [kind])}
-        <div onPointerDown={sizeFrame(kind)} title={t("Drag to resize")} aria-hidden="true" className="chat-aside-grip max-md:hidden" />
+        <div
+          onPointerDown={sizeFrame(kind)}
+          onKeyDown={keyFrame(kind)}
+          title={t("Drag to resize")}
+          role="button"
+          tabIndex={0}
+          aria-label={t("Resize {panel}", { panel: t(PANEL[kind].label) })}
+          aria-description={t("The arrow keys make the window larger or smaller, Home gives it its first size back.")}
+          className="chat-aside-grip max-md:hidden"
+        />
       </aside>
     );
   };
@@ -1539,7 +1671,7 @@ export function Chat({
   return (
     <div className="session-workspace relative flex h-full min-h-0 flex-col">
       {pictures.viewer}
-      <CanvasPanel showToggle={false} key={session.id} sessionId={session.id} folder={session.workspace} open={canvasOpen} setOpen={setCanvasOpen}/>
+      <CanvasPanel key={session.id} sessionId={session.id} folder={session.workspace} open={canvasOpen} setOpen={setCanvasOpen}/>
       <div ref={setVoiceHost} className={voiceMode ? "flex min-h-0 flex-1 flex-col" : "hidden"} />
       <header className={voiceMode ? "hidden" : "chat-header border-b border-line px-4 py-3 max-md:px-3 max-md:py-2"}>
         <div className="mx-auto flex w-full max-w-3xl items-center gap-3 max-md:gap-2">
@@ -1658,6 +1790,7 @@ export function Chat({
         data-transcript=""
         className="flex-1 overflow-y-auto px-4 py-6"
       >
+        <div role="status" aria-live="polite" className="sr-only">{heard?.id === session.id ? heard.text : ""}</div>
         <div ref={list} className={`chat-list mx-auto w-full max-w-3xl space-y-3${opening ? " is-opening" : ""}`}>
         <div ref={topEdge} aria-hidden className="h-px" />
         {!loading && hasEarlier && hiddenHere === 0 && (
@@ -1690,305 +1823,33 @@ export function Chat({
           const enter = (entering ? " chat-enter" : "") + live;
           // What you said comes in from the corner the send button is in; what went wrong shakes (motion.css).
           const mine = entering && item.kind === "user" ? " is-mine" : "";
-          if (item.kind === "user") {
-            const { text, blocks } = splitContext(item.text);
-            // Nothing but framing: the portal spoke, not a person. Drawing it as
-            // a message bubble with no message in it reads as something broken.
-            if (!text && !item.images) {
-              return (
-                <div key={item.id} className="flex flex-wrap justify-end gap-1">
-                  {blocks.map((b, i) => (
-                    <ContextChip key={i} label={t(b.label)} body={b.body} />
-                  ))}
-                </div>
-              );
-            }
-            if (editing === item.seq) {
-              return (
-                <div key={item.id} className="flex justify-end">
-                  <MessageEditor
-                    initial={text}
-                    hasImages={!!item.images}
-                    onCancel={() => setEditing(null)}
-                    onSave={(next) =>
-                      attempt(async () => {
-                        await onEditMessage(item.seq, next);
-                        setEditing(null);
-                      })
-                    }
-                  />
-                </div>
-              );
-            }
-            // Sent into the run and waiting for the agent to take it in: shown
-            // as sent, at the foot of the conversation, and moved to where it
-            // was read once it has been. Nothing to edit or retry until then —
-            // and one that never got there can only be sent again. Waiting
-            // until the server says otherwise, run or no run: pi can still
-            // hold one after its run is over, or be taking it in, and offered
-            // again it would be read twice.
-            if (item.queued || item.unsent) {
-              const waits = !item.unsent;
-              return (
-                <div key={item.id} className={`group flex flex-col items-end gap-1${enter}${mine}`}>
-                  <div className="max-w-[80%] rounded-2xl rounded-br-md border border-dashed border-accent/30 bg-accent/5 px-3.5 py-2 text-sm text-fg-muted">
-                    {text && <div className="whitespace-pre-wrap">{text}</div>}
-                    {item.images && <div className="mt-1 text-[11px] text-fg-subtle">{tp(item.images.length, "{n} picture", "{n} pictures")}</div>}
-                  </div>
-                  <div className="flex items-center gap-1.5 text-[11px] text-fg-subtle">
-                    {waits ? (
-                      <>
-                        <LuClock aria-hidden className="h-3 w-3" />
-                        <span>
-                          {running
-                            ? item.steer ? t("Waiting — goes in after the current step") : t("Waiting — goes in when the run ends")
-                            : t("Waiting — the agent has it, and reads it next")}
-                        </span>
-                      </>
-                    ) : (
-                      <span>
-                        {item.unsent === "unsure"
-                          ? t("May not have been sent — the portal restarted, and could not tell whether the agent took it in")
-                          : item.unsent === "restarted" ? t("Not sent — the portal restarted before the agent took it in") : t("Not sent — the run was stopped before the agent took it in")}
-                      </span>
-                    )}
-                    {text && <CopyAction text={text} />}
-                    {!waits && (
-                      <MessageAction label={t("Send again as a new message")} onClick={() => attempt(() => sendAgain(item, text))}>
-                        <LuRotateCw className="h-3 w-3" />
-                      </MessageAction>
-                    )}
-                  </div>
-                </div>
-              );
-            }
-            return (
-              <div key={item.id} className={`group flex flex-col items-end gap-1${enter}${mine}`}>
-                <div className="max-w-[80%] rounded-2xl rounded-br-md bg-accent/10 px-3.5 py-2 text-sm text-fg ring-1 ring-inset ring-accent/15">
-                  {item.audio && <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-medium tracking-wide text-accent" title={t("Sent in voice mode")}><LuAudioLines size={13} aria-hidden="true" /><span>{t("Audio")}</span></div>}
-                  {item.images && (
-                    <div className={`flex flex-wrap justify-end gap-1.5 ${text ? "mb-1.5" : ""}`}>
-                      {item.images.map((image) => (
-                        <PictureButton key={image.name} id={sentPictureId(item.id, image.name)} onOpen={pictures.open} title={t("Open the picture")}>
-                          <img
-                            src={api.imageUrl(session.id, image.name)}
-                            alt={t("A picture sent with this message")}
-                            loading="lazy"
-                            className="max-h-48 max-w-full rounded-lg object-contain ring-1 ring-line"
-                          />
-                        </PictureButton>
-                      ))}
-                    </div>
-                  )}
-                  {text && <div className="whitespace-pre-wrap">{text}</div>}
-                  {blocks.length > 0 && (
-                    <div className="mt-1.5 flex flex-wrap justify-end gap-1">
-                      {blocks.map((b, i) => (
-                        <ContextChip key={i} label={t(b.label)} body={b.body} />
-                      ))}
-                    </div>
-                  )}
-                </div>
-                {/* Only where it can be done: taking a message out from under a
-                    run that is answering it leaves the agent replying to
-                    something that no longer exists. Sending it again is fine —
-                    it just queues, like any other message. */}
-                <div className="flex items-center gap-1">
-                {versions[item.seq] && (
-                  <VersionSwitch
-                    seqs={versions[item.seq]}
-                    seq={item.seq}
-                    running={running}
-                    busy={switching !== null}
-                    onSwitch={(to) => {
-                      setSwitching(item.seq);
-                      void attempt(async () => {
-                        try {
-                          await api.switchVersion(session.id, item.seq, to);
-                        } catch (e) {
-                          setSwitching(null);
-                          throw e;
-                        }
-                      });
-                    }}
-                  />
-                )}
-                <div className="flex items-center gap-0.5 opacity-0 transition focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
-                  {text && <CopyAction text={text} />}
-                  {item.id === lastSaid ? (
-                    // Retry: the same as editing without changing a word. After
-                    // a Stop this is what clears the half-finished answer out of
-                    // the agent's memory instead of stacking a second question
-                    // on top of it.
-                    <MessageAction
-                      label={
-                        running
-                          ? t("Stop the run to retry")
-                          : t("Retry — drops the reply and sends this message again")
-                      }
-                      disabled={running}
-                      onClick={() => {
-                        takeOut();
-                        void attempt(() => onEditMessage(item.seq, text));
-                      }}
-                    >
-                      <LuRotateCw className="h-3 w-3" />
-                    </MessageAction>
-                  ) : (
-                    <MessageAction
-                      label={t("Send again as a new message")}
-                      onClick={() => attempt(() => sendAgain(item, text))}
-                    >
-                      <LuRotateCw className="h-3 w-3" />
-                    </MessageAction>
-                  )}
-                  <MessageAction
-                    label={
-                      running
-                        ? t("Stop the run to edit")
-                        : item.id === lastSaid ? t("Edit — replaces this message and everything after it (↑ in an empty box)") : t("Edit — replaces this message and everything after it")
-                    }
-                    disabled={running}
-                    onClick={() => setEditing(item.seq)}
-                  >
-                    <LuPencil className="h-3 w-3" />
-                  </MessageAction>
-                  <MessageAction
-                    label={running ? t("Stop the run to delete") : t("Delete this message and the reply to it")}
-                    disabled={running}
-                    danger
-                    onClick={async () => {
-                      if (
-                        await confirmDialog({
-                          title: t("Delete this message?"),
-                          message: t("The agent's reply to it goes too, and the agent forgets both."),
-                          confirmLabel: t("Delete"),
-                          danger: true,
-                          deletes: true,
-                        })
-                      ) {
-                        takeOut();
-                        void attempt(() => onDeleteMessage(item.seq));
-                      }
-                    }}
-                  >
-                    <LuTrash2 className="h-3 w-3" />
-                  </MessageAction>
-                </div>
-                </div>
-              </div>
-            );
-          }
-          if (item.kind === "assistant") {
-            return (
-              <div key={item.id} className={`group max-w-[90%]${enter}`}>
-                {item.thinking && (
-                  <ThinkingBlock
-                    thinking={item.thinking}
-                    streaming={running && !item.done && !item.text}
-                    since={item.thinkingSince}
-                    until={item.thinkingUntil}
-                  />
-                )}
-                {item.text && (
-                  <div className="md text-sm leading-relaxed text-fg">
-                    {/* Streamdown rather than plain markdown: a reply arrives a
-                        token at a time, so half of it is briefly malformed —
-                        an unclosed fence, a half-written link — and a strict
-                        renderer flickers between interpretations as it lands.
-                        A reasoning model also sometimes closes a thought inside
-                        the answer; that stray tag is noise to whoever reads it. */}
-                    <Streamdown
-                      parseIncompleteMarkdown
-                      animated={{ animation: "blurIn", duration: 240, sep: "word" }}
-                      isAnimating={running && !item.done}
-                      caret={running && !item.done ? "circle" : undefined}
-                      shikiTheme={["github-light", "github-dark"]}
-                      plugins={mermaid ? { mermaid } : undefined}
-                      mermaid={mermaidOptions}
-                    >
-                      {assistantText(item)}
-                    </Streamdown>
-                  </div>
-                )}
-                {/* Under the answer, where it ends: only the last bubble of it,
-                    and only once nothing in the run follows it. One per tool
-                    call in between would be a Copy button after every
-                    paragraph, and one beside the words sat in the margin where
-                    the eye does not go. Each answer keeps its button when
-                    another message comes. */}
-                {item.final && (
-                  <div className="reply-actions -ml-1.5 mt-1 flex items-center gap-0.5">
-                    <CopyAction text={assistantText(item)} />
-                    {item.stats && <ReplyStatsLine stats={item.stats} />}
-                  </div>
-                )}
-              </div>
-            );
-          }
-          if (item.kind === "compaction") {
-            return (
-              <div key={item.id} className={`chat-row${enter}`}>
-                <CompactionMarker item={item} />
-              </div>
-            );
-          }
-          if (item.kind === "command") {
-            return (
-              <div key={item.id} className={`chat-row${enter}`}>
-                <CommandLine item={item} />
-              </div>
-            );
-          }
-          if (item.kind === "tool") {
-            // The portal's picture tools are a preview of the picture, not a tool card.
-            if (isPictureCall(item)) {
-              return (
-                <div key={item.id} className={`tool-row${enter}`}>
-                  <PictureCall item={item} sessionId={session.id} folder={session.workspace} onOpen={pictures.open} />
-                </div>
-              );
-            }
-            return (
-              <div key={item.id} className={`tool-row${enter}`}>
-              <ToolCall item={item} onOpenTerminal={showInTerminal} onOpenAgent={agentFor(item.callId) ? () => openAgent(agentFor(item.callId)!.id) : undefined} />
-              {item.picture && (
-                // In the middle of the column, with as much room above as below. Contained, never cropped: a wide or tall picture is smaller here, and whole in the viewer.
-                <div className="chat-picture my-3 flex justify-center">
-                  <PictureButton id={shownPictureId(item.id)} onOpen={pictures.open} title={item.picture.title ?? item.picture.path}>
-                    <img
-                      src={api.pictureUrl(session.id, item.picture.path, item.pictureSeq)}
-                      alt={item.picture.title ?? item.picture.path}
-                      loading="lazy"
-                      className="max-h-80 max-w-full rounded-lg border border-line object-contain"
-                    />
-                  </PictureButton>
-                </div>
-              )}
-              </div>
-            );
-          }
+          const seq = item.kind === "user" ? item.seq : undefined;
           return (
-            <div
+            <TranscriptRow
               key={item.id}
-              className={`whitespace-pre-wrap rounded-lg px-3 py-2 text-xs${enter}${entering && item.tone === "error" ? " is-error" : ""} ${
-                item.tone === "error"
-                  ? "bg-danger/10 text-danger"
-                  : item.tone === "warn"
-                    ? "bg-warn/10 text-warn"
-                    : "bg-raised/60 text-fg-muted"
-              }`}
-            >
-              {item.portal ? t(item.text) : item.text}
-            </div>
+              item={item}
+              enter={enter}
+              mine={mine}
+              entering={entering}
+              running={running}
+              editing={seq !== undefined && editing === seq}
+              last={item.id === lastSaid}
+              seqs={seq === undefined ? undefined : versions[seq]}
+              switching={switching !== null}
+              sessionId={session.id}
+              folder={session.workspace}
+              mermaid={mermaid}
+              mermaidOptions={mermaidOptions}
+              agent={item.kind === "tool" ? agentFor(item.callId)?.id : undefined}
+              act={rowActions}
+            />
           );
-        // Each by its id, for motion.ts to tell them apart once they have been drawn.
-        }).map((row) => cloneElement(row, { "data-key": row.key }))}
+        })}
 
           {actionError && (
-            <div className="rounded-lg bg-danger/10 px-3 py-2 text-xs text-danger">{actionError}</div>
+            <div role="alert" className="rounded-lg bg-danger/10 px-3 py-2 text-xs text-danger">{actionError}</div>
           )}
-          {!loading && running && phase && !statusShownElsewhere && <StatusIndicator phase={phase} now={now} />}
+          {!loading && running && phase && !statusShownElsewhere && <StatusIndicator phase={phase} />}
         </div>
       </div>
 
@@ -2038,6 +1899,7 @@ export function Chat({
         {matches.length > 0 && (
           <div
             ref={paletteRef}
+            id={paletteId}
             role="listbox"
             aria-label={t("Commands")}
             className="float-in absolute bottom-full left-0 right-0 mb-2 max-h-[min(18rem,35dvh)] overflow-y-auto overscroll-contain rounded-xl border border-line bg-surface shadow-pop"
@@ -2045,6 +1907,7 @@ export function Chat({
             {matches.map((c, i) => (
               <button
                 key={c.name}
+                id={`${paletteId}-${i}`}
                 type="button"
                 role="option"
                 aria-selected={i === picked}
@@ -2059,7 +1922,7 @@ export function Chat({
               >
                 <span className="font-mono text-xs text-accent">{trigger}{c.name}</span>
                 <span className="truncate text-xs text-fg-subtle">{c.description}</span>
-                <span className="ml-auto shrink-0 text-[10px] text-fg-faint">{c.source}</span>
+                <span className="ml-auto shrink-0 text-[10px] text-fg-faint">{labelOf(COMMAND_SOURCE, c.source)}</span>
               </button>
             ))}
           </div>
@@ -2101,7 +1964,7 @@ export function Chat({
           </div>
         )}
         {(attached.length > 0 || adding > 0) && (
-          <div className="flex flex-wrap items-center gap-2 px-3 pt-3" aria-label={t("Pictures going with the message")}>
+          <div role="group" className="flex flex-wrap items-center gap-2 px-3 pt-3" aria-label={t("Pictures going with the message")}>
             {attached.map((a) => (
               <div key={a.id} className="pop-in group/att relative">
                 <img src={a.data} alt={a.name} title={a.name} className="h-14 w-14 rounded-lg object-cover ring-1 ring-line" />
@@ -2220,6 +2083,9 @@ export function Chat({
                 : t("Describe the task…")
           }
           aria-label={t("Message")}
+          aria-autocomplete={matches.length > 0 ? "list" : undefined}
+          aria-controls={matches.length > 0 ? paletteId : undefined}
+          aria-activedescendant={matches.length > 0 ? `${paletteId}-${Math.min(picked, matches.length - 1)}` : undefined}
           className="prompt-input"
           style={{ height: composerHeight, minHeight: MIN_COMPOSER_HEIGHT, maxHeight: "45vh" }}
         />
@@ -2242,7 +2108,7 @@ export function Chat({
                 <LuPaperclip aria-hidden className="h-4 w-4" />
               </button>
               <DictationButton dictation={dictation} />
-              <VoiceControl folder={session.workspace} canvasOpen={canvasOpen} onCanvasMinimize={()=>setCanvasOpen(false)} onCanvasToggle={()=>setCanvasOpen(value=>!value)} key={session.id} sessionId={session.id} items={items} running={running} onSend={onSend} onAbort={onAbort} stageTarget={voiceHost} onModeChange={setVoiceMode} title={session.title} browserAvailable={browserUp} browserActivity={latestBrowserActivity(events)} terminalActivity={latestTerminalActivity(events)} toolEvents={events} />
+              <VoiceControl folder={session.workspace} canvasOpen={canvasOpen} onCanvasMinimize={()=>setCanvasOpen(false)} onCanvasToggle={()=>setCanvasOpen(value=>!value)} key={session.id} sessionId={session.id} items={items} running={running} work={phase} onSend={onSend} onAbort={onAbort} stageTarget={voiceHost} onModeChange={setVoiceMode} title={session.title} browserAvailable={browserUp} browserActivity={browserActivity} terminalActivity={terminalActivity} toolEvents={events} />
               {/* Mid-run, Stop stays while a message is written: it is the
                   moment the agent is seen going the wrong way, and whether to
                   steer it or stop it is still open. */}
@@ -2344,158 +2210,5 @@ function PanelToggle({
       {children}
       {live && <i className="header-live-dot" aria-hidden />}
     </button>
-  );
-}
-
-/**
- * Which version of a message is shown, and a way to the others: every time
- * it was edited or sent again, with what followed it that time. Not while a
- * run is going — it would be answering a conversation being swapped under it.
- */
-function VersionSwitch({
-  seqs,
-  seq,
-  running,
-  busy,
-  onSwitch,
-}: {
-  seqs: number[];
-  seq: number;
-  running: boolean;
-  /** A switch is on its way: one at a time. */
-  busy: boolean;
-  onSwitch: (to: number) => void;
-}) {
-  const at = seqs.indexOf(seq);
-  if (at < 0) return null;
-  return (
-    <div className="message-versions flex items-center text-[11px] text-fg-subtle" role="group" aria-label={t("Versions of this message")}>
-      <MessageAction label={running ? t("Stop the run to switch versions") : t("Previous version")} disabled={running || busy || at === 0} onClick={() => onSwitch(seqs[at - 1])}>
-        <LuChevronLeft className="h-3 w-3" />
-      </MessageAction>
-      <span className="min-w-[2.2rem] text-center tabular-nums" aria-live="polite">
-        {at + 1} / {seqs.length}
-      </span>
-      <MessageAction label={running ? t("Stop the run to switch versions") : t("Next version")} disabled={running || busy || at === seqs.length - 1} onClick={() => onSwitch(seqs[at + 1])}>
-        <LuChevronRight className="h-3 w-3" />
-      </MessageAction>
-    </div>
-  );
-}
-
-/** Copies a message, and for a moment says that it did. */
-function CopyAction({ text }: { text: string }) {
-  const [result, setResult] = useState<"done" | "failed" | null>(null);
-  const timer = useRef<number>();
-  useEffect(() => () => window.clearTimeout(timer.current), []);
-  return (
-    <MessageAction
-      label={result === "done" ? t("Copied") : result === "failed" ? t("Could not copy") : t("Copy")}
-      onClick={async () => {
-        setResult((await copyText(text)) ? "done" : "failed");
-        window.clearTimeout(timer.current);
-        timer.current = window.setTimeout(() => setResult(null), 1500);
-      }}
-    >
-      {result === "done" ? <LuCheck className="h-3 w-3 text-ok" /> : <LuCopy className="h-3 w-3" />}
-    </MessageAction>
-  );
-}
-
-function MessageAction({
-  label,
-  onClick,
-  disabled,
-  danger,
-  children,
-}: {
-  label: string;
-  onClick: () => void;
-  disabled?: boolean;
-  danger?: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      title={label}
-      aria-label={label}
-      disabled={disabled}
-      onClick={onClick}
-      className={`rounded p-1.5 text-fg-faint transition disabled:cursor-not-allowed disabled:opacity-40 ${
-        danger ? "hover:text-danger" : "hover:text-accent"
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
-
-/** A sent message, opened for rewriting in place. */
-function MessageEditor({
-  initial,
-  hasImages,
-  onSave,
-  onCancel,
-}: {
-  initial: string;
-  /** The message went with pictures: they go again, so the words may be left out. */
-  hasImages?: boolean;
-  onSave: (text: string) => Promise<void>;
-  onCancel: () => void;
-}) {
-  const [value, setValue] = useState(initial);
-  const [saving, setSaving] = useState(false);
-  const changed = value.trim() !== initial.trim();
-  const empty = !value.trim() && !hasImages;
-
-  const save = async () => {
-    if (empty || !changed || saving) return;
-    setSaving(true);
-    try {
-      await onSave(value.trim());
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="w-full max-w-[80%] rounded-2xl bg-accent/10 p-2 ring-1 ring-inset ring-accent/30">
-      <textarea
-        autoFocus
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        onKeyDown={(e) => {
-          if (isEscape(e)) onCancel();
-          if (isEnter(e) && !e.shiftKey) {
-            e.preventDefault();
-            save();
-          }
-        }}
-        rows={Math.min(10, Math.max(2, value.split("\n").length))}
-        aria-label={t("Edit message")}
-        className="w-full resize-none bg-transparent px-1.5 py-1 text-sm text-fg outline-none"
-      />
-      <div className="mt-1 flex items-center gap-2 px-1">
-        <span className="text-[11px] text-fg-faint">
-          {hasImages ? t("Replaces this message and everything after it. The pictures go with it again.") : t("Replaces this message and everything after it.")}
-        </span>
-        <button
-          type="button"
-          onClick={onCancel}
-          className="ml-auto rounded-lg px-2.5 py-1 text-xs text-fg-muted transition hover:bg-fg/5"
-        >
-          {t("Cancel")}
-        </button>
-        <button
-          type="button"
-          onClick={save}
-          disabled={saving || !changed || empty}
-          className="rounded-lg bg-accent/15 px-2.5 py-1 text-xs text-accent ring-1 ring-inset ring-accent/25 transition hover:bg-accent/25 disabled:opacity-40"
-        >
-          {saving ? t("Sending…") : t("Send")}
-        </button>
-      </div>
-    </div>
   );
 }

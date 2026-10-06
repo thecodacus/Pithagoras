@@ -10,24 +10,26 @@ import { sandboxTools } from "../sandbox/tools.js";
 import { agentSkillsDir, skillsLine } from "../agent-skills.js";
 import { agentOf, defaultAgent } from "../agents.js";
 import { crossModelThinkingExtension } from "./cross-model-thinking.js";
-import { BROWSER_READING_RULE, BROWSER_SCREENSHOT_RULE } from "./browser-snapshot.js";
+import { BROWSER_READING_RULE, BROWSER_SCREENSHOT_RULE } from "./browser-mcp-rules.js";
 import { browserTools } from "../browser/tools.js";
+import { bundledPath } from "../bundled.js";
 import { EventEmitter } from "node:events";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import type { DraftStore, PiClient, PiCommand, PiState, PiStats, PiTool, PromptTaken } from "./types.js";
 import type { ImageContent } from "../prompt-images.js";
 import { routineTools } from "./routine-tools.js";
 import { reportTool, reportToFor } from "./report-tool.js";
 import { guardExtension } from "./guard.js";
+import { findSessionFile } from "./session-file.js";
+import { CONTEXT_FILES, SHARED_FILES } from "./context-files.js";
 import { heartbeatTool } from "./heartbeat-tool.js";
 import { askPrimaryTool } from "./ask-primary.js";
 import { proxyBaseUrl } from "../llama-progress.js";
 import { bridgeSubagents, SUBAGENT_INPUT, SUBAGENT_STOP, type Bridge } from "../subagent-protocol.js";
 import { contextWindowFor, getSkipThinkingProviders, getVoiceInstructions, portalBrowserOn, voiceSpeaks } from "../db.js";
-import { configStamp } from "../providers.js";
+import { configStamp, isLlamaProvider } from "../providers.js";
 import { rereadConfig } from "./model-runtime.js";
 import { UNDERSTORY_RULE, understoryOn } from "../features.js";
 
@@ -45,26 +47,6 @@ function asArray(v: any): any[] {
   const resolved = typeof v === "function" ? v() : v;
   return Array.isArray(resolved) ? resolved : [];
 }
-
-/**
- * Files pi should treat as context on top of the ones it finds itself.
- *
- * Only picked up where they exist, so a task workspace is unaffected and the
- * agent's home directory gets its character, its user and its memory without
- * anything being generated.
- */
-/**
- * The agent's own files, and who is allowed to see them.
- *
- * SOUL.md is who the agent is and travels everywhere. PrimaryUser.md and
- * MEMORY.md are one person's notes about themselves and their work, so a
- * conversation with anyone else must not load them — otherwise a teammate
- * messaging the bot gets an agent carrying your private context.
- *
- * TEAM.md is the shared half: what everyone may be told.
- */
-const CONTEXT_FILES = ["SOUL.md", "PrimaryUser.md", "MEMORY.md"];
-const SHARED_FILES = ["SOUL.md", "TEAM.md"];
 
 /**
  * While Understory holds the agent's memory, MEMORY.md is not read: two
@@ -107,6 +89,14 @@ export function loadTheme(
 }
 const piTheme = () => (globalThis as Record<symbol, unknown>)[THEME_KEY];
 
+/**
+ * Files pi should treat as context on top of the ones it finds itself.
+ *
+ * Only picked up where they exist, so a task workspace is unaffected and the
+ * agent's home directory gets its character, its user and its memory without
+ * anything being generated. Who may see which of them is settled in
+ * context-files.ts, which the guard reads as well.
+ */
 export function extraContextFiles(cwd: string, role?: string): { path: string; content: string }[] {
   const out: { path: string; content: string }[] = [];
   for (const name of filesFor(role)) {
@@ -121,14 +111,13 @@ export function extraContextFiles(cwd: string, role?: string): { path: string; c
 }
 
 /**
- * A short anchor saying the files are the agent's own.
+ * A short anchor saying the files are the agent's own: the ones handed to it now.
  *
  * Each file opens with its own instruction block, so this does not repeat them
  * — it exists because a context file is otherwise presented as reference
  * material, and the model read its own identity as notes about a third party.
  * One line at system level is enough to change what they are.
  */
-/** The line saying the agent's own files are its own: the ones handed to it now. */
 function ownFiles(cwd: string, role?: string): string[] {
   const present = filesFor(role).filter((name) => {
     try {
@@ -188,23 +177,9 @@ function portalLoader(pi: any): new (options: unknown, rule: AudioRule, said?: (
   });
 }
 
-/**
- * Skills shipped with the portal, loaded from the image rather than installed.
- *
- * Resolved relative to the compiled file so it works from dist and from source,
- * the same way the builtin channels are found.
- */
+/** Skills shipped with the portal, loaded from the image rather than installed. */
 export function builtinSkillsDir(): string | undefined {
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  for (const candidate of [
-    path.resolve(here, "../../../skills"),
-    path.resolve(here, "../../skills"),
-    path.resolve(process.cwd(), "skills"),
-    path.resolve(process.cwd(), "../skills"),
-  ]) {
-    if (existsSync(candidate)) return candidate;
-  }
-  return undefined;
+  return bundledPath("skills");
 }
 
 /**
@@ -215,30 +190,17 @@ export function builtinSkillsDir(): string | undefined {
  * else is returned untouched, and so is a llama model when there is no proxy —
  * a missed indicator is not a reason to fail to start.
  */
-function viaProgressProxy<T extends { provider?: string; baseUrl?: string }>(
+export function viaProgressProxy<T extends { provider?: string; baseUrl?: string }>(
   model: T | undefined,
   sessionId: string | undefined,
 ): T | undefined {
-  if (!model || !sessionId || !model.baseUrl || !isLlama(model.provider)) return model;
+  if (!model || !sessionId || !model.baseUrl || !isLlamaProvider(model.provider)) return model;
   // Already routed. Wrapping it again would nest one proxy path inside another.
   if (model.baseUrl.includes("/s/" + sessionId)) return model;
   const rerouted = proxyBaseUrl(sessionId, model.baseUrl);
   if (!rerouted) return model;
   console.log(`[portal] prefill progress for ${sessionId}: ${model.baseUrl} -> ${rerouted}`);
   return { ...model, baseUrl: rerouted };
-}
-
-/**
- * The ways a llama.cpp server shows up.
- *
- * pi has a built-in provider called `llama.cpp`, and the `pi-llama-cpp` package
- * registers one per server as `llama-server=<url>`. Behind a llama-swap gateway
- * neither fits — pi-llama-cpp probes `/props?model=<id>` for every model, which
- * llama-swap answers by loading it — so the gateway is a plain provider in
- * models.json named `llama-swap`. It is still llama-server underneath.
- */
-function isLlama(provider: string | undefined): boolean {
-  return provider === "llama.cpp" || provider === "llama-swap" || (provider?.startsWith("llama-server") ?? false);
 }
 
 /**
@@ -307,6 +269,7 @@ function callable(obj: any, key: string): any {
  */
 export class SdkPiClient extends EventEmitter implements PiClient {
   private disposed = false;
+  private toldShutdown = false;
   private canvases?: CanvasTools;
   private voiceFirst?: VoiceFirstTurn;
   private audioRule?: AudioRule;
@@ -341,6 +304,10 @@ export class SdkPiClient extends EventEmitter implements PiClient {
 
   subagentsRunning(): number {
     return this.unbridge?.running() ?? 0;
+  }
+
+  dialogsOpen(): number {
+    return this.pendingUi.size;
   }
 
   endSubagents(why: string): void {
@@ -443,6 +410,8 @@ export class SdkPiClient extends EventEmitter implements PiClient {
             opts.sessionId,
             opts.enforceTaint !== false,
             opts.browserNow ?? (() => ({ allowed: false, allowlist: [] })),
+            opts.cwd,
+            [path.join(pi.getAgentDir(), "skills"), ...(builtinSkills ? [builtinSkills] : [])],
           ) },
       ];
       // While the sandbox is on, pi's own tools do what they do to the system as the sandbox user: see sandbox/.
@@ -483,12 +452,12 @@ export class SdkPiClient extends EventEmitter implements PiClient {
         // deploy without saying so.
         // Its own only once it has one: pi reports a skill path that is not there as an error.
         additionalSkillPaths: [...(builtinSkills ? [builtinSkills] : []), ...(skillsOf && existsSync(agentSkillsDir(skillsOf)) ? [agentSkillsDir(skillsOf)] : [])],
-        // Inline rather than an installed package: the portal owns routines, so
-        // a package would have to call back over HTTP to reach the database it
-        // sits beside. Absent unless asked, so a task session never sees them.
-        // Registered only where each belongs: routine management for sessions
+        // The portal's own extensions, inline rather than an installed package:
+        // the portal owns routines, so a package would have to call back over
+        // HTTP to reach the database it sits beside. The list is built above,
+        // each registered only where it belongs: routine management for sessions
         // reached through a channel, reporting for routine runs.
-        ...(factories.length ? { extensionFactories: factories } : {}),
+        extensionFactories: factories,
         // pi discovers one context file per directory — AGENTS.md or CLAUDE.md
         // — so the agent's own files would be invisible to it. Rather than
         // generating an AGENTS.md from them and keeping it in sync, they are
@@ -539,10 +508,10 @@ export class SdkPiClient extends EventEmitter implements PiClient {
     // Note the argument order — (cwd, sessionDir). Only one was being passed,
     // so the session directory was taken as the working directory and pi filed
     // everything under an encoded path derived from it.
-    const sessionManager =
-      opts.sessionFile && existsSync(opts.sessionFile)
-        ? pi.SessionManager.open(opts.sessionFile, opts.sessionDir, opts.cwd)
-        : pi.SessionManager.create(opts.cwd, opts.sessionDir);
+    const sessionFile = findSessionFile(opts.sessionFile, opts.sessionDir);
+    const sessionManager = sessionFile
+      ? pi.SessionManager.open(sessionFile, opts.sessionDir, opts.cwd)
+      : pi.SessionManager.create(opts.cwd, opts.sessionDir);
     // Before the prompt is first built: a reopened conversation may have had
     // voice. What the model is given, not the whole path: a spoken message
     // compacted away left nothing the rule is about.
@@ -1022,6 +991,23 @@ export class SdkPiClient extends EventEmitter implements PiClient {
     return [...steering, ...followUp].map(String);
   }
 
+  /**
+   * What pi's own runtime does before it lets a session go. AgentSession.dispose()
+   * does not: it is the runtime that tells the extensions, and this portal has
+   * none. They stop their timers and the servers they started there. Left
+   * unsaid, each pi that was released stayed running and in memory.
+   */
+  async shutdown(): Promise<void> {
+    if (this.disposed || this.toldShutdown) return;
+    this.toldShutdown = true;
+    try {
+      const runner = this.session.extensionRunner;
+      if (runner?.hasHandlers?.("session_shutdown")) await runner.emit({ type: "session_shutdown", reason: "quit" });
+    } catch {
+      // An extension that fails to wind down must not keep its pi from being let go.
+    }
+  }
+
   dispose(): void {
     this.unbridge?.();
     if (this.disposed) return;
@@ -1110,8 +1096,10 @@ export class SdkPiClient extends EventEmitter implements PiClient {
     }));
   }
 
-  /** Names this session has switched off. Applied at every start and on change. */
-  /** Not private: create() fills it before the session is handed over. */
+  /**
+   * Names this session has switched off. Applied at every start and on change.
+   * Not private: create() fills it before the session is handed over.
+   */
   switchedOff = new Set<string>();
 
   /**
@@ -1309,16 +1297,6 @@ export class SdkPiClient extends EventEmitter implements PiClient {
   }
 
   /**
-   * Give the session the context window this portal holds the model to.
-   *
-   * pi reads the window off the model it is running, so the number is put there
-   * rather than beside it — the percentage and the moment of compaction then
-   * agree with it. Assigned to the agent's state instead of going through
-   * setModel, which writes a model change into the conversation and into pi's
-   * default model. With nothing set the definition's own number is put back, so
-   * removing a limit takes effect too.
-   */
-  /**
    * For the places that have another job first: reading a stored number and
    * looking at the session's model can both fail (a database closing at
    * shutdown, a pi release that stops exposing `agent`), and a run that never
@@ -1333,6 +1311,16 @@ export class SdkPiClient extends EventEmitter implements PiClient {
     }
   }
 
+  /**
+   * Give the session the context window this portal holds the model to.
+   *
+   * pi reads the window off the model it is running, so the number is put there
+   * rather than beside it — the percentage and the moment of compaction then
+   * agree with it. Assigned to the agent's state instead of going through
+   * setModel, which writes a model change into the conversation and into pi's
+   * default model. With nothing set the definition's own number is put back, so
+   * removing a limit takes effect too.
+   */
   applyContextLimit(): void {
     const current = this.session.model;
     if (!current) return;

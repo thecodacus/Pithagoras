@@ -17,21 +17,84 @@ function stringPrefix(raw: string,start: number): {value:string;end:number;compl
   if(/[\uD800-\uDBFF]$/.test(value)) value=value.slice(0,-1);
   return {value,end:i,complete:false};
 }
-export function canvasWritePrefix(raw: string): Record<string,any> | undefined {
+/** The start of a write's arguments is a few short values; one that is longer than this is not a write we follow. */
+const MAX_HEAD=4096;
+/** The arguments before the content string: what is in them, and where the content's text begins. */
+function readHead(raw: string): {args:Record<string,any>;at:number} | undefined {
   let i=0;const args:Record<string,any>={}; const ws=()=>{while(/\s/.test(raw[i]??'')&&i<raw.length)i++};
   ws();if(raw[i++]!=='{')return;
   while(i<raw.length){ws();if(raw[i]!== '"')return;const key=stringPrefix(raw,i);if(!key.complete)return;i=key.end;ws();if(raw[i++]!==':')return;ws();
-    if(raw[i]==='"'){const v=stringPrefix(raw,i);args[key.value]=v.value;i=v.end;
-      if(key.value==='content')return args;
-      if(!v.complete)return;
+    if(raw[i]==='"'){
+      if(key.value==='content')return {args,at:i+1};
+      const v=stringPrefix(raw,i);if(!v.complete)return;args[key.value]=v.value;i=v.end;
     }else{const n=/^\d+(?=\s*[,}])/.exec(raw.slice(i));if(!n)return;args[key.value]=Number(n[0]);i+=n[0].length;}
     ws();if(raw[i++]!==',')return;
   }
 }
+/**
+ * The arguments of one canvas_write call as they stream in, decoded as far as
+ * they have come. Each piece is looked at once, when it arrives: decoding the
+ * whole argument again for every piece cost a quadratic amount of work, and a
+ * long document kept the server busy for as long as it was being written.
+ */
+export class WriteStream {
+  private head='';
+  private args?:Record<string,any>;
+  private text='';
+  /** The start of an escape that has not come in whole yet. */
+  private pending='';
+  /** Half of a Unicode surrogate pair is not saved until the other half comes. */
+  private high='';
+  private closed=false;
+  /** Something that is not JSON: what came before it is kept, and nothing after it is read. */
+  private stuck=false;
+  private dead=false;
+  push(delta: string): Record<string,any> | undefined {
+    if(this.dead)return;
+    if(!this.args) {
+      this.head+=delta;
+      const found=readHead(this.head);
+      if(!found) {if(this.head.length>MAX_HEAD){this.dead=true;this.head='';}return;}
+      this.args=found.args;delta=this.head.slice(found.at);this.head='';
+    }
+    this.decode(delta);
+    return {...this.args,content:this.text};
+  }
+  private decode(chunk: string) {
+    if(this.closed||this.stuck)return;
+    const s=this.pending+chunk;this.pending='';
+    let out='',run=0,stopped=false;
+    for(let i=0;i<s.length&&!stopped;i++) {
+      const c=s.charCodeAt(i);
+      if(c>31&&c!==34&&c!==92)continue;
+      out+=s.slice(run,i);
+      if(c===34)this.closed=true;
+      else if(c!==92)this.stuck=true;
+      else {
+        const size=s[i+1]==='u'?6:2;
+        if(i+size>s.length)this.pending=s.slice(i);
+        else {
+          try{out+=JSON.parse('"'+s.slice(i,i+size)+'"');run=i+size;i+=size-1;continue}catch{this.stuck=true}
+        }
+      }
+      stopped=true;
+    }
+    if(!stopped)out+=s.slice(run);
+    out=this.high+out;this.high='';
+    const last=out.charCodeAt(out.length-1);
+    if(last>=0xD800&&last<=0xDBFF){this.high=out.slice(-1);out=out.slice(0,-1);}
+    this.text+=out;
+    // A string that was closed is whole, whatever it ends in.
+    if(this.closed){this.text+=this.high;this.high='';}
+  }
+}
+export function canvasWritePrefix(raw: string): Record<string,any> | undefined {
+  return new WriteStream().push(raw);
+}
 type Write={id:string;base:string;revision:number;operation:string;content:string};
 export class CanvasTools {
   private writes=new Map<string,Write>();
-  private raw=new Map<string,string>();
+  private streams=new Map<string,WriteStream>();
   private errors=new Map<string,string>();
   constructor(private session:string){}
   private apply(call:string,p:any) {
@@ -48,15 +111,15 @@ export class CanvasTools {
     if(event.type==='message_update'&&inner?.type==='toolcall_delta') {
       const tool=inner.partial?.content?.[inner.contentIndex];
       if(tool?.name!=='canvas_write'||!tool.id)return;
-      const raw=(this.raw.get(tool.id)??'')+inner.delta;this.raw.set(tool.id,raw);
-      const p=canvasWritePrefix(raw);if(!p || !p.content)return;
+      let stream=this.streams.get(tool.id);if(!stream){stream=new WriteStream();this.streams.set(tool.id,stream);}
+      const p=stream.push(inner.delta);if(!p || !p.content)return;
       try{this.apply(tool.id,p)}catch(e){this.errors.set(tool.id,(e as Error).message);this.finish(tool.id,true);}
     }
     if(event.type==='tool_execution_end'&&event.isError)this.finish(event.toolCallId,true);
     if(event.type==='agent_end'||event.type==='agent_settled'||event.type==='message_end'&&['aborted','error'].includes(event.message?.stopReason))this.interrupt();
   }
-  private finish(call:string,partial:boolean){const w=this.writes.get(call);if(w)finishCanvasWrite(this.session,w.id,call,partial);this.writes.delete(call);this.raw.delete(call);}
-  interrupt(){for(const call of this.writes.keys())this.finish(call,true);this.raw.clear();this.errors.clear();}
+  private finish(call:string,partial:boolean){const w=this.writes.get(call);if(w)finishCanvasWrite(this.session,w.id,call,partial);this.writes.delete(call);this.streams.delete(call);}
+  interrupt(){for(const call of this.writes.keys())this.finish(call,true);this.streams.clear();this.errors.clear();}
   extension=(pi:ExtensionAPI)=>{
     const register=(name:string,description:string,parameters:any,execute:(id:string,p:any)=>any)=>pi.registerTool({name,label:name.replaceAll('_',' '),description,parameters,execute:async(id:string,p:any)=>{const result=execute(id,p);return {content:[{type:'text',text:JSON.stringify(result)}],details:result}}});
     register('canvas_list','List this session’s temporary and stored document canvases. Read a canvas before editing to get its revision.',Type.Object({}),()=>listCanvases(this.session).map(({content,active_call,...row})=>({...row,characters:content.length})));

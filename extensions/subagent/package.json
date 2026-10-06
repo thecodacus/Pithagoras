@@ -5,5 +5,5 @@
   "type": "module",
   "keywords": ["pi-package"],
   "pi": { "extensions": ["./index.ts"] },
-  "license": "MIT"
+  "license": "Apache-2.0"
 }

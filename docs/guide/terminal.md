@@ -28,11 +28,33 @@ scrollback in the page.
 
 Output comes to the page as a server-sent event stream and keystrokes go back as
 requests, so nothing but plain HTTP is needed behind a reverse proxy. The last
-200,000 characters are kept on the server and replayed when you reconnect, so
-closing the panel or reloading the page keeps the screen. A shell nobody is
-watching for a while is ended; closing the panel ends it at once, together with
-what it started. If the connection to the shell is lost — it exited, or the portal
-restarted — the panel says so once; close it and open it again for a new one.
+200,000 characters are kept on the server. A page whose connection ends — the
+network changed, a laptop went to sleep — opens a new one by itself and is given
+them again, after a full reset of its screen, so that what it showed is replaced
+by the replay and not repeated above it. A command that writes
+faster than the page takes it waits, as at a terminal, but only for a page that
+is still reading: one that has taken nothing for ten seconds — a laptop that
+went to sleep, a phone that lost its network — is let go, and the page opens a
+new connection as above. A page that stopped reading does not stop the shell for
+another one that is watching.
+
+The replay is for a connection that was interrupted, not for a page that was
+closed. Closing the panel ends its shell at once, together with what it started.
+Reloading the page, or opening the panel again, starts a new shell in the same
+folder and does not come back to the old one: that is ended after five minutes
+with nobody watching, with what it started.
+
+Stopping the portal, an update or a restart, ends every open shell the same way,
+and the stop waits two seconds for them. A portal that is killed or crashes
+cannot: its shells and what they started are left running on the machine, with no
+panel to close them and nothing that ends them later. In a container the
+container's end takes them along; on a host, end them yourself (`ps` lists them
+as `script -qfec …`).
+
+If the connection to the shell is lost — it exited, or the portal restarted — the
+panel says so once; close it and open it again for a new one. If the connection
+comes back and the replay clears the screen, the notice goes with it, and it is
+said again the next time keys go nowhere.
 
 ::: warning It is a shell in the portal's container
 Anyone who can log in to the portal can open one, with the portal's own
@@ -60,6 +82,10 @@ Some limits:
 
 - Jobs are followed only when pi runs **on the host** (`EXECUTOR=host`) on Linux.
   With `EXECUTOR=container` the tab says so instead.
+- A read of the output that fails, because the portal is restarting or cannot be
+  reached, keeps what was read, says so under it and tries again, a little less
+  often each time, until it works. It stops only for a job whose output is no file
+  the portal can follow.
 - A job whose output does not go to a file cannot be followed from here, and says
   so. A command the chat itself shows is in the Agent tab, not listed here.
 - Stopping a job that has already ended is refused with a message.

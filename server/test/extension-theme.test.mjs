@@ -1,13 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import path from "node:path";
+import { inProcessHome, scratch } from "./server-harness.mjs";
 
-const home = mkdtempSync(path.join(tmpdir(), "pithagoras-theme-"));
-process.env.DATA_DIR = home;
-process.env.PI_CODING_AGENT_DIR = path.join(home, "agent");
-mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
+const home = inProcessHome("pithagoras-theme-");
 
 const { SdkPiClient, loadTheme } = await import("../dist/pi/sdk-client.js");
 
@@ -42,7 +39,7 @@ test("an extension reads what is in the chat box, and what it put there", () => 
 });
 
 test("the theme set in pi's settings is the one extensions get", async () => {
-  const cwd = mkdtempSync(path.join(tmpdir(), "pithagoras-theme-cwd-"));
+  const cwd = scratch("pithagoras-theme-cwd-");
   writeFileSync(path.join(process.env.PI_CODING_AGENT_DIR, "settings.json"), JSON.stringify({ theme: "light" }));
   const pi = await import("@earendil-works/pi-coding-agent");
   const colour = () => SdkPiClient.prototype.buildUiContext.call({ pendingUi: new Map(), emit() {} }).theme.fg("text", "x");

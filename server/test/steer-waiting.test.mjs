@@ -1,21 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { inProcessHome } from "./server-harness.mjs";
 
-const home = mkdtempSync(path.join(tmpdir(), "pithagoras-steer-"));
-process.env.DATA_DIR = home;
-process.env.SESSION_DIR = path.join(home, "sessions");
-process.env.WORKSPACE_ROOT = path.join(home, "ws");
-process.env.PI_CODING_AGENT_DIR = path.join(home, "agent");
-mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
+const home = inProcessHome("pithagoras-steer-");
 
 const { SdkPiClient } = await import("../dist/pi/sdk-client.js");
 const { createSession, eventsSince, sentMessages, getDb, getSession, appendEvent, deleteEventsBetween, updateSession } =
   await import("../dist/db.js");
 const { sessions } = await import("../dist/session-manager.js");
-test.after(() => { getDb().close(); rmSync(home, { recursive: true, force: true }); });
+test.after(() => getDb().close());
 
 test("a typed message is answered once pi has taken it, not once the run it starts is over", async () => {
   let finish;

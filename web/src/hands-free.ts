@@ -1,20 +1,21 @@
 import { SpeechPipeline, type PreparedSpeech } from "./speech-pipeline";
 import type { Item } from "./transcript";
 import { StreamingSpeech } from "./voice";
-import { t } from "./i18n";
+import { msg, t } from "./i18n";
 
+/** What is said while a reply takes long, in the portal's language: each goes through `t` when it is spoken. */
 export const THINKING_PHRASES = [
-  "Let me think about that for a moment.",
-  "Give me a moment to think this through.",
-  "Let me consider that.",
-  "I’m thinking through your request.",
-  "Let me take a moment with that.",
+  msg("Let me think about that for a moment."),
+  msg("Give me a moment to think this through."),
+  msg("Let me consider that."),
+  msg("I’m thinking through your request."),
+  msg("Let me take a moment with that."),
 ];
 
 export const COMPACTION_PHRASES = [
-  "My context is getting full. Let me quickly compact our conversation before I continue.",
-  "I need a little room in my context. Let me summarize our conversation, then I'll carry on.",
-  "Let me do a quick context compaction so I can keep going.",
+  msg("My context is getting full. Let me quickly compact our conversation before I continue."),
+  msg("I need a little room in my context. Let me summarize our conversation, then I'll carry on."),
+  msg("Let me do a quick context compaction so I can keep going."),
 ];
 export type VoicePhase = "Listening" | "Hearing you" | "Transcribing" | "Thinking" | "Compacting context" | "Speaking";
 export interface VoiceIO {
@@ -102,7 +103,7 @@ export class HandsFreeVoice {
         this.thinkingAnnounced = true; this.lastThinkingAt = Date.now();
         const candidates = THINKING_PHRASES.map((_, i) => i).filter(i => i !== this.lastThinkingPhrase);
         this.lastThinkingPhrase = candidates[Math.floor(Math.random() * candidates.length)];
-        this.thinkingPipeline.enqueue([THINKING_PHRASES[this.lastThinkingPhrase]],'status');
+        this.thinkingPipeline.enqueue([t(THINKING_PHRASES[this.lastThinkingPhrase])],'status');
       }, 1800);
     }
   }
@@ -114,8 +115,8 @@ export class HandsFreeVoice {
     if (active) {
       this.lastCompactionWaitAt = -Infinity;
       this.thinkingPipeline.cancel();
-      if (!this.hearing && this.acceptingReplies) this.pipeline.enqueue([COMPACTION_PHRASES[Math.floor(Math.random() * COMPACTION_PHRASES.length)]],'status');
-    } else this.pipeline.enqueue([completed ? "Context compaction is done. I'm ready to continue." : "Context compaction stopped before it finished."],'status');
+      if (!this.hearing && this.acceptingReplies) this.pipeline.enqueue([t(COMPACTION_PHRASES[Math.floor(Math.random() * COMPACTION_PHRASES.length)])],'status');
+    } else this.pipeline.enqueue([completed ? t("Context compaction is done. I'm ready to continue.") : t("Context compaction stopped before it finished.")],'status');
     this.state();
   }
   observe(items: Item[]) {
@@ -133,7 +134,7 @@ export class HandsFreeVoice {
       this.compactionSpeech = true;
       if (this.io.statusSpeech !== false && !this.io.sequential && Date.now() - this.lastCompactionWaitAt >= 8000) {
         this.lastCompactionWaitAt = Date.now();
-        this.pipeline.enqueue(["I'm still compacting our conversation. Please wait a moment; I'll let you know when I'm ready."],'status');
+        this.pipeline.enqueue([t("I'm still compacting our conversation. Please wait a moment; I'll let you know when I'm ready.")],'status');
       }
       return;
     }

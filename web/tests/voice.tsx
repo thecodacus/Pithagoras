@@ -1,5 +1,5 @@
 // Development-only fixture using the actual chat and extension dialog.
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import { Chat } from '../src/components/Chat';
@@ -11,6 +11,8 @@ import '../src/styles';
 const microphone = new AudioContext();
 let destination = microphone.createMediaStreamDestination();
 Object.defineProperty(navigator.mediaDevices, 'getUserMedia', { value: async () => {
+  // A test sets the name of what the browser refuses with: the words of it are the browser's, in English.
+  if ((window as any).micFails) throw Object.assign(new Error('Permission denied'), { name: (window as any).micFails });
   if (destination.stream.getTracks().every(t => t.readyState === 'ended')) destination = microphone.createMediaStreamDestination();
   return destination.stream;
 } });
@@ -28,10 +30,12 @@ function Fixture() {
   const [options, setOptions] = useState(false);
   const [selected, setSelected] = useState(0);
   const [shortcuts, setShortcuts] = useState(false);
-  const session: Session = { id: 'test', title: 'A little room to think', workspace: '/workspaces/pithagoras', executor: 'host', status: running ? 'running' : 'idle', created_at: '', updated_at: '', last_error: null, pinned: false, provider: 'llama-server', model: 'Qwen3.6 35B', thinking_level: 'medium' };
+  // The chat open: another one is the same page shown for another session, as the portal's own switches.
+  const [chat, setChat] = useState('test');
+  const session: Session = { id: chat, title: 'A little room to think', workspace: '/workspaces/pithagoras', executor: 'host', status: running ? 'running' : 'idle', created_at: '', updated_at: '', last_error: null, pinned: false, provider: 'llama-server', model: 'Model A', thinking_level: 'medium' };
   return <>
     <main data-testid="workspace" style={{ maxWidth: 980, height: 'calc(100vh - 96px)', minHeight: 540, margin: '16px auto 0' }}>
-      <Chat session={session} events={events} onClientCommand={() => {}} onAbort={async () => { setAborted(n => n + 1); setRunning(false); }} onSend={async (message, options) => {
+      <Chat session={session} events={events} onClientCommand={() => {}} onEditMessage={async () => {}} onDeleteMessage={async () => {}} onRename={async () => {}} onAbort={async () => { setAborted(n => n + 1); setRunning(false); }} onSend={async (message, options) => {
         setVoiceSend(options?.voice === true);
         setLastSend(JSON.stringify({ message, images: options?.images?.length ?? 0, steer: options?.steer === true }));
         setSent(n => n + 1); setRunning(true);
@@ -63,6 +67,7 @@ function Fixture() {
       <button onClick={() => { setRunning(false); setEvents(previous=>[...previous,{seq:previous.length+1,type:'compaction_end',at:Date.now(),payload:{}}]); }}>End compaction</button>
       <button onClick={() => setOptions(true)}>Show options</button>
       <button onClick={() => setShortcuts(v => !v)}>Toggle shortcuts</button>
+      <button onClick={() => setChat('other')}>Switch chat</button>
       <button onClick={() => setEvents(previous => [...previous,
         { seq: previous.length + 1, type: 'tool_execution_start', payload: { toolName: 'show_image', toolCallId: `pic-${previous.length}`, input: { path: 'plots/chart.png', title: 'Sales by month' } } },
         { seq: previous.length + 2, type: 'tool_execution_end', payload: { toolName: 'show_image', toolCallId: `pic-${previous.length}`, result: { content: [{ type: 'text', text: 'Shown to the user: plots/chart.png' }], details: { path: 'plots/chart.png', title: 'Sales by month' } } } }])}>Show picture</button>

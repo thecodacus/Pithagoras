@@ -5,16 +5,18 @@ import {
   LuRefreshCw, LuRoute, LuSearch, LuServer, LuShuffle, LuTrash2, LuWandSparkles, LuX,
 } from "react-icons/lu";
 import { api, type ProviderInfo, type ProviderKind, type ProviderModel, type ProviderStatus, type ProvidersView } from "../api";
-import { forget, useCached } from "../settings-cache";
+import { forget, refreshFailed, useCached } from "../settings-cache";
 import { packageName } from "../package-names";
 import { PackageCatalog } from "./PackageCatalog";
 import { parseWindow } from "../context-window";
 import { looksComplete } from "../provider-address";
 import { confirmDialog } from "./ConfirmDialog";
+import { useUnsavedDraft } from "./Modal";
 import { formatTokens } from "../transcript";
 import { Select } from "./Select";
-import { Empty, Field, Section, btnCls, ghostCls, inputCls, primaryCls } from "./SettingsUi";
+import { Empty, Field, LoadFailed, Section, btnCls, ghostCls, inputCls, inputSmCls, primaryCls } from "./SettingsUi";
 import { t, tp } from "../i18n";
+import { SkeletonGroup } from "./Skeleton";
 import { forgetModels } from "../model-catalogue";
 
 const KIND_ICONS: Record<ProviderKind, IconType> = {
@@ -37,7 +39,7 @@ export function KindIcon({ kind, className = "h-4 w-4" }: { kind: ProviderKind; 
  * out. Everything lands in pi's own files, as pi would write it.
  */
 export function ProvidersPanel({ onError, onSetup }: { onError: (e: string) => void; onSetup?: () => void }) {
-  const { value: view, reload } = useCached("providers", api.providers, { onError: (e) => onError(e.message) });
+  const { value: view, failed, reload } = useCached("providers", api.providers, { onError: refreshFailed("providers", onError) });
   const status = useProviderStatus();
   /** The provider being edited, or "new" for one being added. */
   const [editing, setEditing] = useState<string | null>(null);
@@ -78,12 +80,10 @@ export function ProvidersPanel({ onError, onSetup }: { onError: (e: string) => v
     }
   };
 
-  if (!view) return <ProvidersSkeleton />;
+  if (!view) return failed ? <LoadFailed error={failed} onRetry={reload} /> : <ProvidersSkeleton />;
 
   const saved = async (note?: string) => { setEditing(null); setNotice(note ?? null); await load(); };
-  // Names in use in pi's files. One keyed only from the environment is not:
-  // a key can still be stored for it, under the name pi knows it by.
-  const ids = new Set(view.providers.filter((p) => p.key.source !== "environment").map((p) => p.id));
+  const ids = takenProviderIds(view.providers);
 
   return (
     <>
@@ -174,11 +174,11 @@ export function useInstalledPackages() {
 
 function ProvidersSkeleton() {
   return (
-    <div className="skeleton-group space-y-2" aria-label={t("Loading providers")}>
+    <SkeletonGroup className="space-y-2" label={t("Loading providers")}>
       <div className="skeleton h-4 w-40" />
       <div className="skeleton h-20 w-full" />
       <div className="skeleton h-20 w-full" />
-    </div>
+    </SkeletonGroup>
   );
 }
 
@@ -213,7 +213,7 @@ function ProviderCard({ provider: p, status, busy, onEdit, onRemove }: { provide
               <StatusBadge status={status} />
             </div>
           )}
-          {status?.state === "down" && status.message && <p className="float-in mt-1 text-[11px] text-danger/90">{status.message}</p>}
+          {status?.state === "down" && status.message && <p role="alert" className="float-in mt-1 text-[11px] text-danger/90">{status.message}</p>}
           {status?.state === "up" && !!status.missing?.length && (
             <p className="float-in mt-1 text-[11px] text-warn">
               {status.missing.length === 1
@@ -288,9 +288,22 @@ function ModelChip({ model: m, loaded, missing }: { model: ProviderModel; loaded
  * A model row in the editor: whether it is kept, and what is known about it.
  * `own` is one saved before or added by name — not only found at an address.
  */
-type Row = ProviderModel & { keep: boolean; found: boolean; own: boolean; ctxText: string };
+type Row = ProviderModel & { keep: boolean; found: boolean; own: boolean; ctxText: string; named: boolean };
 
-const toRow = (m: ProviderModel, keep: boolean, found: boolean, own = false): Row => ({ ...m, keep, found, own, ctxText: m.contextWindow ? m.contextWindow.toLocaleString("en-US") : "" });
+/**
+ * What a person decides about the models: which are used, each with its window and abilities. A probe adds rows, and none of those used.
+ * A model added by name is a decision in itself, counted apart (`named`): the models the server lists are what it is measured against.
+ */
+const chosenOf = (rows: Row[]) =>
+  JSON.stringify(rows.filter((r) => r.keep && !r.named).map((r) => [r.id, r.ctxText, !!r.input?.includes("image"), !!r.reasoning]).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+
+const toRow = (m: ProviderModel, keep: boolean, found: boolean, own = false, named = false): Row => ({ ...m, keep, found, own, named, ctxText: m.contextWindow ? m.contextWindow.toLocaleString("en-US") : "" });
+
+/**
+ * The names in use in pi's files. One keyed only from the environment is not:
+ * a key can still be stored for it, under the name pi knows it by.
+ */
+export const takenProviderIds = (providers: ProviderInfo[]) => new Set(providers.filter((p) => p.key.source !== "environment").map((p) => p.id));
 
 function uniqueId(base: string, taken: Set<string>): string {
   if (!taken.has(base)) return base;
@@ -328,6 +341,17 @@ export function ProviderEditor({ view, provider, taken, onCancel, onSaved, onErr
   const [probe, setProbe] = useState<{ state: "idle" | "asking" | "ok" | "failed"; message?: () => string }>({ state: "idle" });
   const [manual, setManual] = useState("");
   const [saving, setSaving] = useState(false);
+  // What was there when the editor opened: a key, a manual model, or another name or address is a draft.
+  const first = useRef({ choice, id, baseUrl, apiType });
+  // The models as they first were there, saved ones or what the server first answered: one used or left, or a window set, is a draft too.
+  // Not a model the person added by name: with no server answering, that is the first row there is, and the change itself.
+  const firstChosen = useRef<string | null>(null);
+  const chosen = chosenOf(rows);
+  if (firstChosen.current === null && rows.some((r) => !r.named)) firstChosen.current = chosen;
+  useUnsavedDraft(
+    !saving &&
+      (!!key || !!manual.trim() || rows.some((r) => r.named && r.keep) || choice !== first.current.choice || id !== first.current.id || baseUrl !== first.current.baseUrl || apiType !== first.current.apiType || (firstChosen.current !== null && chosen !== firstChosen.current)),
+  );
   const probeSeq = useRef(0);
   /** The address the server last answered at, as it said it: put in the field, it is not asked again. */
   const answered = useRef<string | null>(null);
@@ -344,6 +368,7 @@ export function ProviderEditor({ view, provider, taken, onCancel, onSaved, onErr
       setId(next === "hosted" ? "" : p.endpoint ? uniqueId(p.id, taken) : p.id);
       setBaseUrl(p.baseUrl ?? "");
       setRows([]);
+      firstChosen.current = null;
       setProbe({ state: "idle" });
     }
   };
@@ -393,7 +418,7 @@ export function ProviderEditor({ view, provider, taken, onCancel, onSaved, onErr
   const addManual = () => {
     const name = manual.trim();
     if (!name || rows.some((r) => r.id === name)) return;
-    setRows([...rows, toRow({ id: name }, true, false, true)]);
+    setRows([...rows, toRow({ id: name }, true, false, true, true)]);
     setManual("");
   };
 
@@ -541,7 +566,7 @@ export function ProviderEditor({ view, provider, taken, onCancel, onSaved, onErr
               onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addManual(); } }}
               placeholder={t("Add a model by its id")}
               spellCheck={false}
-              className={`${inputCls} py-1.5 font-mono text-xs`}
+              className={`${inputSmCls} font-mono text-xs`}
               aria-label={t("Model id to add")}
             />
             <button type="button" onClick={addManual} disabled={!manual.trim()} className={btnCls}><LuPlus className="h-4 w-4" /></button>

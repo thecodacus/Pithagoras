@@ -1,14 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
+import { inProcessHome, scratch } from './server-harness.mjs';
 // sdk-client reaches the session manager, and so the database: never the one
 // of a portal this suite happens to be run from.
-const data = mkdtempSync(path.join(tmpdir(), 'ctx-data-'));
-process.env.DATA_DIR = data;
-process.env.SESSION_DIR = path.join(data, 'sessions');
-test.after(() => rmSync(data, { recursive: true, force: true }));
+const data = inProcessHome('ctx-data-');
 const { extraContextFiles } = await import('../dist/pi/sdk-client.js');
 
 const names = (files) => files.map((f) => path.basename(f.path)).sort();
@@ -16,7 +13,7 @@ const names = (files) => files.map((f) => path.basename(f.path)).sort();
 // Home is the agent's own directory: its identity and memory are in the folder the chat works in.
 // A project is any other folder, and has only what is in it — its AGENTS.md, which pi finds by itself.
 test('a chat in the agent home gets SOUL, PrimaryUser and MEMORY; one in a project gets none of them', () => {
-  const base = mkdtempSync(path.join(tmpdir(), 'ctx-'));
+  const base = scratch('ctx-');
   const home = path.join(base, 'agent-home');
   const project = path.join(base, 'workspaces', 'cool-project');
   mkdirSync(home); mkdirSync(project, { recursive: true });
@@ -30,5 +27,4 @@ test('a chat in the agent home gets SOUL, PrimaryUser and MEMORY; one in a proje
   assert.deepEqual(extraContextFiles(project, 'primary'), []);
   // Someone who is not the owner still never gets the private half.
   assert.deepEqual(names(extraContextFiles(home, 'guest')), ['SOUL.md', 'TEAM.md']);
-  rmSync(base, { recursive: true });
 });

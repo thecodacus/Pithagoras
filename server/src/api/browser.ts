@@ -1,13 +1,14 @@
 import express, { type Router } from "express";
 import {
-  browserAllowed,
   browserAllowlist,
   browserByDefault,
   browserConfigured,
   browserCursorOn,
   browserExceptions,
   getDb,
+  getSession,
   knownTools,
+  mcpServersRemoved,
   portalBrowserOn,
   portalBrowserState,
   projectTools,
@@ -19,8 +20,8 @@ import {
   setSessionTools,
   setToolDefaultsOff,
   toolDefaultsOff,
-  type SessionRow,
 } from "../db.js";
+import { EXECUTOR_KIND } from "../executor-kind.js";
 import { PORTAL_BROWSER_TOOLS, browserTool } from "../tool-policy.js";
 import { BROWSER_CDP, browserServers, findConnection, mcpServerNames, readMcpFile, writeMcpFile } from "./mcp.js";
 import * as service from "../extensions/browser-service.js";
@@ -161,6 +162,8 @@ export function adoptPortalBrowser(): void {
   }
   delete config.mcpServers[name];
   writeMcpFile(config);
+  // The old server's tools, and the adapter's cache of them: the portal's own are listed by their own names.
+  mcpServersRemoved(servers, servers.filter((s) => s !== name));
   setPortalBrowser(true);
   console.log(`[portal] the browser now uses the portal's own tools; the "${name}" Playwright MCP entry was replaced, with its settings carried over`);
 }
@@ -196,6 +199,7 @@ export function browserRouter(): Router {
     // may drive it: the browser is on unless switched off, so "all of them"
     // is the answer almost always and it tells nobody anything.
     const sessions = browserExceptions();
+    const byDefault = browserByDefault();
     const routines = getDb()
       .prepare("SELECT slug, name FROM routines WHERE browser = 1")
       .all() as { slug: string; name: string }[];
@@ -219,13 +223,14 @@ export function browserRouter(): Router {
       config: { user: service.config().user, hasPassword: Boolean(service.config().password) },
       // Whether a conversation that has never said anything about it has it,
       // and the ones that said otherwise.
-      byDefault: browserByDefault(),
+      byDefault,
       configured: browserConfigured(),
       sessions: sessions.map((s) => ({
         id: s.id,
         title: s.title,
         kind: s.kind,
-        allowed: browserAllowed(s),
+        // They are the ones that differ from the default, so this is the other answer: not worked out again for each.
+        allowed: !byDefault,
       })),
       routines,
     });
@@ -250,10 +255,19 @@ export function browserRouter(): Router {
     res.json({ connectedAs: findConnection() });
   });
 
-  /** Installing, and the lifecycle after it. */
+  /**
+   * Installing, and the lifecycle after it.
+   *
+   * The agent is wired to the browser once it is there, here and not by whichever
+   * page asked: the Browser page and Settings → Add-ons each decided that for
+   * themselves, and a browser installed from the one was left unreachable for the agent.
+   */
   router.post("/browser/install", async (_req, res) => {
+    // Answered before it starts, so that a second click does not even queue behind the first.
+    if (service.installInFlight()) return res.status(409).json({ error: service.ALREADY_INSTALLING });
     try {
       await service.install();
+      setPortalBrowser(true);
       res.json({ ok: true });
     } catch (e) {
       res.status(400).json({ error: (e as Error).message });
@@ -276,6 +290,8 @@ export function browserRouter(): Router {
     try {
       if (req.query.profile === "forget") await service.forgetProfile();
       else await service.remove();
+      // Unwired once it is gone: tools for a browser that does not exist are the worse of the two.
+      setPortalBrowser(false);
       res.json({ ok: true });
     } catch (e) {
       res.status(400).json({ error: (e as Error).message });
@@ -309,10 +325,6 @@ export function browserRouter(): Router {
   });
 
   /**
-   * Turn the browser on or off for one session. Takes effect on its next
-   * launch: the tool list is fixed when pi starts.
-   */
-  /**
    * Grant the browser to one conversation, where the tool switches cannot.
    *
    * With EXECUTOR=container pi is reached over RPC and never reports what it
@@ -322,15 +334,14 @@ export function browserRouter(): Router {
    * quietly writing a column nothing reads.
    */
   router.put("/sessions/:id/browser", (req, res) => {
-    if ((process.env.EXECUTOR || "host") !== "container") {
+    if (EXECUTOR_KIND !== "container") {
       return res.status(400).json({
         error:
           "The browser is switched with its tools — open the tools list beside the composer, or Settings → Tools for every conversation",
       });
     }
     const on = Boolean(req.body?.enabled);
-    const row = getDb().prepare("SELECT id FROM sessions WHERE id = ?").get(req.params.id);
-    if (!row) return res.status(404).json({ error: "Not found" });
+    if (!getSession(req.params.id)) return res.status(404).json({ error: "Not found" });
     getDb().prepare("UPDATE sessions SET browser = ? WHERE id = ?").run(on ? 1 : 0, req.params.id);
     res.json({ enabled: on });
   });

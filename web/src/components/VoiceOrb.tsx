@@ -276,10 +276,10 @@ function drawPattern(ctx: Ctx, kind: OrbPattern, back: boolean, r: number, t: nu
 function lift(ctx: Ctx, r: number) { ctx.shadowColor = "rgba(0,0,0,0.45)"; ctx.shadowBlur = r * 0.08; ctx.shadowOffsetY = r * 0.03; }
 function unlift(ctx: Ctx) { ctx.shadowColor = "transparent"; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0; }
 
-/** Where the eyes sit and how big they are: widened and raised when listening, stretched by the voice when speaking. */
 /** How far the face is into listening (`wide`) and into speaking (`talk`), each 0 to 1, eased from one state to the next. */
 interface Mood { wide: number; talk: number }
 
+/** Where the eyes sit and how big they are: widened and raised when listening, stretched by the voice when speaking. */
 function faceOf(r: number, mood: Mood, level: number) {
   return {
     ex: r * 0.36,
@@ -727,27 +727,39 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
     const ctx = element.getContext("2d");
     if (!ctx) return;
     const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    // The orb is laid out on a square of this many units, however many pixels it is drawn in: those follow the size
+    // it is shown at (`fit`). A fixed 1200 by 1200 was six full renders per frame for six thumbnails.
     const size = 600;
-    const ratio = Math.min(devicePixelRatio || 1, 2);
-    element.width = size * ratio; element.height = size * ratio;
-    ctx.scale(ratio, ratio);
     // What the orb wears is drawn on a layer of its own, so its grain lands on it alone.
     const layer = document.createElement("canvas");
-    layer.width = element.width; layer.height = element.height;
     const worn = layer.getContext("2d")!;
-    const texture = grain(worn);
-    const pile = minkySprite();
+    // Only an orb that wears something needs it.
+    let texture: Grain | undefined;
+    // Pixels across, to a unit, and whether it is shown as small as a thumbnail; set once it has a size.
+    let pixels = 0, scale = 0, small = false;
+    const fit = () => {
+      const shown = element.clientWidth;
+      if (!shown) return;
+      small = shown < 160;
+      const px = Math.min(size * 2, Math.max(96, Math.round(shown * Math.min(devicePixelRatio || 1, 2))));
+      if (px === pixels) return;
+      // Sized, a canvas is cleared and forgets its transform.
+      element.width = element.height = layer.width = layer.height = pixels = px;
+      scale = px / size;
+      ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    };
+    fit();
     const sparkles: Sparkle[] = Array.from({ length: 46 }, () => {
       const d = Math.sqrt(Math.random()), a = Math.random() * Math.PI * 2;
       return { x: Math.cos(a) * d, y: Math.sin(a) * d, size: Math.random(), phase: Math.random() * Math.PI * 2, back: Math.random() < 0.55 };
     });
-    let frame = 0, level = 0;
+    let frame = 0, level = 0, last = -1e9, visible = true;
     let color: number[] = hexToRgb(style.current.colors[current.current]);
     // Blinks come at uneven intervals, as they do; the personality sets how often.
     let nextBlink = performance.now() + 2500, blinkAt = -1e9;
     // Each state is eased into rather than switched to: eyes close slowly on mute and open again, the face widens into listening.
     let lid = 1, wide = 0, talk = 0, roam = 0.9, up = 0;
-    const render = (timestamp: number) => {
+    const draw = (timestamp: number) => {
       const mode = current.current;
       const look = style.current;
       const motion = ORB_PERSONALITIES[look.personality];
@@ -821,7 +833,7 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
       if (plush) {
         // The pile over the whole body, scaled with the orb and riding a little with the turn.
         const R = r * 1.04;
-        ctx.drawImage(pile, -R + Math.sin(turn.yaw) * r * 0.06, -R + Math.sin(turn.pitch) * r * 0.06, R * 2, R * 2);
+        ctx.drawImage(minkySprite(), -R + Math.sin(turn.yaw) * r * 0.06, -R + Math.sin(turn.pitch) * r * 0.06, R * 2, R * 2);
       }
       // The side away from the light falls into shadow, and the underside darkens most.
       const turned = ctx.createRadialGradient(-r * 0.35, -r * 0.45, r * 0.4, -r * 0.35, -r * 0.45, r * 1.9);
@@ -857,17 +869,36 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
       }
       const wear = (kind: OrbHat | OrbProp, tint: string) => {
         worn.setTransform(1, 0, 0, 1, 0, 0); worn.clearRect(0, 0, layer.width, layer.height);
-        worn.setTransform(ratio, 0, 0, ratio, 0, 0); worn.translate(size / 2, size / 2);
-        drawWorn(worn, kind, tint, r, t, level, mood, turn, texture);
+        worn.setTransform(scale, 0, 0, scale, 0, 0); worn.translate(size / 2, size / 2);
+        drawWorn(worn, kind, tint, r, t, level, mood, turn, (texture ??= grain(worn)));
         ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(layer, 0, 0); ctx.restore();
       };
       if (look.prop !== "none") wear(look.prop, itemColor(look.prop, look.propColor));
       if (look.hat !== "none") wear(look.hat, itemColor(look.hat, look.hatColor));
       ctx.restore();
-      frame = requestAnimationFrame(render);
     };
+    const render = (timestamp: number) => {
+      // Reduced motion, and an orb the size of a thumbnail, are drawn at about 15 frames a second: nobody sees more of it.
+      if (scale && !((reduced || small) && timestamp - last < 66)) {
+        last = timestamp;
+        draw(timestamp);
+      }
+      frame = visible ? requestAnimationFrame(render) : 0;
+    };
+    const resized = new ResizeObserver(fit);
+    resized.observe(element);
+    // Out of view (scrolled away, behind another page) there is nothing to draw for.
+    const seen = new IntersectionObserver((entries) => {
+      visible = entries[entries.length - 1].isIntersecting;
+      if (visible && !frame) frame = requestAnimationFrame(render);
+    });
+    seen.observe(element);
     frame = requestAnimationFrame(render);
-    return () => cancelAnimationFrame(frame);
+    return () => {
+      cancelAnimationFrame(frame);
+      resized.disconnect();
+      seen.disconnect();
+    };
   }, [levels]);
   return <canvas ref={canvas} aria-hidden="true" className="voice-orb" data-mode={mode} />;
 }

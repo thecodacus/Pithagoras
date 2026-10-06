@@ -1,7 +1,7 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { agentHomePath } from "./agent-home.js";
-import { agentAt } from "./agents.js";
+import { agentAt, agentOf, agentsRoot } from "./agents.js";
 import { isWithinText, pathBelow, realPath } from "./within.js";
 
 /** Where projects live. WORKSPACE_ROOT is the new name; WORKSPACES_DIR still works for existing deploys. */
@@ -21,6 +21,13 @@ export function checkWorkspace(raw: string): { path: string } | { error: string 
   if (resolved === agentHomePath() || agentAt(resolved)) return { path: resolved };
   // Keep pi inside the mounted workspace area — no escaping to the rest of the FS.
   if (!isWithinText(root, resolved)) {
+    // Where an agent's home was, with no agent there now: said so, or the one who
+    // set it is sent looking for a project that was never meant to be one. Only a
+    // folder directly in the agents' folder was ever a home.
+    const inAgents = pathBelow(agentsRoot(), resolved);
+    if (inAgents && !inAgents.includes("/")) return { error: "the agent whose home this was has been deleted" };
+    // A folder in the home of an agent that is there: its home itself is the place, not what is in it.
+    if (agentOf(resolved)) return { error: "only an agent's home itself can be used, not a folder in it" };
     return { error: "workspace must be inside the workspace root" };
   }
   if (!existsSync(resolved)) return { error: "workspace does not exist" };

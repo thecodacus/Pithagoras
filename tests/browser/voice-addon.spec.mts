@@ -1,4 +1,4 @@
-import {test,expect} from '@playwright/test';
+import { test, expect } from './portal-mock';
 // The engine choice asks for the GPU as the page opens; the tests that are about something else get none to read.
 test.beforeEach(async({page})=>{await page.route('**/api/voice/hardware',r=>r.fulfill({json:{gpus:[],source:'none',error:'',checked:false,cpuOnly:false,host:{totalMiB:16384,freeMiB:12000,threads:8},selected:null,reserveMiB:0,suggestion:{tts:'breeze',asr:'whisper',asrModel:'base'}}}));});
 test('settings install progress, ready connection, and stop',async({page})=>{
@@ -22,16 +22,16 @@ test('settings install progress, ready connection, and stop',async({page})=>{
  await page.getByRole('button',{name:'Stop · release VRAM'}).click();
  await expect(page.getByRole('button',{name:'Start voice',exact:true})).toBeEnabled();
  expect(actions).toEqual(['install','stop']);
- await page.screenshot({path:'/tmp/pithagoras-voice-addon.png'});
 });
 
 // The saved settings the install overwrote, as the portal puts them back, and the page that has to show them.
 const uninstallPage = async (page: any, state = 'running') => {
- let status = state, connected = false, failure = ''; const requests: any[] = [];
+ let status = state, connected = false, failure = '', reads = 0; const requests: any[] = [];
  let config: any = { enabled: true, whisperUrl: 'http://127.0.0.1:7862/v1/audio/transcriptions', breezeUrl: 'http://127.0.0.1:7862/v1/audio/speech', instruction: 'Clear speech', voice: 'design', runtime: 'audio-cpp', sttModel: 'qwen3-asr', language: 'auto' };
  await page.route('**/api/voice/presets', (r: any) => r.fulfill({ json: [] }));
  await page.route('**/api/voice', (r: any) => r.fulfill({ json: config }));
- await page.route('**/api/voice/install', (r: any) => r.fulfill({ json: { available: true, state: status, busy: false, progress: '', error: '', connected, choice: { tts: 'breeze', asr: 'qwen3-asr', asrModel: '0.6b' } } }));
+ // As the server answers: once there is a container, `progress` is its log, so a steady service has lines in it too.
+ await page.route('**/api/voice/install', (r: any) => { if (r.request().method() === 'GET') reads++; return r.fulfill({ json: { available: true, state: status, busy: false, progress: status === 'absent' ? '' : 'INFO: Uvicorn running on http://0.0.0.0:7862', error: '', connected, choice: { tts: 'breeze', asr: 'qwen3-asr', asrModel: '0.6b' } } }); });
  await page.route('**/api/voice/uninstall', (r: any) => {
   requests.push(r.request().postDataJSON()); status = 'absent'; connected = false;
   config = { ...config, enabled: false, runtime: 'breeze', whisperUrl: 'http://stt.example.test:9000/inference', breezeUrl: 'http://tts.example.test:9001/v1/audio/speech', sttModel: '' };
@@ -40,7 +40,7 @@ const uninstallPage = async (page: any, state = 'running') => {
  });
  await page.goto('/tests/voice-addon.html');
  await page.locator('summary').filter({ hasText: 'Voice service' }).click();
- return { requests, setState: (value: string) => { status = value; }, setConnected: (value: boolean) => { connected = value; }, fail: (message: string) => { failure = message; } };
+ return { requests, reads: () => reads, change: (patch: any) => { config = { ...config, ...patch }; }, setState: (value: string) => { status = value; }, setConnected: (value: boolean) => { connected = value; }, fail: (message: string) => { failure = message; } };
 };
 
 test('uninstall asks first and says what goes, keeps the downloads unless told, and shows the settings that were put back', async ({ page }) => {
@@ -54,7 +54,6 @@ test('uninstall asks first and says what goes, keeps the downloads unless told, 
  await expect(dialog).toContainText('speech servers you set up yourself stay as they are');
  // Keeping the downloads is the default: a new install is then quick.
  await expect(dialog.getByRole('checkbox', { name: /Also delete the downloaded engines and models/ })).not.toBeChecked();
- await page.screenshot({ path: '/tmp/pithagoras-voice-uninstall.png' });
  await dialog.getByRole('button', { name: 'Cancel' }).click();
  await expect(dialog).toBeHidden();
  expect(requests).toEqual([]);
@@ -73,6 +72,50 @@ test('uninstall asks first and says what goes, keeps the downloads unless told, 
  await expect(page.getByRole('checkbox', { name: 'Enable voice controls in sessions' })).not.toBeChecked();
 });
 
+test('a service that turns ready takes over what the install wrote, and not what is being typed', async ({ page }) => {
+ const { change, setState } = await uninstallPage(page, 'starting');
+ await page.locator('summary').filter({ hasText: 'Advanced connection' }).click();
+ await page.getByLabel('Describe the speaking voice').fill('Edited and not saved yet');
+ // The install writes its own connection settings as it comes up.
+ change({ whisperUrl: 'http://127.0.0.1:7999/v1/audio/transcriptions' });
+ setState('running');
+ await expect(page.getByLabel('Speech recognition URL')).toHaveValue('http://127.0.0.1:7999/v1/audio/transcriptions', { timeout: 8000 });
+ await expect(page.getByLabel('Describe the speaking voice')).toHaveValue('Edited and not saved yet');
+});
+
+// Time goes by in the steps of the quick poll, with a moment of real time after each for the answer to come: a poll that is asked again only after its answer needs both.
+const elapse = async (page: any, ms: number) => {
+ for (let left = ms; left > 0; left -= 2500) { await page.clock.runFor(Math.min(2500, left)); await page.waitForTimeout(25); }
+};
+
+test('the install status is asked for slowly once it is steady, and not at all in a hidden tab', async ({ page }) => {
+ await page.clock.install();
+ const { reads, setState } = await uninstallPage(page, 'running');
+ await expect.poll(reads).toBeGreaterThan(0);
+ const first = reads();
+ await elapse(page, 60_000);
+ // A minute of a steady service: two more questions, not twenty-four.
+ expect(reads() - first).toBeLessThanOrEqual(3);
+ // Hidden: nothing is asked, however long it stays so.
+ await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }); document.dispatchEvent(new Event('visibilitychange')); });
+ const hidden = reads();
+ await elapse(page, 120_000);
+ expect(reads()).toBe(hidden);
+ // Looked at again: asked at once.
+ await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => false }); document.dispatchEvent(new Event('visibilitychange')); });
+ await expect.poll(reads).toBeGreaterThan(hidden);
+ // And quickly again once something is changing.
+ setState('starting');
+ await elapse(page, 32_500);
+ await expect(page.locator('summary').filter({ hasText: 'Voice service' })).toContainText('starting');
+ const starting = reads();
+ await elapse(page, 10_000);
+ expect(reads() - starting).toBeGreaterThanOrEqual(3);
+});
+
+// A steady service is looked at again every half minute, and at once when the tab is come back to.
+const lookAgain = (page: any) => page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+
 test('uninstall deletes the downloaded engines and models only when the box is ticked, and is not offered where nothing is installed', async ({ page }) => {
  const { requests, setState, setConnected } = await uninstallPage(page, 'absent');
  const uninstall = page.getByRole('button', { name: 'Uninstall', exact: true });
@@ -80,11 +123,14 @@ test('uninstall deletes the downloaded engines and models only when the box is t
  await expect(uninstall).toBeHidden();
  // The container was removed by hand and the settings still point at the service: they can be put right from here.
  setConnected(true);
+ await lookAgain(page);
  await expect(uninstall).toBeVisible({ timeout: 8000 });
  setConnected(false);
+ await lookAgain(page);
  await expect(uninstall).toBeHidden({ timeout: 8000 });
  // A stopped service is uninstalled too.
  setState('stopped');
+ await lookAgain(page);
  await expect(uninstall).toBeVisible({ timeout: 8000 });
  await uninstall.click();
  await page.getByRole('alertdialog').getByRole('checkbox', { name: /Also delete the downloaded engines and models/ }).check();
@@ -142,7 +188,6 @@ test('speech detection settings save and restore defaults',async({page})=>{
  await expect(silence).toHaveValue('500');
  await page.getByRole('button',{name:'Reset speech detection'}).click();
  await expect(silence).toHaveValue('1000');
- await page.screenshot({path:'/tmp/pithagoras-vad-settings.png'});
 });
 
 test('speaking instructions show the built-in text, save an edit and reset to the built-in text',async({page})=>{
@@ -191,7 +236,6 @@ test('speaking instructions show the built-in text, save an edit and reset to th
  await expect(text).toBeVisible();
  await expect(text).toHaveValue(builtIn);
  await reset.scrollIntoViewIfNeeded();
- await page.screenshot({path:'/tmp/pithagoras-speaking-instructions.png'});
 });
 
 test('speaking instructions say when the portal is set to send none',async({page})=>{
@@ -276,7 +320,6 @@ test('engine choice: the GPU is shown, the install picks for it by default, and 
  await synthesis.click();
  await page.getByRole('option',{name:/Chatterbox/}).click();
  await expect(page.getByText('Needs about 4.3 GiB of GPU memory. Fits.')).toBeVisible();
- await page.screenshot({path:'/tmp/pithagoras-voice-engines.png'});
  await page.getByRole('button',{name:'Install voice',exact:true}).click();
  await expect.poll(()=>posts.length).toBe(1);
  expect(posts[0]).toEqual({tts:'chatterbox',asr:'qwen3-asr',asrModel:'0.6b'});
@@ -443,7 +486,6 @@ test('engine choice: a GPU host also picks where recognition runs, and the CPU s
  await expect(page.getByRole('alert').filter({hasText:'more than this GPU has'})).toHaveCount(0);
  await expect(page.getByText('Needs about 2.9 GiB of memory on the CPU. Fits.')).toBeVisible();
  await expect(page.getByText('This host: 8 CPU threads, 16 GiB of memory, 11.7 GiB free')).toBeVisible();
- await page.screenshot({path:'/tmp/pithagoras-voice-engines-cpu.png'});
  await page.getByRole('button',{name:'Install voice',exact:true}).click();
  await expect.poll(()=>posts.length).toBe(1);
  expect(posts[0]).toEqual({tts:'breeze',asr:'qwen3-asr',asrModel:'1.7b',asrDevice:'cpu'});
@@ -491,7 +533,6 @@ test('engine choice: with no GPU everything runs on the CPU, which is said: Koko
  // Kokoro's memory and Whisper's, both on the CPU, and nothing on a GPU.
  await expect(page.getByText('Needs about 2.1 GiB of memory on the CPU. Fits.')).toBeVisible();
  await expect(page.getByText('Needs about',{exact:false}).filter({hasText:'GPU memory'})).toHaveCount(0);
- await page.screenshot({path:'/tmp/pithagoras-voice-engines-no-gpu.png'});
  await page.getByRole('button',{name:'Install voice',exact:true}).click();
  await expect.poll(()=>posts.length).toBe(1);
  expect(posts[0]).toEqual({tts:'kokoro',ttsDevice:'cpu',asr:'whisper',asrModel:'small'});

@@ -1,14 +1,14 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { scratch } from "./helpers.mts";
+import { fakeDocker } from "./fake-docker.mts";
 
 // The managed service against a fake Docker daemon and a fake nvidia-smi: what is
 // asked of Docker for each choice, how the GPU is read and what is refused. No
 // GPU, no image and no container is touched.
-const dir = mkdtempSync(path.join(tmpdir(), 'voice-choices-'));
+const dir = scratch('voice-choices-');
 process.env.DOCKER_SOCKET = path.join(dir, 'docker.sock');
 process.env.PORTAL_CONTAINER_NAME = 'portal-test';
 delete process.env.VOICE_GPU;
@@ -41,48 +41,42 @@ let probeError: string | null = null;   // an unrelated failure of the probe con
 let hangUp = false;                     // the daemon drops the probe's connection
 let probeDelay = 0;                     // the probe container is slow to be made, as when its image is still being downloaded
 let onStop: (() => void) | null = null; // what stopping the voice container changes: the memory it held is given back
-let calls: { method: string; url: string; body: any }[] = [];
-const server = http.createServer(async (req, res) => {
-  let raw = ''; for await (const c of req) raw += c;
-  const body = raw ? JSON.parse(raw) : undefined; const url = req.url!; const method = req.method!;
-  calls.push({ method, url, body });
-  res.setHeader('Content-Type', 'application/json');
-  if (url === '/containers/portal-test/json') return res.end(JSON.stringify({ Id: portalId, State: { Running: true } }));
-  if (url === '/containers/pithagoras-voice/json') { res.statusCode = container ? 200 : 404; return res.end(JSON.stringify(container)); }
-  if (url.startsWith('/containers/pithagoras-voice/logs')) return res.end(JSON.stringify('services ready'));
-  if (url.startsWith('/images/create')) {
-    if (pullFails) { res.statusCode = 500; return res.end(JSON.stringify({ message: 'no route to host' })); }
-    const q = new URL(url, 'http://docker').searchParams;
-    images.add(`${q.get('fromImage')}:${q.get('tag')}`);
-    return res.end('{"status":"Download complete"}\n');
+const docker = await fakeDocker(process.env.DOCKER_SOCKET!, async ({ method, url, path: p, query, body, req }) => {
+  if (url === '/containers/portal-test/json') return { json: { Id: portalId, State: { Running: true } } };
+  if (url === '/containers/pithagoras-voice/json') return { status: container ? 200 : 404, json: container };
+  if (url.startsWith('/containers/pithagoras-voice/logs')) return { json: 'services ready' };
+  if (p === '/images/create') {
+    if (pullFails) return { status: 500, json: { message: 'no route to host' } };
+    images.add(`${query.get('fromImage')}:${query.get('tag')}`);
+    return { text: '{"status":"Download complete"}\n' };
   }
-  if (url.startsWith('/images/')) { res.statusCode = images.has(decodeURIComponent(url.slice('/images/'.length, -'/json'.length))) ? 200 : 404; return res.end('{}'); }
+  if (p.startsWith('/images/') && p.endsWith('/json')) return { status: images.has(decodeURIComponent(p.slice('/images/'.length, -'/json'.length))) ? 200 : 404 };
   // The throwaway container that reads nvidia-smi inside the image.
   if (url === '/containers/create') {
     if (probeDelay) await new Promise(r => setTimeout(r, probeDelay));
-    if (hangUp) return req.socket.destroy();
-    if (probeError) { res.statusCode = 500; return res.end(JSON.stringify({ message: probeError })); }
-    if (dockerGpus === null) { res.statusCode = 500; return res.end(JSON.stringify({ message: NO_RUNTIME })); }
-    return res.end(JSON.stringify({ Id: 'probe-1' }));
+    if (hangUp) { req.socket.destroy(); return 'handled'; }
+    if (probeError) return { status: 500, json: { message: probeError } };
+    if (dockerGpus === null) return { status: 500, json: { message: NO_RUNTIME } };
+    return { json: { Id: 'probe-1' } };
   }
   // Only a container that asks for a GPU is refused one.
-  if (noGpuRuntime && (url === '/containers/probe-1/start' || (url === '/containers/pithagoras-voice/start' && container?.HostConfig?.DeviceRequests))) { res.statusCode = 500; return res.end(JSON.stringify({ message: NO_RUNTIME })); }
-  if (url === '/containers/probe-1/wait') return res.end(JSON.stringify({ StatusCode: 0 }));
-  if (url.startsWith('/containers/probe-1/logs')) return res.end(dockerGpus ?? '');
-  if (url.includes('/stop?')) { container.State.Running = false; onStop?.(); }
-  if (method === 'DELETE' && url === '/containers/pithagoras-voice') container = null;
-  if (url.startsWith('/containers/create?name=pithagoras-voice')) container = { Config: body, HostConfig: body.HostConfig, State: { Running: false } };
-  if (url === '/containers/pithagoras-voice/start') container.State.Running = true;
-  res.end('{}');
+  if (noGpuRuntime && (url === '/containers/probe-1/start' || (url === '/containers/pithagoras-voice/start' && container?.HostConfig?.DeviceRequests))) return { status: 500, json: { message: NO_RUNTIME } };
+  if (p === '/volumes/create') return {};
+  if (url === '/containers/probe-1/start') return { status: 204, text: '' };
+  if (url === '/containers/probe-1/wait') return { json: { StatusCode: 0 } };
+  if (url.startsWith('/containers/probe-1/logs')) return { text: dockerGpus ?? '' };
+  if (url.startsWith('/containers/probe-1?')) return {};
+  if (url.startsWith('/containers/pithagoras-voice/stop?')) { container.State.Running = false; onStop?.(); return {}; }
+  if (method === 'DELETE' && p === '/containers/pithagoras-voice') { container = null; return {}; }
+  if (url.startsWith('/containers/create?name=pithagoras-voice')) { container = { Config: body, HostConfig: body.HostConfig, State: { Running: false } }; return {}; }
+  if (url === '/containers/pithagoras-voice/start') { container.State.Running = true; return {}; }
 });
-await new Promise<void>(r => server.listen(process.env.DOCKER_SOCKET, r));
+const { calls } = docker;
 const oldFetch = globalThis.fetch;
 let unhealthy: string[] = [];
 globalThis.fetch = (async (url: any) => new Response('{}', { status: unhealthy.some(u => String(url).includes(u)) ? 503 : 200 })) as typeof fetch;
 after(async () => {
   globalThis.fetch = oldFetch;
-  await new Promise<void>((resolve, reject) => server.close(e => e ? reject(e) : resolve()));
-  rmSync(dir, { recursive: true, force: true });
 });
 const voice = await import('../server/src/extensions/voice-service.js');
 const { DEFAULT_CHOICE } = await import('../server/src/voice-engines.js');
@@ -90,11 +84,11 @@ const { NO_GPU_MESSAGE, NO_GPU_FOR_SPEECH, NO_GPU_FOR_SPEECH_UNUSABLE, DRIVER_TO
 
 // What the host has to run recognition on: sixteen GiB and eight threads, unless a test says otherwise.
 const host = (patch = {}) => { voice.hostReader.read = () => ({ totalMiB: 16384, freeMiB: 12000, threads: 8, ...patch }); };
-const reset = () => { host(); portalId = 'portal-one'; container = null; dockerGpus = ''; images = new Set([CUDA, BASE]); pullFails = false; noGpuRuntime = false; probeError = null; hangUp = false; probeDelay = 0; onStop = null; calls = []; unhealthy = []; delete process.env.VOICE_GPU; delete process.env.VOICE_VRAM_RESERVE_MIB; };
+const reset = () => { host(); portalId = 'portal-one'; container = null; dockerGpus = ''; images = new Set([CUDA, BASE]); pullFails = false; noGpuRuntime = false; probeError = null; hangUp = false; probeDelay = 0; onStop = null; docker.reset(); unhealthy = []; delete process.env.VOICE_GPU; delete process.env.VOICE_VRAM_RESERVE_MIB; };
 const settle = async () => { for (let n = 0; n < 200 && (await voice.status()).busy; n++) await new Promise(r => setTimeout(r, 10)); };
 const created = () => calls.filter(c => c.url === '/containers/create?name=pithagoras-voice');
 /** The voice container was deleted, not the throwaway one that reads nvidia-smi. */
-const gone = () => calls.some(c => c.method === 'DELETE' && c.url === '/containers/pithagoras-voice');
+const gone = () => calls.some(c => c.method === 'DELETE' && c.url === '/containers/pithagoras-voice?force=true');
 const GPU = (index: number, total: number, free: number, name = `Test GPU ${index}`) => `${index}, ${name}, ${total}, ${free}\n`;
 const env = (spec: any) => Object.fromEntries(spec.Env.map((e: string) => [e.slice(0, e.indexOf('=')), e.slice(e.indexOf('=') + 1)]));
 
@@ -286,7 +280,7 @@ test('a CPU-only container is ready when its own services answer, and keeps its 
   unhealthy = [':7863'];
   assert.equal((await voice.status()).state, 'starting');
   // Start keeps what it is, and does not ask for a GPU it was never given.
-  container.State.Running = false; calls = [];
+  container.State.Running = false; docker.reset();
   host({ threads: 2 });
   process.env.VOICE_GPU = '1';
   await voice.start();
@@ -440,7 +434,7 @@ test('a container recreated for a new portal namespace stays on the card it was 
   // A portal update gives the portal container a new id, and the voice container is made again for it.
   // The card it has is looked up, as it may be gone, but the engines are not judged against it again: with card 1 read as too small for them they are kept.
   hostGpus(GPU(0, 12288, 2000) + GPU(1, 2048, 1500));
-  portalId = 'portal-two'; calls = [];
+  portalId = 'portal-two'; docker.reset();
   assert.equal((await voice.status()).state, 'installing');
   await settle();
   assert.equal(created()[0].body.HostConfig.NetworkMode, 'container:portal-two');
@@ -471,7 +465,7 @@ test('a VOICE_GPU that no card has is ignored when the cards can be read, at ins
   const card = (spec: any) => spec.HostConfig.DeviceRequests[0];
   assert.deepEqual(card(created()[0].body).DeviceIDs, ['1'], 'the card with the most room');
   // A portal update: the container is made again, on the card it has, not on one that is not there.
-  portalId = 'portal-two'; calls = [];
+  portalId = 'portal-two'; docker.reset();
   assert.equal((await voice.status()).state, 'installing');
   await settle();
   assert.deepEqual(card(created()[0].body).DeviceIDs, ['1']);
@@ -569,10 +563,10 @@ test('a rebuild reads the GPU after the running service is stopped, and starts i
   assert.ok(at(c => c.url.includes('/stop?')) >= 0 && at(c => c.url.includes('/stop?')) < at(c => c.url === '/containers/create'), 'its own memory is not counted as taken by others');
   assert.match((await voice.status()).error, /needs about 7\.0 GiB/);
   assert.equal(container.State.Running, true, 'the refusal leaves the service running');
-  assert.equal(calls.some(c => c.method === 'DELETE' && c.url === '/containers/pithagoras-voice'), false);
+  assert.equal(calls.some(c => c.method === 'DELETE' && c.url === '/containers/pithagoras-voice?force=true'), false);
   assert.equal(calls.filter(c => c.url === '/containers/pithagoras-voice/start').length, 1);
   // A choice that fits is stopped once, probed, and replaced.
-  calls = []; container = running();
+  docker.reset(); container = running();
   await voice.install({ tts: 'breeze', asr: 'qwen3-asr', asrModel: '0.6b' });
   await settle();
   assert.equal(calls.filter(c => c.url.includes('/stop?')).length, 1);
@@ -585,13 +579,13 @@ test('another choice recreates the container, keeps the volume and is not mistak
   container = { Config: { Labels: { 'pithagoras.addon': 'voice', 'pithagoras.voice-network': 'shared-v1' } }, HostConfig: { NetworkMode: 'container:portal-one' }, State: { Running: true } };
   await voice.install({ tts: 'chatterbox', asr: 'qwen3-asr', asrModel: '1.7b' });
   await settle();
-  assert.ok(calls.some(c => c.method === 'DELETE' && c.url === '/containers/pithagoras-voice'));
+  assert.ok(calls.some(c => c.method === 'DELETE' && c.url === '/containers/pithagoras-voice?force=true'));
   assert.ok(calls.some(c => c.url.includes('/stop?')));
   assert.equal(calls.some(c => c.url.startsWith('/volumes') && c.method === 'DELETE'), false);
   assert.deepEqual(created()[0].body.HostConfig.Binds, ['pithagoras_voice-models:/voice']);
   assert.equal(container.Config.Labels['pithagoras.voice-recipe'], 'chatterbox+qwen3-asr:1.7b');
   // Start now keeps what was built.
-  calls = [];
+  docker.reset();
   await voice.start();
   await settle();
   assert.equal(gone(), false);

@@ -27,6 +27,11 @@ Under the tabs, one line shows where the repository is:
   becomes **Publish** and sets one up.
 - **Refresh**, which also asks GitHub again about pull requests.
 
+If the panel cannot read the repository after it has shown it once (the portal is
+restarting, the folder is gone), a red note says what is shown may be out of date
+and offers **Try again**. A list that could not be read says so the same way and
+is not left reading *Loading…*.
+
 Whatever a button did shows on a line under the header while it runs, and what git
 answered stays there until you dismiss it. Only one thing runs at a time — the
 other buttons are greyed until it is done — and a failure is shown as git said it,
@@ -37,7 +42,9 @@ without its own prefixes and hints.
 What differs from the last commit, in three lists:
 
 - **Conflicts**, while a merge has stopped on some. Resolve the file in Files,
-  then use the **+** on its row (*Mark resolved*) to stage it.
+  then use the **+** on its row (*Mark resolved*) to stage it. The diff of a file
+  in conflict has the same button, and no Discard: git cannot discard a file that
+  is unmerged.
 - **Staged**, what the next commit will hold.
 - **Changes**, everything else, including files git does not track yet (marked
   **U**). A letter in front of each name says what happened to it: modified, added,
@@ -51,6 +58,11 @@ the same for everything: **Stage everything**, **Unstage everything**, **Discard
 every change not staged**, and **Stash everything**.
 
 Click a file's name to see its diff, on top of the tab, with **Back** at the top.
+What you have typed into the panel is kept while you look: the commit message and
+the **Amend** box here, the form that opens a pull request, and a comment on a pull
+request. They are also kept when you close the panel, switch chats or reload the
+page, and are gone once the commit, the pull request or the comment has gone through
+(or you cancel the form). They are kept in the browser's session storage, one set per chat.
 
 ### Committing
 
@@ -64,6 +76,21 @@ The button says what it will do:
   message keeps the old one. Amending never picks up unstaged work on its own.
 
 Committing is refused while files are in conflict.
+
+A commit needs a name and an email, which git reads from its own configuration.
+In the container nothing has set them, and its host name has no domain for git to
+guess an address from, so the first **Commit** on a fresh install is refused with
+git's *Author identity unknown*. Set them once, in [your shell](/guide/terminal#your-shell)
+in the portal:
+
+```sh
+git config --global user.name "Your Name"
+git config --global user.email "you@example.com"
+```
+
+They are kept in `/data/home`, the portal's home folder on the data volume, so
+they stay across updates. A repository with its own identity (`git config` there,
+without `--global`) keeps it.
 
 ### Stashes
 
@@ -83,14 +110,16 @@ was. Both work from any tab.
 ## History
 
 The commits on the current branch, newest first, 100 at a time; **Older
-commits…** loads more. A merge is marked *merge*. Click one for its message, its
+commits…** loads more (one page at a time: a second click while a page is on its
+way does nothing). A merge is marked *merge*. Click one for its message, its
 author and the files it changed (a merge is shown against its first parent), and
 click a file for that commit's diff. The hash can be copied from its header.
 
 **Compare this branch with its base** at the top shows what a pull request would:
 the commits and files on this branch that its base does not have. The base is
 `main` or `master` by default, or whichever branch you pick in the list above the
-result.
+result. If a base cannot be compared with, the error is shown alone: the commits
+and files of the one before are not left under it.
 
 ## Branches
 
@@ -103,7 +132,7 @@ The current one is ticked. A local branch whose remote was deleted is marked *go
 - **Filter** narrows the list.
 - The bin deletes a branch here — not on the remote — after asking. A branch that
   is not merged anywhere is asked about separately, since its commits go with it:
-  **Delete anyway**.
+  **Delete anyway**. Either way the branch leaves the list at once.
 
 ## Pull requests
 
@@ -121,14 +150,20 @@ branch of your own with none, a form to open one:
 - **Push and open** when the branch is not on the remote yet — it is pushed first —
   or **Open** when it is. A draft can be opened as well.
 
-On the default branch it says to switch to a branch of your own first.
+On the default branch it says to switch to a branch of your own first. If GitHub
+cannot be asked about the branch (a timeout, a rate limit), it says that, with **Try
+again**, instead of offering a form that would fail on a pull request that is already
+there; the list of pull requests has the same.
 
 Below, the list of pull requests, filtered by **Open**, **Merged**, **Closed** or
 **All**. Click one to read it: the description, the checks (*Passed*, *Failed*,
 *Running*), the review state, and the conversation of comments and reviews in
-order, and the changed files with their diffs. From there you can:
+order, and the changed files with their diffs. They are listed as a commit's are: a letter says what happened to each, a rename shows the old name when you point at it, and a deleted file is struck through. From there you can:
 
-- **Check out** its branch here, to try it or work on it.
+- **Check out** its branch here, to try it or work on it. It is offered for a
+  pull request from a fork even where its branch has the same name as one you have
+  (`main` is the usual case); only a branch of this repository counts as the one
+  checked out.
 - **Comment**, **Approve** or **Request changes**, with the text you wrote.
 - **Merge**, choosing *Squash*, *Merge commit* or *Rebase*, and whether the
   branch is deleted afterwards. It asks first, and says what the method will do
@@ -148,12 +183,15 @@ What it will not show, and says:
 
 - **A binary file** — its changes are not shown.
 - **A diff over 2 MB** stops where it is cut. A pull request's whole diff may be
-  up to 8 MB.
+  up to 8 MB. When one is cut, only the file it stops in says so.
+- **More than 3,000 rows** of one file: the first 3,000 are drawn, and **Show more**
+  adds 3,000 at a time, so a regenerated lockfile does not freeze the page. A stash
+  of many files shows the first five and offers the rest.
 - More than **2,000 files** at once are cut off, and the list says so.
 - A file that was only renamed or had its mode changed has no text to show.
 
 A diff of the working tree offers **Stage**, **Unstage** and **Discard** (or
-**Delete**) for the file, and **Open** to open it in Files. If the file stops being
+**Delete**) for the file (a file in conflict offers **Mark resolved** instead), and **Open** to open it in Files. If the file stops being
 changed while it is open — it was committed, or put back — the view says so.
 
 ## A few things worth knowing

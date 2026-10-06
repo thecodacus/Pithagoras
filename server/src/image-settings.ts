@@ -15,6 +15,10 @@
  * So these go there, and only there, and only when one is set: with none, the
  * prompt is sent as it is typed. An endpoint that is not stable-diffusion.cpp
  * has no use for them, which is said where the page offers them.
+ *
+ * The limits here (LIMITS, the formats, how many pictures an edit takes, the time
+ * limit) are the page's as well: it imports them, so that raising one here is
+ * raising it there, and the page does not refuse what the portal takes.
  */
 
 /** The formats of the OpenAI image format; an endpoint may take fewer, and says so. */
@@ -35,6 +39,25 @@ export const LIMITS = {
   seed: { min: -1 },
   negativePrompt: 4000,
 } as const;
+
+/**
+ * How many pictures one edit takes, and how much they weigh together. Endpoints
+ * take fewer or more and say so in their answer, which is passed on; these keep
+ * what the portal reads and sends within reason, since all of it is held in
+ * memory and goes up within the time limit of the request.
+ */
+export const MAX_EDIT_PICTURES = 8;
+export const MAX_EDIT_TOTAL_BYTES = 50 * 1024 * 1024;
+
+/**
+ * The time a request for a picture may take, in whole seconds: a slow or local model needs minutes, so five by
+ * default. Under half a minute almost no endpoint answers, so a typo could not make every request fail; an hour is
+ * more than anyone should wait on one picture.
+ */
+export const TIMEOUT_SECONDS = { default: 300, min: 30, max: 3600 };
+
+/** `1024x1024`, with no `auto`, which is no size to limit by, and no side of zero, which would limit nothing: what a maximum size is given as. */
+export const MAX_SIZE = /^[1-9]\d{1,4}x[1-9]\d{1,4}$/;
 
 /** The settings that are not in the OpenAI format: what stable-diffusion.cpp's server takes in the prompt. */
 export interface NativeSettings {

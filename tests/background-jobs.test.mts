@@ -1,14 +1,15 @@
-import {test} from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import {spawn} from 'node:child_process';
-import {mkdtempSync, realpathSync} from 'node:fs';
-import {tmpdir} from 'node:os';
+import { spawn } from 'node:child_process';
+import { realpathSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {listJobs, readOutput, stopJob, MARKER} from '../server/src/background.ts';
-import {writeFileSync} from 'node:fs';
+import { writeFileSync } from 'node:fs';
+import { scratch } from "./helpers.mts";
 const wait=(ms:number)=>new Promise(r=>setTimeout(r,ms));
 test('a detached job the agent left running is found, followed and stopped',{skip:process.platform!=='linux'},async()=>{
- const ws=realpathSync(mkdtempSync(path.join(tmpdir(),'bg-')));
+ const ws=realpathSync(scratch('bg-'));
  const [k,v]=MARKER.split('=');
  const child=spawn('sh',['-c','echo started; sleep 30; true'],{cwd:ws,detached:true,stdio:['ignore',(await import('node:fs')).openSync(path.join(ws,'out.log'),'w'),'ignore'],env:{...process.env,[k]:v}});
  child.unref();
@@ -29,7 +30,7 @@ test('a detached job the agent left running is found, followed and stopped',{ski
 });
 const agentEnv=()=>{const [k,v]=MARKER.split('=');return {...process.env,[k]:v};};
 test('a workspace reached through a link still has its jobs found',{skip:process.platform!=='linux'},async()=>{
- const ws=realpathSync(mkdtempSync(path.join(tmpdir(),'bg-')));
+ const ws=realpathSync(scratch('bg-'));
  const link=path.join(realpathSync(tmpdir()),`bg-link-${process.pid}`);
  (await import('node:fs')).symlinkSync(ws,link);
  const child=spawn('sh',['-c','sleep 30'],{cwd:ws,detached:true,stdio:'ignore',env:agentEnv()});
@@ -40,7 +41,7 @@ test('a workspace reached through a link still has its jobs found',{skip:process
  }finally{try{process.kill(-child.pid!,'SIGKILL')}catch{} (await import('node:fs')).unlinkSync(link);}
 });
 test('a job whose shell exits while what it started goes on stays one job',{skip:process.platform!=='linux'},async()=>{
- const ws=realpathSync(mkdtempSync(path.join(tmpdir(),'bg-')));
+ const ws=realpathSync(scratch('bg-'));
  const fs=await import('node:fs');
  // `npm run dev > dev.log &` and then the shell ends: the server is the job now.
  const child=spawn('sh',['-c','sleep 30 & sleep 0.4'],{cwd:ws,detached:true,stdio:['ignore',fs.openSync(path.join(ws,'dev.log'),'w'),'ignore'],env:agentEnv()});
@@ -54,7 +55,7 @@ test('a job whose shell exits while what it started goes on stays one job',{skip
  }finally{try{process.kill(-child.pid!,'SIGKILL')}catch{}}
 });
 test('what the portal runs in its own session is not a job of the agent\'s',{skip:process.platform!=='linux'},async()=>{
- const ws=realpathSync(mkdtempSync(path.join(tmpdir(),'bg-')));
+ const ws=realpathSync(scratch('bg-'));
  const fs=await import('node:fs');
  // The terminal's wrapper, a subagent's pi: started by the portal, marked, and in its session.
  const child=spawn('sh',['-c','sleep 30'],{cwd:ws,stdio:['ignore',fs.openSync(path.join(ws,'out.log'),'w'),'ignore'],env:agentEnv()});
@@ -64,7 +65,7 @@ test('what the portal runs in its own session is not a job of the agent\'s',{ski
  }finally{child.kill('SIGKILL');}
 });
 test('a job whose processes all change between two looks is still the one job',{skip:process.platform!=='linux'},async()=>{
- const ws=realpathSync(mkdtempSync(path.join(tmpdir(),'bg-')));
+ const ws=realpathSync(scratch('bg-'));
  const fs=await import('node:fs');
  // `npm install && nohup npm start &`: the install ends, the shell forks the server and ends.
  const child=spawn('sh',['-c','sleep 0.6; sleep 30 & sleep 0.2'],{cwd:ws,detached:true,stdio:['ignore',fs.openSync(path.join(ws,'app.log'),'w'),'ignore'],env:agentEnv()});
@@ -78,7 +79,7 @@ test('a job whose processes all change between two looks is still the one job',{
  }finally{try{process.kill(-child.pid!,'SIGKILL')}catch{}}
 });
 test('a job in a workspace inside another is the job of both, for each to follow and stop',{skip:process.platform!=='linux'},async()=>{
- const outer=realpathSync(mkdtempSync(path.join(tmpdir(),'bg-')));
+ const outer=realpathSync(scratch('bg-'));
  const inner=path.join(outer,'proj');
  const fs=await import('node:fs');
  fs.mkdirSync(inner);
@@ -95,10 +96,11 @@ test('a job in a workspace inside another is the job of both, for each to follow
  }finally{try{process.kill(-child.pid!,'SIGKILL')}catch{}}
 });
 test('a tool call pi is running is not a job, whoever runs it and wherever its output goes; an extension\'s server is',{skip:process.platform!=='linux'},async()=>{
- const ws=realpathSync(mkdtempSync(path.join(tmpdir(),'bg-')));
+ const ws=realpathSync(scratch('bg-'));
  const opts={cwd:ws,detached:true,env:agentEnv()} as const;
  // This process stands for the portal. Its bash tool: a shell in a session of its own, its output back to it.
- const call=spawn('sh',['-c','sleep 30 > test.log 2>&1'],{...opts,stdio:['ignore','pipe','pipe']});
+ // bash, as pi runs it: a dash (sh on Debian and Ubuntu) applies the redirection to itself, so its own output is the file.
+ const call=spawn('bash',['-c','sleep 30 > test.log 2>&1'],{...opts,stdio:['ignore','pipe','pipe']});
  // A subagent's pi, in the portal's session, runs its own bash tool.
  const child=spawn(process.execPath,['-e',`require('child_process').spawn('sh',['-c','sleep 31'],{detached:true,stdio:['ignore','pipe','pipe']});setTimeout(()=>{},30000)`],{cwd:ws,env:agentEnv(),stdio:['ignore','pipe','pipe']});
  // An extension's server, read through a pipe: a job.
@@ -115,7 +117,7 @@ test('a tool call pi is running is not a job, whoever runs it and wherever its o
  }finally{for(const p of [call,server])try{process.kill(-p.pid!,'SIGKILL')}catch{} child.kill('SIGKILL'); spawn('pkill',['-f','^sleep 31$']);}
 });
 test('stopping a job stops all of it, what left the workspace too',{skip:process.platform!=='linux'},async()=>{
- const ws=realpathSync(mkdtempSync(path.join(tmpdir(),'bg-')));
+ const ws=realpathSync(scratch('bg-'));
  const fs=await import('node:fs');
  const job=spawn('sh',['-c','(cd / && exec sleep 33) & sleep 34'],{cwd:ws,detached:true,stdio:['ignore',fs.openSync(path.join(ws,'out.log'),'w'),'ignore'],env:agentEnv()});
  job.unref();
@@ -129,7 +131,7 @@ test('stopping a job stops all of it, what left the workspace too',{skip:process
  }finally{try{process.kill(-job.pid!,'SIGKILL')}catch{}}
 });
 test('output is cut between characters, never inside one',{skip:process.platform!=='linux'},async()=>{
- const ws=realpathSync(mkdtempSync(path.join(tmpdir(),'bg-')));
+ const ws=realpathSync(scratch('bg-'));
  const log=path.join(ws,'vite.log');
  const arrow=Buffer.from('➜');
  // A write the process has not finished: the arrow's last byte is still to come.

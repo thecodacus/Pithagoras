@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appendPage, fieldsText, madeButNotListed, mergeTop, noFields, readFilter, readForm, sameList, settingsBody, sizeParts, tiles, viewerList, viewerPicture } from "../web/src/images-gallery.ts";
+import { LIMITS, OUTPUT_FORMATS, appendPage, fieldsText, madeButNotListed, mergeTop, readFilter, readForm, sameList, settingsBody, sizeParts, tiles, viewerList, viewerPicture } from "../web/src/images-gallery.ts";
+import { LIMITS as portalLimits, OUTPUT_FORMATS as portalFormats } from "../server/src/image-settings.ts";
 import type { GalleryPicture, PictureJob } from "../web/src/api.ts";
+
+/** Every field empty, as a form that was kept nothing starts. */
+const noFields = () => readForm(null, 1).make;
 
 let n = 0;
 const picture = (over: Partial<GalleryPicture> = {}): GalleryPicture => {
@@ -12,6 +16,25 @@ const picture = (over: Partial<GalleryPicture> = {}): GalleryPicture => {
 const newestFirst = (...p: GalleryPicture[]) => [...p].sort((a, b) => b.createdAt - a.createdAt);
 const ids = (p: { id: string }[]) => p.map((x) => x.id);
 const job = (over: Partial<PictureJob> = {}): PictureJob => ({ id: `j${++n}`, kind: "generate", state: "running", prompt: "j", startedAt: 5000 + n, ...over });
+
+test("the form's limits are the portal's own, so that raising one raises both and the form does not refuse what the portal takes", () => {
+  assert.equal(LIMITS, portalLimits);
+  assert.equal(OUTPUT_FORMATS, portalFormats);
+  const wide = { ...noFields(), width: "9000", height: "9000" };
+  assert.deepEqual(settingsBody(wide, false, false), { field: "width", problem: "size-range" });
+  const side = portalLimits.side as { min: number; max: number };
+  const was = side.max;
+  side.max = 9000;
+  try {
+    assert.deepEqual(settingsBody(wide, false, false), { body: { size: "9000x9000" } });
+  } finally {
+    side.max = was;
+  }
+  // The seed's lowest and the strength's range are the portal's too.
+  assert.deepEqual(settingsBody({ ...noFields(), seed: String(portalLimits.seed.min) }, false, true), { body: { seed: portalLimits.seed.min } });
+  assert.ok("body" in settingsBody({ ...noFields(), strength: String(portalLimits.strength.max) }, true, true));
+  assert.ok("field" in settingsBody({ ...noFields(), strength: String(portalLimits.strength.max + 0.5) }, true, true));
+});
 
 test("the filters are read from the address, and what is not a filter is none", () => {
   assert.deepEqual(readFilter(new URLSearchParams("origin=chat&kind=edited")), { origin: "chat", kind: "edited" });

@@ -45,6 +45,13 @@ export interface Executor {
   launch(opts: LaunchOptions): Promise<PiClient>;
   /** Best-effort cleanup of anything left behind outside the child process. */
   cleanup?(sessionId: string): Promise<void>;
+  /**
+   * Whether a pi launched again carries on the conversation it had. The host's
+   * does, from the conversation's file. A container's does not yet (it starts
+   * with `--session-dir` alone, and so with a new, empty conversation), so
+   * nothing is to make one start again that the person is still talking to.
+   */
+  readonly resumes?: boolean;
 }
 
 function piArgs(opts: LaunchOptions, sessionDir: string): string[] {
@@ -54,20 +61,10 @@ function piArgs(opts: LaunchOptions, sessionDir: string): string[] {
   return args;
 }
 
-/** Environment passed through to pi — provider credentials plus a sane PATH. */
-function piEnv(): NodeJS.ProcessEnv {
-  return {
-    ...process.env,
-    // pi writes nothing interactive; make sure it never tries.
-    CI: "1",
-    TERM: "dumb",
-  };
-}
-
 /**
- * Runs pi as a child process of the portal, working directly on mounted workspace
- * directories. Fast and simple; pi has the portal's own permissions, so this
- * assumes you trust the tasks you submit.
+ * Runs pi in the portal's own process (through the SDK), working directly on
+ * mounted workspace directories. Fast and simple; pi has the portal's own
+ * permissions, so this assumes you trust the tasks you submit.
  */
 export class HostExecutor implements Executor {
   readonly kind = "host" as const;
@@ -106,6 +103,7 @@ export class HostExecutor implements Executor {
  */
 export class ContainerExecutor implements Executor {
   readonly kind = "container" as const;
+  readonly resumes = false;
 
   constructor(
     private readonly image: string,
@@ -134,18 +132,24 @@ export class ContainerExecutor implements Executor {
 
 
 
+    // By name only: docker copies the value from its own environment, which is
+    // this one, and a value on the command line is readable by anybody on the
+    // host who lists processes while the task runs.
     const passthrough = [
       "OPENROUTER_API_KEY",
       "ANTHROPIC_API_KEY",
       "OPENAI_API_KEY",
       "PI_PROVIDER",
       "PI_MODEL",
-    ].flatMap((key) => (process.env[key] ? ["-e", `${key}=${process.env[key]}`] : []));
+    ].flatMap((key) => (process.env[key] ? ["-e", key] : []));
 
     const args = [
       "run",
       "-i",
       "--rm",
+      // pi is not PID 1: a command's background child that outlives its shell is handed to PID 1, and
+      // pi (node) never waits for it, so it stays a zombie and keeps one of the --pids-limit slots.
+      "--init",
       "--user",
       runnerUser,
       "--name",

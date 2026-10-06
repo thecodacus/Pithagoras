@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { LuChevronDown, LuChevronRight, LuCheck, LuPencil, LuX } from "react-icons/lu";
-import { api } from "../api";
-import { displayName, groupSummary, groupTools, nextOff, sourceName } from "../tool-groups";
-import { useOpenGroups } from "../use-open-groups";
+import { LuCheck, LuPencil, LuX } from "react-icons/lu";
+import { api, ApiError } from "../api";
+import { LoadFailed } from "./SettingsUi";
+import { ToolGroupList } from "./ToolGroupList";
+import { displayName, nextOff, sourceName } from "../tool-groups";
 import { isEnter, isEscape } from "../shortcuts";
 import { t } from "../i18n";
 
@@ -25,25 +26,29 @@ export function ToolDefaults({ onError }: { onError: (e: string) => void }) {
   const [loading, setLoading] = useState(true);
   /** Why there is nothing to switch here, where the deployment cannot do it. */
   const [refusal, setRefusal] = useState("");
+  /** Any other failure of the read: no statement about the deployment, so it is not shown as one. */
+  const [failed, setFailed] = useState<string | null>(null);
+  const [tries, setTries] = useState(0);
   const [busy, setBusy] = useState(false);
   const [names, setNames] = useState<Record<string, string>>({});
   /** The group being renamed, and what has been typed so far. */
   const [renaming, setRenaming] = useState<{ source: string; value: string } | null>(null);
-  const groups = useOpenGroups();
 
   useEffect(() => {
     api
       .toolDefaults()
       .then((r) => {
+        setFailed(null);
         setTools(r.tools);
         setOff(r.off);
         setNames(r.names ?? {});
       })
       // A deployment where this cannot work says so in place of the list — the
-      // same as the switches beside the composer, and for the same reason.
-      .catch((e) => setRefusal(String(e).replace(/^Error:\s*/, "")))
+      // same as the switches beside the composer, and for the same reason. Only
+      // that answer: a portal that could not be reached is tried again.
+      .catch((e) => (e instanceof ApiError && e.body.code === "tools-unsupported" ? setRefusal(e.message) : setFailed((e as Error).message)))
       .finally(() => setLoading(false));
-  }, []);
+  }, [tries]);
 
   const flip = async (names: string[], enabled: boolean) => {
     const wanted = nextOff(off, names, enabled);
@@ -55,7 +60,7 @@ export function ToolDefaults({ onError }: { onError: (e: string) => void }) {
       setOff(r.off);
     } catch (e) {
       setOff(before);
-      onError(String(e));
+      onError((e as Error).message);
     } finally {
       setBusy(false);
     }
@@ -79,11 +84,22 @@ export function ToolDefaults({ onError }: { onError: (e: string) => void }) {
       setNames(r.names);
     } catch (e) {
       setNames(before);
-      onError(String(e));
+      onError((e as Error).message);
     }
   };
 
   if (loading) return null;
+  if (failed) {
+    return (
+      <LoadFailed
+        error={failed}
+        onRetry={() => {
+          setLoading(true);
+          setTries((n) => n + 1);
+        }}
+      />
+    );
+  }
   if (refusal) {
     return (
       <p className="rounded-xl border border-line bg-raised/40 px-3 py-2 text-xs text-fg-subtle">
@@ -109,114 +125,65 @@ export function ToolDefaults({ onError }: { onError: (e: string) => void }) {
           {/* Read from the switches rather than from what was loaded: the list
               is what exists, `off` is what has been decided about it, and only
               the second changes while this is open. */}
-          {groupTools(tools.map((t) => ({ ...t, enabled: !off.includes(t.name) }))).map((group) => {
-            const open = groups.isOpen(group.source);
-            return (
-            <div key={group.source} className="border-b border-line last:border-0">
-              <div className="flex items-center gap-1 bg-raised/40 px-1.5 py-1.5">
-                {renaming?.source === group.source ? (
-                  <>
-                    <input
-                      autoFocus
-                      value={renaming.value}
-                      onChange={(e) => setRenaming({ source: group.source, value: e.target.value })}
-                      onKeyDown={(e) => {
-                        if (isEnter(e)) rename(group.source, renaming.value);
-                        if (isEscape(e)) setRenaming(null);
-                      }}
-                      placeholder={displayName(group.source)}
-                      aria-label={t("Name for {source}", { source: sourceName(group.source) })}
-                      className="min-w-0 flex-1 rounded border border-line bg-canvas px-1.5 py-0.5 text-xs text-fg outline-none focus:border-accent/60"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => rename(group.source, renaming.value)}
-                      title={t("Save")}
-                      className="shrink-0 rounded p-1 text-fg-subtle transition hover:bg-fg/5 hover:text-fg"
-                    >
-                      <LuCheck className="h-3 w-3" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setRenaming(null)}
-                      title={t("Cancel")}
-                      className="shrink-0 rounded p-1 text-fg-subtle transition hover:bg-fg/5 hover:text-fg"
-                    >
-                      <LuX className="h-3 w-3" />
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      aria-expanded={open}
-                      onClick={() => groups.toggle(group.source)}
-                      className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-1.5 py-0.5 text-left transition hover:bg-fg/5"
-                    >
-                      {open ? (
-                        <LuChevronDown className="h-3 w-3 shrink-0 text-fg-faint" />
-                      ) : (
-                        <LuChevronRight className="h-3 w-3 shrink-0 text-fg-faint" />
-                      )}
-                      <span
-                        title={sourceName(group.source)}
-                        className="min-w-0 flex-1 truncate text-xs font-medium text-fg-muted"
-                      >
-                        {displayName(group.source, names)}
-                      </span>
-                      <span className="shrink-0 text-[11px] text-fg-faint">
-                        {groupSummary(group)}
-                      </span>
-                    </button>
-                    {/* Only here, not in the chat popover: naming a thing is a
-                        settings decision, and the popover is for one chat. */}
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setRenaming({ source: group.source, value: names[group.source] ?? "" })
+          <ToolGroupList
+            roomy
+            tools={tools.map((tool) => ({ ...tool, enabled: !off.includes(tool.name) }))}
+            names={names}
+            busy={busy}
+            onFlip={flip}
+            naming={(group) =>
+              renaming?.source === group.source ? (
+                <>
+                  <input
+                    autoFocus
+                    value={renaming.value}
+                    onChange={(e) => setRenaming({ source: group.source, value: e.target.value })}
+                    onKeyDown={(e) => {
+                      if (isEnter(e)) rename(group.source, renaming.value);
+                      // Cancels the rename only: Settings closes on Escape too, and would take the whole dialog with it.
+                      if (isEscape(e)) {
+                        e.stopPropagation();
+                        setRenaming(null);
                       }
-                      title={t("Rename — it is {source}", { source: sourceName(group.source) })}
-                      aria-label={t("Rename {name}", { name: sourceName(group.source) })}
-                      className="shrink-0 rounded p-1 text-fg-subtle transition hover:bg-fg/5 hover:text-fg"
-                    >
-                      <LuPencil className="h-3 w-3" />
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => flip(group.tools.map((t) => t.name), group.allOff)}
-                      className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-fg-subtle transition hover:bg-fg/5 hover:text-fg disabled:opacity-50"
-                    >
-                      {group.allOff ? t("all on") : t("all off")}
-                    </button>
-                  </>
-                )}
-              </div>
-              <ul className={open ? "py-1" : "hidden"}>
-                {group.tools.map((tool) => (
-                  <li key={tool.name}>
-                    <label className="flex cursor-pointer items-center gap-2 px-3 py-1 text-xs transition hover:bg-fg/5">
-                      <input
-                        type="checkbox"
-                        checked={tool.enabled}
-                        disabled={busy}
-                        onChange={(e) => flip([tool.name], e.target.checked)}
-                        className="h-3 w-3 shrink-0 accent-accent"
-                      />
-                      <span
-                        className={`min-w-0 flex-1 truncate font-mono ${
-                          tool.enabled ? "text-fg" : "text-fg-faint line-through"
-                        }`}
-                      >
-                        {tool.name}
-                      </span>
-                    </label>
-                  </li>
-                ))}
-              </ul>
-            </div>
-            );
-          })}
+                    }}
+                    placeholder={displayName(group.source)}
+                    aria-label={t("Name for {source}", { source: sourceName(group.source) })}
+                    className="min-w-0 flex-1 rounded border border-line bg-canvas px-1.5 py-0.5 text-xs text-fg outline-none focus:border-accent/60"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => rename(group.source, renaming.value)}
+                    title={t("Save")}
+                    aria-label={t("Save")}
+                    className="shrink-0 rounded p-1 text-fg-subtle transition hover:bg-fg/5 hover:text-fg"
+                  >
+                    <LuCheck className="h-3 w-3" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRenaming(null)}
+                    title={t("Cancel")}
+                    aria-label={t("Cancel")}
+                    className="shrink-0 rounded p-1 text-fg-subtle transition hover:bg-fg/5 hover:text-fg"
+                  >
+                    <LuX className="h-3 w-3" />
+                  </button>
+                </>
+              ) : undefined
+            }
+            // Only here, not in the chat popover: naming a thing is a settings decision, and the popover is for one chat.
+            beside={(group) => (
+              <button
+                type="button"
+                onClick={() => setRenaming({ source: group.source, value: names[group.source] ?? "" })}
+                title={t("Rename — it is {source}", { source: sourceName(group.source) })}
+                aria-label={t("Rename {name}", { name: sourceName(group.source) })}
+                className="shrink-0 rounded p-1 text-fg-subtle transition hover:bg-fg/5 hover:text-fg"
+              >
+                <LuPencil className="h-3 w-3" />
+              </button>
+            )}
+          />
         </div>
       )}
     </>

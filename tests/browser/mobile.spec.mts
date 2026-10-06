@@ -1,13 +1,17 @@
-import {test,expect} from '@playwright/test';
+import { test, expect, mockPortal } from './portal-mock';
 test('phone can send, open workspace navigation, and scroll slash commands without page overflow',async({page})=>{
  await page.setViewportSize({width:375,height:812});
  const session={id:'mobile',title:'Mobile session',workspace:'/workspaces/demo',status:'idle',kind:'task',pinned:false};let submitted='';
- await page.route('**/api/**',async route=>{
-  const p=new URL(route.request().url()).pathname;
-  const value=p.endsWith('/auth/status')?{authed:true}:p==='/api/sessions'?{sessions:[session],executor:'host'}:p==='/api/workspaces'?{root:'/workspaces',workspaces:[{name:'demo',path:'/workspaces/demo',isGit:false}]}:p.endsWith('/commands')?{commands:Array.from({length:10},(_,i)=>({name:`cmd${i}`,description:'A command',source:'extension'}))}:p.endsWith('/config')?{live:false,state:{model:{id:'test',name:'Test',provider:'local'},thinkingLevel:'medium'},stats:null,thinking:{levels:[]},models:{models:[]}}:p==='/api/browser'?{running:false,sessions:[],routines:[]}:p.endsWith('/canvases')?[]:p==='/api/voice'?{enabled:false}:p.endsWith('/prompt')?(submitted=route.request().postDataJSON().message,{ok:true}):session;
-  await route.fulfill({json:value});
+ await mockPortal(page,({path:p,json})=>{
+  if(p==='/api/sessions')return{sessions:[session],executor:'host'};
+  if(p===`/api/sessions/${session.id}`)return session;
+  if(p==='/api/workspaces')return{root:'/workspaces',workspaces:[{name:'demo',path:'/workspaces/demo',isGit:false}]};
+  if(p.endsWith('/commands'))return{commands:Array.from({length:10},(_,i)=>({name:`cmd${i}`,description:'A command',source:'extension'}))};
+  if(p.endsWith('/config'))return{live:false,state:{model:{id:'test',name:'Test',provider:'local'},thinkingLevel:'medium'},stats:null,thinking:{levels:[]},models:{models:[]}};
+  if(p.endsWith('/canvases'))return[];
+  if(p.endsWith('/prompt')){submitted=json().message;return{ok:true};}
  });
- await page.addInitScript(()=>{(window as any).EventSource=class {onmessage:any;onopen:any;onerror:any;addEventListener(){}close(){}};localStorage.setItem('sidebarCollapsed','true');});
+ await page.addInitScript(()=>localStorage.setItem('sidebarCollapsed','true'));
  await page.goto('/s/mobile');
  await page.getByLabel('Message',{exact:true}).fill('Hello from a phone');
  await page.getByRole('button',{name:'Send message',exact:true}).click();
@@ -23,5 +27,4 @@ test('phone can send, open workspace navigation, and scroll slash commands witho
  const menu=page.locator('.prompt-shell > .absolute');await expect(menu).toBeVisible();
  expect(await menu.evaluate(e=>e.scrollHeight>e.clientHeight)).toBe(true);
  await menu.evaluate(e=>e.scrollTop=e.scrollHeight);expect(await menu.evaluate(e=>e.scrollTop)).toBeGreaterThan(0);
- await page.screenshot({path:'/tmp/pithagoras-mobile-issue3.png'});
 });

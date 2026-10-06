@@ -1,4 +1,5 @@
-import { test, expect, type Page } from '@playwright/test';
+import { type Page } from '@playwright/test';
+import { test, expect, mockPortal, reply } from './portal-mock';
 
 interface Portal {
   models?: boolean;
@@ -13,16 +14,18 @@ interface Portal {
   homepage?: string;
   openRouterFromEnv?: boolean;
   installBringsModels?: boolean;
-  /** A model that does not think, beside Ornith. */
+  /** A model that does not think, beside Model A. */
   plainModel?: boolean;
   /** How long the nth save of the defaults takes, from 0. */
   settingsSaveDelay?: (n: number) => number;
   /** What the server says came of saving a provider, besides. */
   providerNote?: string;
+  /** A portal with a password, and what its status says of it. */
+  login?: { shortPassword?: boolean };
 }
 
 /** The portal with no server: Settings, its search, and the setup assistant, over canned answers. */
-async function portal(page: Page, { models = true, slow = 0, slowSettings = 0, stored = {}, probe, probeDelay, homepage, openRouterFromEnv = false, installBringsModels = false, plainModel = false, settingsSaveDelay, providerNote }: Portal = {}) {
+async function portal(page: Page, { models = true, slow = 0, slowSettings = 0, stored = {}, probe, probeDelay, homepage, openRouterFromEnv = false, installBringsModels = false, plainModel = false, settingsSaveDelay, providerNote, login }: Portal = {}) {
   const calls: string[] = [];
   const providerSaves: { id: string; body: any }[] = [];
   const settingsSaves: unknown[] = [];
@@ -30,40 +33,36 @@ async function portal(page: Page, { models = true, slow = 0, slowSettings = 0, s
   let savingNow = 0, savingMost = 0;
   // A provider package, once installed, brings its models.
   const available = () => (models || (installBringsModels && installed.length) ? [
-    { provider: 'llama-swap', id: 'Ornith', name: 'Ornith 1.5', contextWindow: 65536, reasoning: true },
+    { provider: 'llama-swap', id: 'model-a', name: 'Model A', contextWindow: 65536, reasoning: true },
     ...(plainModel ? [{ provider: 'llama-swap', id: 'Plain', name: 'Plain 1', contextWindow: 32768, reasoning: false }] : []),
   ] : []);
   let saved: unknown = null;
   let installed: string[] = [];
-  await page.route('**/api/**', async (route) => {
-    const url = new URL(route.request().url());
-    const p = url.pathname;
-    const method = route.request().method();
+  await mockPortal(page, async ({ path: p, method, json }) => {
     calls.push(`${method} ${p}`);
     const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-    let body: unknown = {};
-    if (p === '/api/auth/status') body = { authed: true, authRequired: false };
-    else if (p === '/api/sessions' && method === 'GET') body = { sessions: [], executor: 'host' };
-    else if (p === '/api/sessions') body = { id: 'new', title: 'New', workspace: '/w', status: 'idle', kind: 'task', pinned: false };
-    else if (p === '/api/settings' && method === 'PUT') {
-      const sent = route.request().postDataJSON();
+    if (p === '/api/auth/status') return { authed: true, authRequired: Boolean(login), ...(login?.shortPassword ? { shortPassword: true } : {}) };
+    if (p === '/api/sessions' && method === 'POST') return { id: 'new', title: 'New', workspace: '/w', status: 'idle', kind: 'task', pinned: false };
+    if (p === '/api/settings' && method === 'PUT') {
+      const sent = json();
       savingMost = Math.max(savingMost, ++savingNow);
       await wait(settingsSaveDelay?.(settingsSaves.length) ?? 0);
       savingNow--;
       // What the server ends on: the save that landed last.
       settingsSaves.push(sent);
       saved = sent;
-      body = { settings: {}, compaction: { keepRecentTokens: 20000 }, refreshed: 0, note: '' };
+      return { settings: {}, compaction: { keepRecentTokens: 20000 }, refreshed: 0, note: '' };
     }
-    else if (p === '/api/settings') {
+    if (p === '/api/settings') {
       await wait(slow + slowSettings);
-      body = {
-        settings: { provider: 'llama-swap', model: 'Ornith', thinkingLevel: 'medium' }, stored, defaults: { provider: 'llama-swap', model: 'Ornith', thinkingLevel: 'medium' },
+      return {
+        settings: { provider: 'llama-swap', model: 'model-a', thinkingLevel: 'medium' }, stored, defaults: { provider: 'llama-swap', model: 'model-a', thinkingLevel: 'medium' },
         piSettingsPath: '/a/settings.json', compaction: { keepRecentTokens: 20000 }, compactionDefaults: { keepRecentTokens: 20000 }, contextDefault: null, executor: 'host', workspaceRoot: '/w',
       };
-    } else if (p === '/api/models') { await wait(slow * 2); body = { models: available(), providers: { 'llama-swap': 'llama-swap' } }; }
-    else if (p === '/api/routines/report-targets') { await wait(slow); body = { targets: [], default: null }; }
-    else if (p === '/api/providers') body = {
+    }
+    if (p === '/api/models') { await wait(slow * 2); return { models: available(), providers: { 'llama-swap': 'llama-swap' } }; }
+    if (p === '/api/routines/report-targets') { await wait(slow); return { targets: [], default: null }; }
+    if (p === '/api/providers') return {
       presets: [
         { kind: 'llama-cpp', label: 'llama.cpp', description: 'One llama-server', id: 'llama-server', endpoint: true, baseUrl: 'http://127.0.0.1:8080/v1', key: 'optional' },
         { kind: 'llama-swap', label: 'llama-swap', description: 'Several models, swapped in', id: 'llama-swap', endpoint: true, baseUrl: 'http://127.0.0.1:8080/v1', key: 'optional' },
@@ -72,38 +71,30 @@ async function portal(page: Page, { models = true, slow = 0, slowSettings = 0, s
       ],
       apis: ['openai-completions'], hosted: [],
       providers: [
-        ...(models ? [{ id: 'llama-swap', kind: 'llama-swap', label: 'llama-swap', baseUrl: 'http://gpu:8080/v1', key: { set: false }, models: [{ id: 'Ornith', name: 'Ornith 1.5' }, { id: 'Gone' }], endpoint: true }] : []),
+        ...(models ? [{ id: 'llama-swap', kind: 'llama-swap', label: 'llama-swap', baseUrl: 'http://gpu:8080/v1', key: { set: false }, models: [{ id: 'model-a', name: 'Model A' }, { id: 'Gone' }], endpoint: true }] : []),
         ...(openRouterFromEnv ? [{ id: 'openrouter', kind: 'openrouter', label: 'OpenRouter', key: { set: true, source: 'environment' }, models: [], endpoint: false }] : []),
       ],
     };
-    else if (p === '/api/providers/status') body = { status: { 'llama-swap': { state: 'up', ms: 12, listed: 1, missing: ['Gone'], loaded: ['Ornith'] } } };
-    else if (p === '/api/extensions') { await wait(slow * 3); body = { settingsPath: '/a/settings.json', extensions: [{ spec: 'npm:pi-web-access', name: 'pi-web-access', settings: [{ key: 'braveApiKey', value: '', configured: false }, { key: 'safeSearch', value: true, configured: true }, { key: 'enableCache', value: '', configured: false }] }] }; }
-    else if (p === '/api/extensions/settings' && method === 'PUT') { extensionSaves.push(route.request().postDataJSON()); body = { ok: true }; }
-    else if (p === '/api/packages/catalog') body = { packages: [
+    if (p === '/api/providers/status') return { status: { 'llama-swap': { state: 'up', ms: 12, listed: 1, missing: ['Gone'], loaded: ['model-a'] } } };
+    if (p === '/api/extensions') { await wait(slow * 3); return { settingsPath: '/a/settings.json', extensions: [{ spec: 'npm:pi-web-access', name: 'pi-web-access', settings: [{ key: 'braveApiKey', value: '', configured: false }, { key: 'safeSearch', value: true, configured: true }, { key: 'enableCache', value: '', configured: false }] }] }; }
+    if (p === '/api/extensions/settings' && method === 'PUT') { extensionSaves.push(json()); return { ok: true }; }
+    if (p === '/api/packages/catalog') return { packages: [
       { name: 'pi-web-access', version: '0.31.0', description: 'Web search for pi', weekly: 198311, keywords: ['pi-package'], provider: false, homepage },
       { name: 'pi-subagents', version: '0.71.0', description: 'Delegate to helpers', weekly: 100713, keywords: ['pi-package'], provider: false, date: new Date(Date.now() - 2 * 86400_000).toISOString() },
     ] };
-    else if (p === '/api/packages' && method === 'POST') { installed.push(route.request().postDataJSON().spec); body = { ok: true, output: '' }; }
-    else if (p === '/api/providers/probe' && probe) {
-      const asked: string = route.request().postDataJSON().baseUrl;
+    if (p === '/api/packages' && method === 'POST') { installed.push(json().spec); return { ok: true, output: '' }; }
+    if (p === '/api/providers/probe' && probe) {
+      const asked: string = json().baseUrl;
       await wait(probeDelay?.(asked) ?? 0);
       const listed = probe(asked);
-      if (!listed) return route.fulfill({ status: 502, json: { error: 'Nothing answered there.' } });
+      if (!listed) return reply(502, { error: 'Nothing answered there.' });
       // As the server says it: with its scheme and its /v1.
       const at = /\/v\d/.test(asked) ? asked : `${/^https?:/.test(asked) ? '' : 'http://'}${asked.replace(/\/+$/, '')}/v1`;
-      body = { baseUrl: at, models: listed.map((m) => (typeof m === 'string' ? { id: m } : m)) };
+      return { baseUrl: at, models: listed.map((m) => (typeof m === 'string' ? { id: m } : m)) };
     }
-    else if (p.startsWith('/api/providers/') && method === 'PUT') { providerSaves.push({ id: decodeURIComponent(p.split('/').pop()!), body: route.request().postDataJSON() }); body = { ok: true, ...(providerNote ? { note: providerNote } : {}) }; }
-    else if (p === '/api/providers/probe') return route.fulfill({ status: 502, json: { error: 'Nothing answered at 127.0.0.1:8080 — is the server running, and reachable from here?' } });
-    else if (p === '/api/tool-names') body = { names: {} };
-    else if (p === '/api/browser') body = { running: false, sessions: [], routines: [] };
-    else if (p === '/api/voice') body = { enabled: false };
-    else if (p === '/api/workspaces') body = { root: '/w', workspaces: [] };
-    await route.fulfill({ json: body });
-  });
-  await page.addInitScript(() => {
-    (window as any).EventSource = class { onmessage: any; onopen: any; onerror: any; addEventListener() {} close() {} };
-  });
+    if (p.startsWith('/api/providers/') && method === 'PUT') { providerSaves.push({ id: decodeURIComponent(p.split('/').pop()!), body: json() }); return { ok: true, ...(providerNote ? { note: providerNote } : {}) }; }
+    if (p === '/api/providers/probe') return reply(502, { error: 'Nothing answered at 127.0.0.1:8080 — is the server running, and reachable from here?' });
+  }, { setup: 'fresh', settings: true });
   return { calls, saved: () => saved, installed: () => installed, providerSaves, settingsSaves, extensionSaves, savingMost: () => savingMost };
 }
 
@@ -145,13 +136,13 @@ test('Defaults draws once, whole: nothing moves after it appears', async ({ page
   await page.waitForTimeout(900);
   const later = await context.evaluate((el) => el.getBoundingClientRect().top);
   expect(Math.abs(later - first)).toBeLessThan(8); // no more than its own rise
-  await expect(page.getByLabel('Default model')).toContainText('Ornith 1.5');
+  await expect(page.getByLabel('Default model')).toContainText('Model A');
 
   // Opened a second time, it is there at once, from what was kept.
   await page.getByRole('button', { name: 'Close' }).click();
   await expect(page.getByRole('dialog', { name: 'Settings' })).toBeHidden();
   await page.getByRole('button', { name: /settings/i }).first().click();
-  await expect(page.getByLabel('Default model')).toContainText('Ornith 1.5', { timeout: 150 });
+  await expect(page.getByLabel('Default model')).toContainText('Model A', { timeout: 150 });
 });
 
 test('the rail keeps its extension pages from last time, and a provider says it is online', async ({ page }) => {
@@ -166,7 +157,7 @@ test('the rail keeps its extension pages from last time, and a provider says it 
   await expect(dialog.getByRole('button', { name: 'pi-web-access' })).toBeVisible({ timeout: 800 });
   await expect(dialog.getByText('Online · 12 ms')).toBeVisible();
   await expect(dialog.getByText('Gone is not listed by the server any more.')).toBeVisible();
-  await expect(dialog.getByTitle('Ornith — loaded now')).toBeVisible();
+  await expect(dialog.getByTitle('model-a — loaded now')).toBeVisible();
 });
 
 test('with no model yet, the setup assistant walks through provider, model and packages', async ({ page }) => {
@@ -198,10 +189,10 @@ test('with models, the assistant saves the model and effort, then offers package
   const setup = page.getByRole('dialog', { name: 'Set up Pithagoras' });
   await expect(setup.getByText('llama-swap').first()).toBeVisible();
   await setup.getByRole('button', { name: 'Next' }).click();
-  await expect(setup.getByLabel('Model for new chats')).toContainText('Ornith 1.5');
+  await expect(setup.getByLabel('Model for new chats')).toContainText('Model A');
   await setup.getByRole('radio', { name: 'high', exact: true }).click();
   await setup.getByRole('button', { name: 'Next' }).click();
-  await expect.poll(() => api.saved()).toEqual({ provider: 'llama-swap', model: 'Ornith', thinkingLevel: 'high' });
+  await expect.poll(() => api.saved()).toEqual({ provider: 'llama-swap', model: 'model-a', thinkingLevel: 'high' });
   await expect(setup.getByText('pi-subagents')).toBeVisible();
   await setup.getByRole('button', { name: 'Install pi-subagents' }).click();
   await page.getByRole('button', { name: 'Install', exact: true }).click();
@@ -255,7 +246,7 @@ test('while the model saves, Back and the choice wait: the save would land on th
   await page.getByRole('button', { name: 'Setup assistant' }).click();
   const setup = page.getByRole('dialog', { name: 'Set up Pithagoras' });
   await setup.getByRole('button', { name: 'Next' }).click();
-  await expect(setup.getByLabel('Model for new chats')).toContainText('Ornith 1.5');
+  await expect(setup.getByLabel('Model for new chats')).toContainText('Model A');
   await setup.getByRole('button', { name: 'Next' }).click();
   await expect(setup.getByRole('button', { name: 'Back' })).toBeDisabled();
   await expect(setup.getByLabel('Model for new chats')).toBeDisabled();
@@ -270,9 +261,9 @@ test('a stored model no one offers any more is not kept: the assistant offers on
   await page.getByRole('button', { name: 'Setup assistant' }).click();
   const setup = page.getByRole('dialog', { name: 'Set up Pithagoras' });
   await setup.getByRole('button', { name: 'Next' }).click();
-  await expect(setup.getByLabel('Model for new chats')).toContainText('Ornith 1.5');
+  await expect(setup.getByLabel('Model for new chats')).toContainText('Model A');
   await setup.getByRole('button', { name: 'Next' }).click();
-  await expect.poll(() => api.saved()).toMatchObject({ provider: 'llama-swap', model: 'Ornith' });
+  await expect.poll(() => api.saved()).toMatchObject({ provider: 'llama-swap', model: 'model-a' });
 });
 
 test('a new provider keeps only the models its current address lists', async ({ page }) => {
@@ -313,6 +304,23 @@ test("a package's link that is not a web page is not made a link", async ({ page
   await expect(dialog.getByText('Delegate to helpers')).toBeVisible();
   await expect(dialog.locator('a[href^="javascript:"]')).toHaveCount(0);
   await expect(dialog.getByRole('link', { name: 'more' })).toHaveCount(0);
+});
+
+test('a click on the word beside a dropdown, or on its hint, does not open it', async ({ page }) => {
+  await portal(page, { probe: () => ['A'] });
+  await page.addInitScript(() => localStorage.setItem('pithagoras.setup', 'done'));
+  await page.goto('/settings/models');
+  const dialog = page.getByRole('dialog', { name: 'Settings' });
+  await dialog.getByRole('button', { name: 'Add a provider' }).click();
+  const kind = dialog.getByLabel('Kind of provider');
+  await expect(kind).toBeVisible();
+  // Inside a label, either would be passed on to the button and open its list.
+  await dialog.getByText('Kind', { exact: true }).click();
+  await expect(page.getByRole('listbox')).toHaveCount(0);
+  await kind.locator('xpath=following-sibling::p').click();
+  await expect(page.getByRole('listbox')).toHaveCount(0);
+  await kind.click();
+  await expect(page.getByRole('listbox')).toBeVisible();
 });
 
 test('a new provider cannot take a name already set up', async ({ page }) => {
@@ -357,7 +365,7 @@ test('a provider package installed in the assistant brings its models, and Next 
 
 test('quick changes to the defaults are saved one at a time, ending on the last', async ({ page }) => {
   // The first save is slow: sent side by side, the second would land first and the first win.
-  const api = await portal(page, { stored: { provider: 'llama-swap', model: 'Ornith' }, settingsSaveDelay: (n) => (n === 0 ? 600 : 20) });
+  const api = await portal(page, { stored: { provider: 'llama-swap', model: 'model-a' }, settingsSaveDelay: (n) => (n === 0 ? 600 : 20) });
   await page.addInitScript(() => localStorage.setItem('pithagoras.setup', 'done'));
   await page.goto('/settings/general');
   const effort = page.getByRole('radiogroup', { name: 'Default effort' });
@@ -391,6 +399,24 @@ test('the assistant waits for what is stored before it saves a model', async ({ 
   await setup.getByRole('button', { name: 'Next' }).click();
   await expect.poll(() => api.saved()).toEqual({ provider: 'llama-swap', model: 'Plain', thinkingLevel: 'high' });
   expect(api.settingsSaves).toHaveLength(1);
+});
+
+test('a password the portal only keeps because it was in use is said in Settings, where the login is', async ({ page }) => {
+  await portal(page, { login: { shortPassword: true } });
+  await page.addInitScript(() => localStorage.setItem('pithagoras.setup', 'done'));
+  await page.goto('/settings/browser');
+  const signedIn = page.getByRole('dialog').locator('section', { hasText: 'Signed in' });
+  await expect(signedIn.getByRole('button', { name: 'Sign out' })).toBeVisible();
+  await expect(signedIn.getByRole('note')).toContainText('shorter than 8 characters');
+});
+
+test('a password of the right length says nothing about it', async ({ page }) => {
+  await portal(page, { login: {} });
+  await page.addInitScript(() => localStorage.setItem('pithagoras.setup', 'done'));
+  await page.goto('/settings/browser');
+  const signedIn = page.getByRole('dialog').locator('section', { hasText: 'Signed in' });
+  await expect(signedIn.getByRole('button', { name: 'Sign out' })).toBeVisible();
+  await expect(signedIn.getByRole('note')).toHaveCount(0);
 });
 
 test('About draws from what Settings already has', async ({ page }) => {
@@ -465,16 +491,44 @@ test('what a save did besides is said: a copy kept of a models.json whose commen
 });
 
 test("asking a saved provider's server again takes the names it gives now: a llama-swap alias once saved under its router's name", async ({ page }) => {
-  // Saved as Ornith 1.5; the server now lists it under no name of its own, as llama-swap's aliases are read.
-  const api = await portal(page, { probe: () => [{ id: 'Ornith' }, { id: 'Strata', name: 'Strata — Flash' }] });
+  // Saved as Model A; the server now lists it under no name of its own, as llama-swap's aliases are read.
+  const api = await portal(page, { probe: () => [{ id: 'model-a' }, { id: 'model-c', name: 'Model C — Flash' }] });
   await page.addInitScript(() => localStorage.setItem('pithagoras.setup', 'done'));
   await page.goto('/settings/models');
   const dialog = page.getByRole('dialog', { name: 'Settings' });
   await dialog.getByRole('button', { name: 'Edit llama-swap' }).click();
   await dialog.getByRole('button', { name: 'Ask again' }).click();
-  await expect(dialog.getByText('Ornith 1.5')).toHaveCount(0);
+  await expect(dialog.getByText('Model A')).toHaveCount(0);
   await dialog.getByRole('button', { name: 'Save', exact: true }).click();
   await expect.poll(() => api.providerSaves.length).toBe(1);
   const saved = (api.providerSaves[0].body as { models: { id: string; name?: string }[] }).models;
-  expect(saved.find((m) => m.id === 'Ornith')?.name).toBeUndefined();
+  expect(saved.find((m) => m.id === 'model-a')?.name).toBeUndefined();
+});
+
+test('Escape with a provider being added asks before Settings closes, and an untouched editor closes at once', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('pithagoras.setup', 'done'));
+  await portal(page, { probe: () => ['A'] });
+  await page.goto('/settings/models');
+  const dialog = page.getByRole('dialog', { name: 'Settings' });
+  await dialog.getByRole('button', { name: 'Add a provider' }).click();
+  await expect(dialog.getByLabel('Server address')).toBeVisible();
+  // Nothing typed: the preset's own address is not a draft.
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+
+  await page.goto('/settings/models');
+  await dialog.getByRole('button', { name: 'Add a provider' }).click();
+  await dialog.getByLabel('Server address').fill('http://gpu:9090/v1');
+  await page.keyboard.press('Escape');
+  const ask = page.getByRole('alertdialog', { name: 'Discard your changes?' });
+  await expect(ask).toBeVisible();
+  // Keep editing: the address is still there.
+  await ask.getByRole('button', { name: 'Cancel' }).click();
+  await expect(ask).toBeHidden();
+  await expect(dialog.getByLabel('Server address')).toHaveValue('http://gpu:9090/v1');
+  // A click beside the dialog asks the same.
+  await page.mouse.click(2, 2);
+  await expect(ask).toBeVisible();
+  await ask.getByRole('button', { name: 'Discard' }).click();
+  await expect(dialog).toBeHidden();
 });

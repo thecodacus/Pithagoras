@@ -3,6 +3,12 @@ import type { Item } from "./transcript";
 import { SHELL_TOOL } from "./tool-activity";
 
 import { msg, t } from "./i18n";
+/** What a subagent that gives no name is called: kept as the English, said where it is drawn. */
+const UNNAMED = msg("Subagent");
+
+/** A subagent's name as it is shown. */
+export const subagentName = (agent: { label: string }): string => (agent.label === UNNAMED ? t(UNNAMED) : agent.label);
+
 /**
  * The agents working beside the main one, as the chat shows them.
  *
@@ -13,12 +19,6 @@ import { msg, t } from "./i18n";
  * research tool, a delegate — is shown by what it reports: its text, and the
  * steps in its details where they look like steps.
  */
-/** What a subagent that gives no name is called: kept as the English, said where it is drawn. */
-const UNNAMED = msg("Subagent");
-
-/** A subagent's name as it is shown. */
-export const subagentName = (agent: { label: string }): string => (agent.label === UNNAMED ? t(UNNAMED) : agent.label);
-
 export interface Subagent {
   /** The protocol's id, or `tool:<call id>`. */
   id: string;

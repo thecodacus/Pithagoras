@@ -1,4 +1,5 @@
-import { test, expect, type Locator, type Page, type Route } from '@playwright/test';
+import { type Locator, type Page } from '@playwright/test';
+import { test, expect, mockPortal, reply, DONE } from './portal-mock';
 
 /**
  * The Images page (web/src/components/ImagesPage.tsx) over a portal that is made up: the pictures
@@ -61,10 +62,14 @@ const svg = (id: string, w = 800, h = 600) => {
 };
 
 /** An ImagesFeature as the portal tells of it. */
-const feature = (over: Record<string, unknown> = {}) => ({
-  enabled: true, baseUrl: 'https://images.example.com/v1', model: 'image-model', size: '1024x1024', keySet: true,
-  editEnabled: true, editBaseUrl: '', editModel: '', editMultiple: false, timeoutSeconds: 300, editKeySet: false, editReady: true, sdExtras: false, ...over,
-});
+const feature = (over: Record<string, unknown> = {}) => {
+  const f = {
+    enabled: true, baseUrl: 'https://images.example.com/v1', model: 'image-model', size: '1024x1024', keySet: true,
+    editEnabled: true, editBaseUrl: '', editModel: '', editMultiple: false, timeoutSeconds: 300, editKeySet: false, editReady: true, sdExtras: false, ...over,
+  };
+  // The portal says whether pictures can be made, as it says whether they can be changed.
+  return { ready: f.enabled && f.baseUrl !== '', ...f };
+};
 
 async function portal(page: Page, { pictures = [] as Pic[], images = feature(), flagOn = true, jobs = [] as Job[], failList = false } = {}) {
   const pics = [...pictures];
@@ -72,22 +77,14 @@ async function portal(page: Page, { pictures = [] as Pic[], images = feature(), 
   const sorted = () => [...pics].sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1));
   const job = (over: Partial<Job>): Job => ({ id: `j${state.jobs.length + 1}`.padEnd(12, '0'), kind: 'generate', state: 'running', prompt: '', startedAt: Date.now(), ...over });
 
-  await page.route('**/api/**', async (route: Route) => {
-    const url = new URL(route.request().url());
-    const p = url.pathname;
-    const method = route.request().method();
-    let body: unknown = {};
-    if (p === '/api/auth/status') body = { authed: true, authRequired: false };
-    else if (p === '/api/sessions') body = { sessions: [], executor: 'host' };
-    else if (p === '/api/projects') body = { root: '/w', home: '/h', projects: [] };
-    else if (p === '/api/features/flags') body = { subagent: { enabled: false }, understory: { enabled: false }, images: { enabled: flagOn } };
-    else if (p === '/api/features/images') body = { images };
-    else if (p === '/api/browser') body = { running: false, configured: false, routines: [] };
-    else if (p === '/api/images' && method === 'GET') {
+  await mockPortal(page, async ({ path: p, method, url, json, route }) => {
+    if (p === '/api/features/flags') return { subagent: { enabled: false }, understory: { enabled: false }, images: { enabled: flagOn } };
+    if (p === '/api/features/images') return { images };
+    if (p === '/api/images' && method === 'GET') {
       state.listed.push(url.search);
-      if (failList) return route.fulfill({ status: 500, json: { error: 'The gallery could not be read' } });
+      if (failList) return reply(500, { error: 'The gallery could not be read' });
       const ids = url.searchParams.get('ids');
-      if (ids) body = { pictures: ids.split(',').map((id) => pics.find((x) => x.id === id)).filter(Boolean) };
+      if (ids) return { pictures: ids.split(',').map((id) => pics.find((x) => x.id === id)).filter(Boolean) };
       else {
         const origin = url.searchParams.get('origin');
         const kind = url.searchParams.get('kind');
@@ -101,51 +98,52 @@ async function portal(page: Page, { pictures = [] as Pic[], images = feature(), 
         }
         const pageOf = all.slice(0, limit);
         const last = pageOf[pageOf.length - 1];
-        body = { pictures: pageOf, next: all.length > limit && last ? `${last.createdAt}:${last.id}` : null, total, pageBytes: pics.filter((x) => x.origin === 'page').reduce((sum, x) => sum + x.bytes, 0) };
+        return { pictures: pageOf, next: all.length > limit && last ? `${last.createdAt}:${last.id}` : null, total, pageBytes: pics.filter((x) => x.origin === 'page').reduce((sum, x) => sum + x.bytes, 0) };
       }
-    } else if (p === '/api/images/jobs' && method === 'GET') body = { jobs: state.jobs, limit: state.limit };
-    else if (p.startsWith('/api/images/jobs/') && method === 'DELETE') {
+    }
+    if (p === '/api/images/jobs' && method === 'GET') return { jobs: state.jobs, limit: state.limit };
+    if (p.startsWith('/api/images/jobs/') && method === 'DELETE') {
       const id = p.split('/').pop()!;
       state.stopped.push(id);
       state.jobs = state.jobs.filter((j) => j.id !== id);
-      body = { ok: true };
-    } else if (p === '/api/images/generate' && method === 'POST') {
-      const sent = route.request().postDataJSON();
+      return { ok: true };
+    }
+    if (p === '/api/images/generate' && method === 'POST') {
+      const sent = json();
       state.generated.push(sent);
-      if (sent.prompt === 'refuse me') return route.fulfill({ status: 429, json: { error: '4 pictures are being made already: wait for one to finish, or stop one' } });
+      if (sent.prompt === 'refuse me') return reply(429, { error: '4 pictures are being made already: wait for one to finish, or stop one' });
       const made = Array.from({ length: sent.count ?? 1 }, () => job({ prompt: sent.prompt, ...(sent.size ? { size: sent.size } : {}) }));
       state.jobs.unshift(...made);
-      return route.fulfill({ status: 202, json: { jobs: made } });
-    } else if (p === '/api/images/edit' && method === 'POST') {
-      const sent = route.request().postDataJSON();
+      return reply(202, { jobs: made });
+    }
+    if (p === '/api/images/edit' && method === 'POST') {
+      const sent = json();
       state.edited.push(sent);
       const made = Array.from({ length: sent.count ?? 1 }, () => job({ kind: 'edit', prompt: sent.prompt, from: sent.sources[0] }));
       state.jobs.unshift(...made);
-      return route.fulfill({ status: 202, json: { jobs: made } });
-    } else if (p === '/api/images/upload' && method === 'POST') {
+      return reply(202, { jobs: made });
+    }
+    if (p === '/api/images/upload' && method === 'POST') {
       const made = pic({ kind: 'uploaded', prompt: url.searchParams.get('name') ?? '' });
       state.uploads.push({ name: url.searchParams.get('name'), type: route.request().headers()['content-type'], size: route.request().postDataBuffer()?.length ?? 0 });
       pics.push(made);
-      return route.fulfill({ status: 201, json: { picture: made } });
-    } else if (p === '/api/images/delete' && method === 'POST') {
-      const { ids } = route.request().postDataJSON();
+      return reply(201, { picture: made });
+    }
+    if (p === '/api/images/delete' && method === 'POST') {
+      const { ids } = json();
       // As the portal says it: the whole request is refused when it names more.
-      if (ids.length > 200) return route.fulfill({ status: 400, json: { error: 'At most 200 pictures at a time' } });
+      if (ids.length > 200) return reply(400, { error: 'At most 200 pictures at a time' });
       state.deleted.push(ids);
       for (const id of ids) pics.splice(pics.findIndex((x) => x.id === id), 1);
-      body = { deleted: ids, failed: [] };
-    } else if (/^\/api\/images\/[0-9a-f]{12}\/file$/.test(p)) {
+      return { deleted: ids, failed: [] };
+    }
+    if (/^\/api\/images\/[0-9a-f]{12}\/file$/.test(p)) {
       const id = p.split('/')[3];
       state.files.push(id);
-      return route.fulfill({ body: svg(id), contentType: 'image/svg+xml' });
+      await route.fulfill({ body: svg(id), contentType: 'image/svg+xml' });
+      return DONE;
     }
-    await route.fulfill({ json: body });
-  });
-  await page.addInitScript(() => {
-    localStorage.setItem('pithagoras.setup', 'done');
-    (window as any).EventSource = class { onmessage: any; onopen: any; onerror: any; addEventListener() {} close() {} };
-  });
-
+  }, { settings: true });
   return {
     state,
     pics,
@@ -252,6 +250,26 @@ test('Images in the sidebar opens the page: the form first, the gallery under it
   await expect(page.getByText('2', { exact: true }).first()).toBeVisible();
 });
 
+test('the portal is asked to look through its folders when the page opens and with Refresh, and not on each tick of the timer', async ({ page }) => {
+  await page.clock.install();
+  const p = await portal(page, { pictures: [pic({ prompt: 'One', age: 5 })] });
+  await page.goto('/images');
+  await expect(tile(page, 'One')).toBeVisible();
+  const lists = () => p.state.listed.filter((q) => !q.includes('ids='));
+  // (The dev build is in strict mode, which opens the page twice.)
+  const opened = lists().length;
+  expect(lists().every((q) => q === '?limit=48')).toBe(true);
+  // The half minute: asked again for the top of what it has, which the portal need not look through the folders for.
+  await page.clock.runFor(31_000);
+  await expect.poll(() => lists().length).toBeGreaterThan(opened);
+  expect(lists().slice(opened).every((q) => q.includes('again=1'))).toBe(true);
+  // Refresh is asking to look.
+  const before = lists().length;
+  await page.getByRole('button', { name: 'Refresh' }).click();
+  await expect.poll(() => lists().length).toBe(before + 1);
+  expect(lists().at(-1)).toBe('?limit=48');
+});
+
 test('with nothing made yet the gallery says so, and a gallery that cannot be read says that', async ({ page }) => {
   await portal(page);
   await page.goto('/images');
@@ -313,6 +331,15 @@ test('with only changing set up the page opens in Edit: no form to make a pictur
   await tile(page, 'Make it night').click();
   await expect(viewer(page).getByRole('button', { name: 'Run again' })).toBeVisible();
   await page.keyboard.press('Escape');
+  await tile(page, 'A fox').click();
+  await expect(viewer(page).getByRole('button', { name: 'Run again' })).toHaveCount(0);
+});
+
+test('whether pictures can be made is what the portal says, not worked out again from the address', async ({ page }) => {
+  // Switched on and with an address, but the portal says that it is not ready: the page believes it, in the form and in the viewer.
+  await portal(page, { pictures: [pic({ prompt: 'A fox' })], images: feature({ ready: false }) });
+  await page.goto('/images');
+  await expect(maker(page).getByRole('radio', { name: /^Generate/ })).toContainText('not set up');
   await tile(page, 'A fox').click();
   await expect(viewer(page).getByRole('button', { name: 'Run again' })).toHaveCount(0);
 });
@@ -1783,6 +1810,29 @@ test('the mask belongs to the first picture, which says so, and moving another f
   await page.getByRole('button', { name: 'Change the picture' }).click();
   await expect.poll(() => p.state.edited.length).toBe(1);
   expect(p.state.edited[0]).toEqual({ prompt: 'Beta, as Alpha', sources: [b.id, a.id], count: 1 });
+});
+
+test('the mask painter is not reused for another first picture: it would keep the strokes and a failed load of the one before', async ({ page }) => {
+  const a = pic({ prompt: 'Alpha', age: 2 });
+  const b = pic({ prompt: 'Beta', age: 1 });
+  await portal(page, { pictures: [a, b], images: feature({ editMultiple: true }) });
+  await page.goto('/images');
+  await pick(page, 'Alpha', 'Beta');
+  await page.getByRole('button', { name: 'Only change a part: paint a mask' }).click();
+  await expect(page.getByRole('img', { name: 'The picture to change' })).toHaveAttribute('src', `/api/images/${a.id}/file`);
+  // Mask is switched off again as soon as the first picture changes, so the one render in between is where a painter that is kept shows: its picture is another's, under the old state.
+  await page.evaluate(() => {
+    (window as any).reused = 0;
+    new MutationObserver((records) => {
+      for (const r of records) {
+        const img = r.target as HTMLElement;
+        if (img.getAttribute('alt') === 'The picture to change' && r.oldValue !== img.getAttribute('src')) (window as any).reused++;
+      }
+    }).observe(document.body, { attributes: true, subtree: true, attributeFilter: ['src'], attributeOldValue: true });
+  });
+  await strip(page).getByRole('button', { name: 'Move Beta earlier' }).click();
+  await expect.poll(() => names(page)).toEqual(['Beta', 'Alpha']);
+  expect(await page.evaluate(() => (window as any).reused)).toBe(0);
 });
 
 test('a picture of the row opens larger in the viewer, which steps through them and gives focus back', async ({ page }) => {

@@ -1,40 +1,23 @@
-import { test, before, after } from "node:test";
+import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
 import path from "node:path";
-import { ENTRY, freePort, runToEnd, serverEnv, startServer, testHome } from "./server-harness.mjs";
+import { fakeModel } from "./fake-model.mjs";
+import { ENTRY, freePort, inProcessHome, runToEnd, serverEnv, startServer, testHome } from "./server-harness.mjs";
 
 /**
  * The server started a second time: by an extension that starts pi as pi's
  * examples do, with this runtime and `process.argv[1]`, or as a second server,
  * by hand or by the agent in a chat.
  */
-const home = testHome("pithagoras-second-");
+const home = inProcessHome("pithagoras-second-");
 const agentDir = path.join(home, "agent");
 
 /** A model that answers every request with the same words, streamed. */
-const model = createServer((req, res) => {
-  req.resume();
-  req.on("end", () => {
-    res.writeHead(200, { "Content-Type": "text/event-stream" });
-    const chunk = (delta, finish = null) =>
-      `data: ${JSON.stringify({ id: "x", object: "chat.completion.chunk", created: 0, model: "m", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
-    res.end(chunk({ role: "assistant", content: "Found it in the archive." }) + chunk({}, "stop") + "data: [DONE]\n\n");
-  });
-});
-model.listen(0, "127.0.0.1");
-await once(model, "listening");
-after(() => model.close());
-writeFileSync(path.join(agentDir, "models.json"), JSON.stringify({
-  providers: {
-    fake: {
-      baseUrl: `http://127.0.0.1:${model.address().port}/v1`, api: "openai-completions", apiKey: "none",
-      models: [{ id: "m", name: "M", reasoning: false, input: ["text"], contextWindow: 10000, maxTokens: 100 }],
-    },
-  },
-}));
+const model = await fakeModel(() => "Found it in the archive.");
+writeFileSync(path.join(agentDir, "models.json"), JSON.stringify(model.models()));
+
 writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ defaultProvider: "fake", defaultModel: "m" }));
 
 // An extension saying what pi is to extensions in the server: what the
@@ -55,15 +38,16 @@ export default function () {
 }
 `);
 
-const port = await freePort();
+let port = await freePort();
 const env = serverEnv(home, port);
 
-process.env.DATA_DIR = home;
 const db = await import("../dist/db.js");
 
 let base;
 before(async () => {
-  ({ base } = await startServer(env));
+  ({ base, port } = await startServer(env));
+  // The port it listens on, which is another than it was given where that one was taken meanwhile.
+  env.PORT = String(port);
 });
 
 const newChat = async () =>

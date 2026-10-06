@@ -1,4 +1,5 @@
-import { test, expect, type Page } from '@playwright/test';
+import { type Page } from '@playwright/test';
+import { test, expect, mockPortal, reply } from './portal-mock';
 
 const at = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString();
 const chat = (id: string, title: string, workspace: string, minutesAgo: number, extra: Record<string, unknown> = {}) =>
@@ -15,30 +16,20 @@ async function portal(page: Page, sessions = [
   chat('p1', 'Pinned chat', '/w/notes', 60, { pinned: true }),
 ], opts: { projects?: string[]; projectsHeld?: Promise<void> } = {}) {
   const sent: { method: string; path: string; body: any }[] = [];
-  await page.route('**/api/**', async (route) => {
-    const url = new URL(route.request().url());
-    const p = url.pathname;
-    const method = route.request().method();
-    const body = route.request().postDataJSON?.() ?? null;
+  await mockPortal(page, async ({ path: p, method, json }) => {
+    const body = json();
     if (method !== 'GET') sent.push({ method, path: p, body });
-    let reply: unknown = {};
-    if (p === '/api/auth/status') reply = { authed: true, authRequired: false };
-    else if (p === '/api/sessions' && method === 'GET') reply = { sessions, executor: 'host' };
-    else if (p === '/api/sessions' && method === 'POST') reply = chat('new', 'New chat', body?.workspace ?? HOME, 0);
-    else if (p === '/api/projects') {
+    if (p === '/api/sessions' && method === 'GET') return { sessions, executor: 'host' };
+    if (p === '/api/sessions' && method === 'POST') return chat('new', 'New chat', body?.workspace ?? HOME, 0);
+    if (p === '/api/projects') {
       await opts.projectsHeld;
-      reply = {
+      return {
       root: '/w', home: HOME,
       projects: (opts.projects ?? ['site', 'notes', 'empty']).map((name) => ({ name, path: `/w/${name}`, isGit: false, hasInstructions: false, sessions: 0, lastActive: null })),
       };
     }
-    else if (p === '/api/models') reply = { models: [{ provider: 'x', id: 'm', name: 'M', reasoning: false }], providers: {} };
-    await route.fulfill({ json: reply });
-  });
-  await page.addInitScript(() => {
-    (window as any).EventSource = class { onmessage: any; onopen: any; onerror: any; addEventListener() {} close() {} };
-    localStorage.setItem('pithagoras.setup', 'done');
-  });
+    if (p === '/api/models') return { models: [{ provider: 'x', id: 'm', name: 'M', reasoning: false }], providers: {} };
+  }, { settings: true });
   return Object.assign(sent, { sessions });
 }
 
@@ -521,9 +512,10 @@ test('a folder counts, and shows running, all its chats in the sidebar as on the
   await page.goto('/sessions');
   const side = sidebar(page);
   const main = page.getByRole('main');
-  const count = (scope: ReturnType<Page['locator']>) => scope.locator('[data-folder="project:notes"] [aria-label$=" chats"], [data-folder="project:notes"] [aria-label$=" chat"]').first();
-  await expect(count(side)).toHaveText('2');
-  await expect(count(main)).toHaveText('2');
+  // The number is for the eye and its noun for a screen reader: the count has no role to carry a label.
+  const count = (scope: ReturnType<Page['locator']>) => scope.locator('[data-folder="project:notes"]').getByText(/^\d+ chats?$/).first();
+  await expect(count(side)).toHaveText('2 chats');
+  await expect(count(main)).toHaveText('2 chats');
   // Shut, a folder shows that something in it runs.
   await expect(folder(side, 'notes')).toHaveAttribute('aria-expanded', 'false');
   await expect(side.locator('[data-folder="project:notes"] > div').first().locator('.status-working')).toHaveCount(1);

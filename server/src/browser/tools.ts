@@ -1,6 +1,7 @@
 import { Type } from "typebox";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { BROWSER_CDP } from "../api/mcp.js";
+import { bareRef, REF_TOKEN } from "./ref.js";
 import { pointAt, pointTo, press, typing } from "./cursor.js";
 import { diffViews, findNodes, findRef, pinned, renderView, sectionText, textPage, type AxChild, type View, type Viewport } from "./view.js";
 
@@ -47,10 +48,22 @@ interface Seen {
 }
 const seen = new Map<string, Seen>();
 
+/**
+ * A chat that is gone, or a clean routine run that is over: what it was shown,
+ * and the tab it held, are not needed again. Says whether there was any. Not when a chat's pi is merely
+ * stopped for being idle — it goes on in its own tab when it is started again,
+ * and without the record it would be handed whichever tab is newest.
+ */
+export function forgetBrowserSession(sessionId: string): boolean {
+  return seen.delete(sessionId);
+}
+
 /** The tab a chat works in: the one it last used, else the most recent. */
 async function pageFor(sessionId: string): Promise<Page> {
   const known = seen.get(sessionId);
   if (known && !known.page.isClosed()) return known.page;
+  // A tab that was closed is not kept, whether or not the browser can be reached for another.
+  seen.delete(sessionId);
   const b = await connect();
   const context = b.contexts()[0] ?? (await b.newContext());
   const pages = context.pages();
@@ -93,8 +106,8 @@ async function settle(page: Page) {
 
 /** A ref as the model may write it — `e12`, `[e12]`, `ref=e12` — reduced to the ref. */
 export function cleanRef(raw: unknown): string {
-  const ref = String(raw ?? "").trim().replace(/^\[|\]$/g, "").replace(/^(?:aria-)?ref\s*=\s*/i, "").trim();
-  if (!/^(?:f\d+)?e\d+$/.test(ref)) throw new Error(`"${raw}" is not a ref. Use one from the last snapshot, like e12.`);
+  const ref = bareRef(String(raw ?? ""));
+  if (!REF_TOKEN.test(ref)) throw new Error(`"${raw}" is not a ref. Use one from the last snapshot, like e12.`);
   return ref;
 }
 
@@ -119,14 +132,22 @@ async function act(sessionId: string, what: string, fn: (page: Page) => Promise<
     const { view, viewport } = await look(page);
     before = { page, view, url: page.url(), scrollY: viewport.scrollY };
   }
-  const opened = page.context().waitForEvent("page", { timeout: 1500 }).catch(() => null);
-  await fn(page);
-  const tab = await opened;
+  // Listening while the action and the settling run, and looking afterwards:
+  // waiting a fixed time for a tab that almost never comes costs every action.
+  let tab = undefined as Page | undefined;
+  const context = page.context();
+  const onPage = (p: Page) => void (tab ??= p);
+  context.on("page", onPage);
+  try {
+    await fn(page);
+    await settle(page);
+  } finally {
+    context.off("page", onPage);
+  }
   if (tab) {
     await settle(tab);
     return show(sessionId, tab, {}, `${what}: it opened a new tab, which is where you are now.`);
   }
-  await settle(page);
   if (page.url() !== before.url) return show(sessionId, page, {}, `${what}: the page is now ${page.url()}.`);
   const { view, viewport } = await look(page);
   const changes = diffViews(before.view!, view);

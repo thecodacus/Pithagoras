@@ -1,4 +1,5 @@
-import { test, expect, type Page } from '@playwright/test';
+import { type Page } from '@playwright/test';
+import { test, expect, mockPortal } from './portal-mock';
 
 const session = { id: 'demo', title: 'Typing a command', workspace: '/workspaces/demo', status: 'idle', kind: 'task', pinned: false };
 const other = { id: 'other', title: 'Another chat', workspace: '/workspaces/demo', status: 'idle', kind: 'task', pinned: false };
@@ -16,50 +17,25 @@ async function portal(page: Page, opts: { listAfter?: Promise<void> } = {}) {
   /** Whether a command that did not exist before is now among them: what a run can add. */
   const added = { fresh: false };
   const chats = [session, other];
-  await page.route('**/api/**', async (route) => {
-    const p = new URL(route.request().url()).pathname;
-    let body: unknown = chats.find((c) => p.startsWith(`/api/sessions/${c.id}`)) ?? session;
-    if (p === '/api/auth/status') body = { authed: true, authRequired: false };
-    else if (p === '/api/sessions') body = { sessions: chats, executor: 'host' };
-    else if (p.endsWith('/commands')) {
+  await mockPortal(page, async ({ path: p, json }) => {
+    if (p === '/api/sessions') return { sessions: chats, executor: 'host' };
+    const chat = chats.find((c) => p === `/api/sessions/${c.id}`);
+    if (chat) return chat;
+    if (p.endsWith('/commands')) {
       await opts.listAfter;
-      body = { commands: added.fresh ? [...commands, { name: 'skill:fresh', description: 'Written in the last run', source: 'skill' }] : commands };
-    } else if (p.endsWith('/prompt')) {
-      const sent = route.request().postDataJSON();
+      return { commands: added.fresh ? [...commands, { name: 'skill:fresh', description: 'Written in the last run', source: 'skill' }] : commands };
+    }
+    if (p.endsWith('/prompt')) {
+      const sent = json();
       prompts.push(sent.message);
       images.push(sent.images);
-      body = { ok: true };
-    } else if (p.endsWith('/config')) body = { live: false, state: { model: { id: 'test', name: 'Test', provider: 'local' }, thinkingLevel: 'medium' }, stats: null, thinking: { levels: [] }, models: { models: [] } };
-    else if (p === '/api/settings') body = { settings: {}, stored: {}, defaults: {}, piSettingsPath: '/a/settings.json', compaction: { keepRecentTokens: 20000 }, compactionDefaults: { keepRecentTokens: 20000 }, contextDefault: null, executor: 'host', workspaceRoot: '/w' };
-    else if (p === '/api/models') body = { models: [], providers: {} };
-    else if (p === '/api/routines/report-targets') body = { targets: [], default: null };
-    else if (p === '/api/extensions') body = { settingsPath: '/a/settings.json', extensions: [] };
-    else if (p === '/api/features/flags') body = { subagent: false, understory: false };
-    else if (p === '/api/workspaces') body = { root: '/workspaces', workspaces: [] };
-    else if (p === '/api/browser') body = { running: false, sessions: [], routines: [] };
-    else if (p === '/api/voice') body = { enabled: false };
-    else if (p.endsWith('/canvases')) body = [];
-    await route.fulfill({ json: body });
-  });
-  await page.addInitScript(() => {
-    // A stream the test can send events down: `emit` is the server's.
-    const streams: any[] = ((window as any).streams = []);
-    (window as any).EventSource = class {
-      closed = false; onmessage: any; onopen: any; onerror: any;
-      listeners: Record<string, ((e: any) => void)[]> = {};
-      constructor() { streams.push(this); setTimeout(() => this.onopen?.(), 0); }
-      addEventListener(name: string, fn: (e: any) => void) { (this.listeners[name] ??= []).push(fn); }
-      close() { this.closed = true; }
-      emit(name: string, data: unknown) {
-        const e = { data: JSON.stringify(data) };
-        if (name === 'message') this.onmessage?.(e);
-        else (this.listeners[name] ?? []).forEach((fn) => fn(e));
-      }
-    };
-    localStorage.setItem('sidebarCollapsed', 'true');
-    // No model in this portal: the setup assistant would otherwise open over the chat.
-    localStorage.setItem('pithagoras.setup', 'skipped');
-  });
+      return { ok: true };
+    }
+    if (p.endsWith('/config')) return { live: false, state: { model: { id: 'test', name: 'Test', provider: 'local' }, thinkingLevel: 'medium' }, stats: null, thinking: { levels: [] }, models: { models: [] } };
+    if (p.endsWith('/canvases')) return [];
+  }, { streams: 'open', setup: 'skipped', settings: true });
+  // Out of the way, so the sidebar's chats are not what the test reaches for.
+  await page.addInitScript(() => localStorage.setItem('sidebarCollapsed', 'true'));
   return { prompts, images, added };
 }
 
@@ -282,6 +258,8 @@ test.describe('with another character', () => {
       stream.emit('caught-up', {});
       stream.emit('message', { seq: 1, type: 'turn_end', at: Date.now(), payload: {} });
     });
+    // Events are applied a frame at a time, and the run is over for the page once its end is drawn: a person pastes later than that, a script need not.
+    await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
     // Pasted whole: never typed as a bare name, so nothing has asked for the new list.
     await say(page, '!skill:fresh go');
     await expect.poll(() => prompts).toEqual(['/skill:fresh go']);

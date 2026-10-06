@@ -1,27 +1,21 @@
 import { LuMenu, LuX } from "react-icons/lu";
-import { appendLiveEvent, resetLiveEvents } from "./live-events";
+import { appendLiveEvents, resetLiveEvents } from "./live-events";
 import { fillFrom } from "./editor-fills";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Navigate, Route, Routes, useNavigate, useParams } from "react-router-dom";
-import { api, SIGNED_OUT, type PortalEvent, type Session, type SessionStatus } from "./api";
-import { ErrorBoundary } from "./components/ErrorBoundary";
+import { api, ApiError, SIGNED_OUT, type PortalEvent, type Session, type SessionStatus } from "./api";
+import { DialogFailed, ErrorBoundary } from "./components/ErrorBoundary";
 import { Sidebar } from "./components/Sidebar";
 import { Chat } from "./components/Chat";
 import { Login } from "./components/Login";
-import { ConfigModal, prefetchSettings } from "./components/ConfigModal";
-import { SetupAssistant, setupDismissed } from "./components/SetupAssistant";
-import { load as loadCached } from "./settings-cache";
+import { isTab, type Tab } from "./settings-tabs";
+import { setupDismissed } from "./setup-state";
+import { load as loadCached, prefetchSettings } from "./settings-cache";
 import { ExtensionDialog, type UiRequest } from "./components/ExtensionDialog";
-import { SessionsPage } from "./components/SessionsPage";
-import { ProjectsPage } from "./components/ProjectsPage";
-import { AgentPage } from "./components/AgentPage";
-import { RoutinesPage } from "./components/RoutinesPage";
-import { AuditPage } from "./components/AuditPanel";
-import { BrowserPage } from "./components/BrowserPage";
-import { MemoryPage } from "./components/MemoryPage";
-import { ImagesPage } from "./components/ImagesPage";
+import { lazyComponent } from "./lazy";
 import { ThemeSwitcher } from "./components/ThemeSwitcher";
 import { ConfirmHost } from "./components/ConfirmDialog";
+import { ErrorBanner, ghostCls } from "./components/SettingsUi";
 import { pollWhileVisible, reconnectDelay } from "./poll";
 import { canvasConnection, canvasMessage } from "./canvas-feed";
 import { APP_NAME, finishedRuns, tabTitle } from "./attention";
@@ -29,30 +23,78 @@ import { notifyIfAway, notifyState } from "./notify";
 import { guardStrayDrops } from "./drop-guard";
 import { usePlaces } from "./use-session-folders";
 import { fancy, keep, swapPages, type Leave } from "./motion";
+import { reconcile } from "./reconcile";
+import { useStable } from "./use-stable";
+import { useDialogFocus } from "./dialog-focus";
 import { t, useLanguage } from "./i18n";
 
+// What the first draw needs is the shell, the chat and the sign-in page. The other pages, and the dialogs that
+// open over them, are fetched when they are first opened, so that they are not in the file everyone waits for.
+const SessionsPage = lazyComponent(() => import("./components/SessionsPage"), "SessionsPage");
+const ProjectsPage = lazyComponent(() => import("./components/ProjectsPage"), "ProjectsPage");
+const AgentPage = lazyComponent(() => import("./components/AgentPage"), "AgentPage");
+const RoutinesPage = lazyComponent(() => import("./components/RoutinesPage"), "RoutinesPage");
+const AuditPage = lazyComponent(() => import("./components/AuditPanel"), "AuditPage");
+const BrowserPage = lazyComponent(() => import("./components/BrowserPage"), "BrowserPage");
+const MemoryPage = lazyComponent(() => import("./components/MemoryPage"), "MemoryPage");
+const ImagesPage = lazyComponent(() => import("./components/ImagesPage"), "ImagesPage");
+const ConfigModal = lazyComponent(() => import("./components/ConfigModal"), "ConfigModal");
+const SetupAssistant = lazyComponent(() => import("./components/SetupAssistant"), "SetupAssistant");
+
 // Legacy routes ("session", "global") still resolve — old links stay valid.
-type Tab = "general" | "extensions" | "advanced";
 const LEGACY_TABS: Record<string, Tab> = { session: "general", global: "general" };
 
 export default function App() {
   // Everything under here is drawn again in a language chosen (see i18n.ts).
   useLanguage();
   const [authed, setAuthed] = useState<boolean | null>(null);
+  /** The portal did not answer when asked who is signed in: not the same as nobody being. */
+  const [unreachable, setUnreachable] = useState(false);
+  const failed = useRef(0);
+  const retry = useRef<ReturnType<typeof setTimeout>>();
+  const check = useCallback(() => {
+    clearTimeout(retry.current);
+    api.authStatus().then(
+      (s) => {
+        failed.current = 0;
+        setUnreachable(false);
+        setAuthed(s.authed);
+      },
+      (e) => {
+        // Only the portal saying no is a login that is gone. One that is restarting
+        // answers 502 or not at all, and the cookie in the browser is still good: the
+        // password form would be asking for what is not missing.
+        if (e instanceof ApiError && e.status === 401) return setAuthed(false);
+        setUnreachable(true);
+        retry.current = setTimeout(check, reconnectDelay(++failed.current));
+      },
+    );
+  }, []);
 
   useEffect(() => {
-    api
-      .authStatus()
-      .then((s) => setAuthed(s.authed))
-      .catch(() => setAuthed(false));
+    check();
     const signedOut = () => setAuthed(false);
     window.addEventListener(SIGNED_OUT, signedOut);
-    return () => window.removeEventListener(SIGNED_OUT, signedOut);
-  }, []);
+    return () => {
+      clearTimeout(retry.current);
+      window.removeEventListener(SIGNED_OUT, signedOut);
+    };
+  }, [check]);
 
   // A file dropped just beside the message box must not replace the portal.
   useEffect(() => guardStrayDrops(), []);
 
+  if (authed === null && unreachable) {
+    return (
+      <div role="alert" className="flex h-screen flex-col items-center justify-center gap-2 px-6 text-center">
+        <p className="text-sm text-fg-muted">{t("Cannot reach the portal")}</p>
+        <p className="max-w-xs text-xs text-fg-faint">{t("It may be restarting. This page tries again by itself.")}</p>
+        <button type="button" onClick={check} className={`mt-2 ${ghostCls}`}>
+          {t("Try again")}
+        </button>
+      </div>
+    );
+  }
   if (authed === null) {
     return (
       <div className="flex h-screen items-center justify-center text-sm text-fg-subtle">{t("Loading…")}</div>
@@ -111,6 +153,15 @@ function Shell({
   const navigate = useNavigate();
   const [mobileNav, setMobileNav] = useState(false);
   useEffect(() => { setMobileNav(false); }, [sessionId, view, settings]);
+  // The drawer covers the page and keeps the keyboard; widened to a window with the sidebar in place, it is only the sidebar.
+  const drawer = useDialogFocus<HTMLDivElement>(mobileNav);
+  useEffect(() => {
+    if (!mobileNav) return;
+    const wide = window.matchMedia("(min-width: 768px)");
+    const onChange = () => wide.matches && setMobileNav(false);
+    wide.addEventListener("change", onChange);
+    return () => wide.removeEventListener("change", onChange);
+  }, [mobileNav]);
 
   // A moment after the portal has drawn: fetch what Settings opens on, and
   // offer the setup assistant while there is no model to talk to.
@@ -120,6 +171,8 @@ function Shell({
       if (setupAsked) return;
       setupAsked = true;
       prefetchSettings();
+      // The dialog itself too, so that opening it is not a wait for its file.
+      void import("./components/ConfigModal");
       if (setupDismissed()) return;
       loadCached("models", api.allModels, 30_000).then((r) => r.models.length === 0 && setSetup(true), () => {});
     }, 1200);
@@ -177,6 +230,8 @@ function Shell({
   const esRef = useRef<EventSource | null>(null);
   /** Connection attempts to the open conversation that have failed in a row. */
   const [failures, setFailures] = useState(0);
+  /** The chat the portal says it has none of: deleted, say, on another device, while this one still had it open. */
+  const [missing, setMissing] = useState<string | null>(null);
 
   /**
    * Whether the chats have been asked for yet, and have come or failed to: the
@@ -186,36 +241,27 @@ function Shell({
   const [sessionsAsked, setSessionsAsked] = useState(false);
   const { places, reload: reloadPlaces } = usePlaces(sessions, sessionsAsked);
 
+  const refreshSessions = useCallback(async () => {
+    const r = await api.sessions();
+    // Kept as it was when it says the same: a list asked for every few seconds is
+    // mostly unchanged, and a new array is a draw of the portal for nothing.
+    setSessions((prev) => reconcile(prev, r.sessions));
+    setSessionsAsked(true);
+    setExecutor(r.executor);
+    // A list that came is the end of the outage the first one reported.
+    setError(null);
+    return r.sessions;
+  }, []);
+
   /** A chat started in `workspace`, or in Home without one, and opened. */
-  const startChat = async (workspace?: string) => {
+  const startChat = useStable(async (workspace?: string) => {
     const s = await api.createSession(workspace);
     await refreshSessions();
     setMobileNav(false);
     navigate(`/s/${s.id}`);
-  };
-
-  const refreshSessions = useCallback(async () => {
-    const r = await api.sessions();
-    setSessions(r.sessions);
-    setSessionsAsked(true);
-    setExecutor(r.executor);
-    return r.sessions;
-  }, []);
+  });
 
   useEffect(() => {
-    refreshSessions()
-      .then((list) => {
-        // Landing on "/" opens the most recent session — but only "/". The
-        // Sessions and Agents pages have no sessionId either, and without the
-        // view check they were redirected away the moment they loaded.
-        if (!sessionId && !settings && view === "chat" && list[0]) {
-          navigate(`/s/${list[0].id}`, { replace: true });
-        }
-      })
-      .catch((e) => {
-        setSessionsAsked(true);
-        setError(String(e));
-      });
     api
       .browser()
       // Whether one is wired up, not whether anyone has been given it: the
@@ -224,8 +270,28 @@ function Shell({
       // keep the nav after the add-on was removed.
       .then((b) => setHasBrowser(b.running || b.configured || b.routines.length > 0))
       .catch(() => setHasBrowser(false));
+  }, []);
+
+  // Not tied to where the page is: going from chat to chat is no reason to ask
+  // for the list again, nor to start its poll over.
+  useEffect(() => {
+    refreshSessions().catch((e) => {
+      setSessionsAsked(true);
+      setError((e as Error).message);
+    });
     return pollWhileVisible(() => refreshSessions().catch(() => {}), 5000);
-  }, [refreshSessions, sessionId, settings, view, navigate]);
+  }, [refreshSessions]);
+
+  // Landing on "/" opens the most recent session — but only "/". The Sessions
+  // and Agents pages have no sessionId either, and without the view check they
+  // were redirected away the moment they loaded.
+  const latestSessions = useRef(sessions);
+  latestSessions.current = sessions;
+  useEffect(() => {
+    if (!sessionsAsked || sessionId || settings || view !== "chat") return;
+    const first = latestSessions.current[0];
+    if (first) navigate(`/s/${first.id}`, { replace: true });
+  }, [sessionsAsked, sessionId, settings, view]);
 
   // Replay-then-tail for whichever session is in the URL.
   useEffect(() => {
@@ -233,10 +299,14 @@ function Shell({
     setEvents([]);
     setVersions({});
     setMoreBefore(false);
+    // An earlier page that is still on its way is the left chat's: it is dropped when it arrives, and this chat asks for its own.
+    loadedAgain.current++;
+    setLoadingBefore(false);
     setUiQueue([]);
     setLoadedSession(null);
     setFailures(0);
-    if (!sessionId) return;
+    // Nothing to read from: the stream of a chat that is gone only fails, and was retried as an outage.
+    if (!sessionId || missing === sessionId) return;
 
     let cancelled = false;
     let seq = 0;
@@ -248,6 +318,25 @@ function Shell({
     // past, as its stream last said: see bumpReloads on the server.
     let reloads: number | undefined;
     let retry: ReturnType<typeof setTimeout> | undefined;
+    // Once caught up, what arrives is applied a frame at a time, not an event at
+    // a time: a reply is a token every few milliseconds, and each was a draw of
+    // the chat. The timer is for a tab nobody sees, where frames are not drawn.
+    let pending: PortalEvent[] = [];
+    let frame: number | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const drain = () => {
+      if (frame !== undefined) cancelAnimationFrame(frame);
+      clearTimeout(timer);
+      frame = timer = undefined;
+      const batch = pending;
+      pending = [];
+      if (batch.length) setEvents((prev) => appendLiveEvents(prev, batch));
+    };
+    const soon = () => {
+      if (frame !== undefined) return;
+      frame = requestAnimationFrame(drain);
+      timer = setTimeout(drain, 120);
+    };
     const connect = () => {
       if (cancelled) return;
       const fresh = seq === 0;
@@ -278,7 +367,10 @@ function Shell({
         if (missed) reload();
       });
       es.addEventListener("versions", (m) => setVersions((JSON.parse((m as MessageEvent).data) as { versions: Record<number, number[]> }).versions));
-      es.addEventListener("live-reset", () => setEvents(resetLiveEvents));
+      es.addEventListener("live-reset", () => {
+        drain();
+        setEvents(resetLiveEvents);
+      });
       es.addEventListener("canvas", (m) => canvasMessage(sessionId, JSON.parse((m as MessageEvent).data)));
       // Until it has caught up, what arrives is history being replayed. It is
       // gathered and applied in one go: drawing the conversation once per event
@@ -293,13 +385,15 @@ function Shell({
         const status = (ev.payload as { status?: SessionStatus }).status;
         if (status) {
           setSessions((prev) =>
-            prev.map((s) => (s.id === sessionId ? { ...s, status } : s)),
+            prev.some((s) => s.id === sessionId && s.status !== status)
+              ? prev.map((s) => (s.id === sessionId ? { ...s, status } : s))
+              : prev,
           );
           // An agent or routine session is not in that list at all — it is
           // fetched once, on its own. Without this it kept whatever status
           // the fetch happened to catch, so a chat either never started
           // working or never stopped, and the activity line ran forever.
-          setOther((prev) => (prev?.id === sessionId ? { ...prev, status } : prev));
+          setOther((prev) => (prev?.id === sessionId && prev.status !== status ? { ...prev, status } : prev));
         }
         refreshSessions().catch(() => {});
       };
@@ -325,8 +419,9 @@ function Shell({
           replacing = false;
           // What was being fetched from above the old list belongs to it.
           loadedAgain.current++;
-          setEvents(batch.reduce(appendLiveEvent, [] as PortalEvent[]));
-        } else if (batch.length) setEvents((prev) => batch.reduce(appendLiveEvent, prev));
+          setLoadingBefore(false);
+          setEvents(appendLiveEvents([], batch));
+        } else if (batch.length) setEvents((prev) => appendLiveEvents(prev, batch));
         if (!batch.length) return;
         // Only where the session ended up is news; the statuses it passed
         // through on the way were each a request for the session list.
@@ -342,6 +437,8 @@ function Shell({
         // replay is still being gathered that buffer is where they are, so it
         // is filtered instead of the rendered list.
         if (ev.type === "portal_removed") {
+          // What arrived before it is in the list it filters.
+          drain();
           // `also` and `kept`: messages sent into a run go with the stretch the
           // agent read them in, not the one whose seq range they were sent in.
           const { from, to, also = [], kept = [], reloads: now } = ev.payload as { from: number; to: number | null; also?: number[]; kept?: number[]; reloads?: number };
@@ -362,6 +459,7 @@ function Shell({
         }
         if (ev.type === "portal_reload") {
           reloads = (ev.payload as { reloads?: number }).reloads ?? reloads;
+          drain();
           reload();
           return;
         }
@@ -372,7 +470,8 @@ function Shell({
           replay.push(ev);
           return;
         }
-        setEvents((prev) => appendLiveEvent(prev, ev));
+        pending.push(ev);
+        soon();
         applyStatus(ev);
         applyDialog(ev);
         fillFrom(sessionId, ev);
@@ -382,17 +481,20 @@ function Shell({
         setLoadedSession(sessionId);
         // Only now do we know where the replayed window starts, and therefore
         // whether the conversation continues above it.
+        const asked = loadedAgain.current;
         setEvents((prev) => {
           const oldest = prev.find((e) => e.seq > 0)?.seq;
           if (oldest === undefined) return prev;
           api
             .olderEvents(sessionId, oldest, 1)
-            .then((r) => setMoreBefore(r.events.length > 0))
+            // The answer for a chat that was left, or one loaded again since, says nothing of the one shown now.
+            .then((r) => asked === loadedAgain.current && setMoreBefore(r.events.length > 0))
             .catch(() => {});
           return prev;
         });
       });
       es.onerror = () => {
+        drain();
         // Keep what arrived: the resume cursor has already moved past it.
         // Unless the chat is being read again: part of it would replace all
         // of what is shown, so that stays, and the reading starts over.
@@ -411,21 +513,28 @@ function Shell({
     return () => {
       cancelled = true;
       clearTimeout(retry);
+      if (frame !== undefined) cancelAnimationFrame(frame);
+      clearTimeout(timer);
       esRef.current?.close();
       canvasConnection(sessionId, "down");
     };
-  }, [sessionId, refreshSessions]);
+  }, [sessionId, missing, refreshSessions]);
 
   const listed = sessions.find((s) => s.id === sessionId) ?? null;
 
   useEffect(() => {
-    if (!sessionId || listed) return setOther(null);
+    if (!sessionId || listed || missing === sessionId) return setOther(null);
     let cancelled = false;
     const load = () =>
       api
         .session(sessionId)
-        .then((s) => !cancelled && setOther(s))
-        .catch(() => !cancelled && setOther(null));
+        .then((s) => !cancelled && setOther((prev) => reconcile(prev, s)))
+        .catch((e) => {
+          if (cancelled) return;
+          setOther(null);
+          // Said by the portal: it has no such chat, which is not an outage to keep retrying.
+          if (e instanceof ApiError && e.status === 404) setMissing(sessionId);
+        });
     load();
     // The same five seconds the task list gets. Events keep this current
     // between ticks; the poll is what stops a dropped one from stranding the
@@ -435,7 +544,7 @@ function Shell({
       cancelled = true;
       stop();
     };
-  }, [sessionId, listed]);
+  }, [sessionId, listed, missing]);
 
   const active = listed ?? (other?.id === sessionId ? other : null);
 
@@ -512,10 +621,65 @@ function Shell({
     notifyIfAway(active.title, t("Waiting for your answer"), `ask-${active.id}`, () => navigate(`/s/${active.id}`));
   }, [askedId]);
 
+  // Handed to the sidebar, the sessions page and Settings, which are not drawn
+  // again unless what they show changed: events arrive many times a second, and
+  // a handler made anew with each of those draws would make them all draw too.
+  const onNavigate = useStable((to: string) => {
+    setMobileNav(false);
+    navigate(`/${to}`);
+  });
+  const onOpenFolder = useStable((key: string) => {
+    setMobileNav(false);
+    navigate(`/sessions?folder=${encodeURIComponent(key)}`);
+  });
+  const onSelect = useStable((id: string) => {
+    setMobileNav(false);
+    navigate(`/s/${id}`);
+  });
+  const onDeleteChat = useStable(async (id: string) => {
+    await api.deleteSession(id);
+    const list = await refreshSessions();
+    if (sessionId === id) navigate(list[0] ? `/s/${list[0].id}` : "/", { replace: true });
+  });
+  const onRenameChat = useStable(async (id: string, title: string) => {
+    await api.renameSession(id, title);
+    refreshSessions();
+  });
+  const onPin = useStable(async (id: string, pinned: boolean) => {
+    await api.pinSession(id, pinned);
+    refreshSessions();
+  });
+  const onOpenSettings = useStable(() => navigate(sessionId ? `/s/${sessionId}/settings/general` : "/settings/general"));
+  const closeSettings = useStable(() => navigate(active ? `/s/${active.id}` : "/"));
+  const setUpModel = useStable(() => {
+    navigate(active ? `/s/${active.id}` : "/");
+    setSetup(true);
+  });
+  // The sessions page: its own way of opening a chat, which does not close the drawer, and of renaming one.
+  const openChat = useStable((id: string) => navigate(`/s/${id}`));
+  const deleteListed = useStable(async (id: string) => {
+    await api.deleteSession(id);
+    await refreshSessions();
+  });
+  const renameListed = useStable(async (id: string, title: string) => {
+    await api.renameSession(id, title);
+    // Saved by now, and shown so, whether or not the list then loads:
+    // a list that fails to load is not a rename that failed.
+    setSessions((all) => all.map((s) => (s.id === id ? { ...s, title } : s)));
+    await refreshSessions().catch(() => {});
+  });
+
   return (
     <div data-fits-keyboard className="flex h-[calc(100dvh-var(--keyboard,0px))] min-h-0 overflow-hidden bg-canvas">
       {mobileNav && <button aria-label={t("Dismiss navigation")} onClick={() => setMobileNav(false)} className="ui-backdrop fixed inset-0 z-40 bg-black/50 md:hidden" />}
-      <div id="mobile-navigation" className={`${mobileNav ? "mobile-drawer fixed inset-y-0 left-0 z-50 flex" : "hidden"} h-full shrink-0 md:static md:z-auto md:flex`}>
+      <div
+        id="mobile-navigation"
+        ref={drawer}
+        tabIndex={mobileNav ? -1 : undefined}
+        role={mobileNav ? "dialog" : undefined}
+        aria-modal={mobileNav ? true : undefined}
+        aria-label={mobileNav ? t("Navigation") : undefined}
+        className={`${mobileNav ? "mobile-drawer fixed inset-y-0 left-0 z-50 flex outline-none" : "hidden"} h-full shrink-0 md:static md:z-auto md:flex`}>
       {mobileNav && <button type="button" aria-label={t("Close navigation")} onClick={() => setMobileNav(false)} className="absolute right-2 top-3 z-20 rounded-lg p-2 text-fg md:hidden"><LuX size={20}/></button>}
       <Sidebar
         forceExpanded={mobileNav}
@@ -527,26 +691,14 @@ function Shell({
         hasMemory={hasMemory}
         hasImages={hasImages}
         places={places}
-        onNavigate={(to) => { setMobileNav(false); navigate(`/${to}`); }}
-        onOpenFolder={(key) => { setMobileNav(false); navigate(`/sessions?folder=${encodeURIComponent(key)}`); }}
-        onSelect={(id) => { setMobileNav(false); navigate(`/s/${id}`); }}
+        onNavigate={onNavigate}
+        onOpenFolder={onOpenFolder}
+        onSelect={onSelect}
         onNewChat={startChat}
-        onDelete={async (id) => {
-          await api.deleteSession(id);
-          const list = await refreshSessions();
-          if (sessionId === id) navigate(list[0] ? `/s/${list[0].id}` : "/", { replace: true });
-        }}
-        onRename={async (id, title) => {
-          await api.renameSession(id, title);
-          refreshSessions();
-        }}
-        onPin={async (id, pinned) => {
-          await api.pinSession(id, pinned);
-          refreshSessions();
-        }}
-        onOpenSettings={() =>
-          navigate(sessionId ? `/s/${sessionId}/settings/general` : "/settings/general")
-        }
+        onDelete={onDeleteChat}
+        onRename={onRenameChat}
+        onPin={onPin}
+        onOpenSettings={onOpenSettings}
       />
 
       </div>
@@ -557,37 +709,26 @@ function Shell({
           <button type="button" aria-label={t("Open navigation")} aria-expanded={mobileNav} aria-controls="mobile-navigation" onClick={() => setMobileNav(true)} className="rounded-lg p-2 text-fg hover:bg-fg/10"><LuMenu size={20}/></button>
           <span className="truncate text-sm text-fg">{active?.title || "Pithagoras"}</span>
         </header>
-        {error && <div className="bg-danger/10 px-4 py-2 text-sm text-danger">{error}</div>}
+        {error && <ErrorBanner className="mx-4 mt-2" onClose={() => setError(null)}>{error}</ErrorBanner>}
         {/* Not for the first miss: a server restarting, or a wifi that blinked,
             is back before it can be read. Two in a row is an outage. */}
-        {sessionId && failures >= 2 && (
+        {sessionId && failures >= 2 && missing !== sessionId && (
           <div role="status" className="bg-warn/10 px-4 py-2 text-sm text-warn">
             {t("Lost the connection to the portal — trying again. What is shown may be out of date.")}
           </div>
         )}
         {/* One page failing to draw takes down that page, not the portal. */}
         <ErrorBoundary resetKey={`${view}:${sessionId ?? ""}`}>
+        <Suspense fallback={<div className="flex flex-1 items-center justify-center text-sm text-fg-subtle">{t("Loading…")}</div>}>
         {view === "sessions" ? (
           <SessionsPage
             sessions={sessions}
             places={places}
-            onSelect={(id) => navigate(`/s/${id}`)}
+            onSelect={openChat}
             onNewChat={startChat}
-            onDelete={async (id) => {
-              await api.deleteSession(id);
-              await refreshSessions();
-            }}
-            onPin={async (id, pinned) => {
-              await api.pinSession(id, pinned);
-              refreshSessions();
-            }}
-            onRename={async (id, title) => {
-              await api.renameSession(id, title);
-              // Saved by now, and shown so, whether or not the list then loads:
-              // a list that fails to load is not a rename that failed.
-              setSessions((all) => all.map((s) => (s.id === id ? { ...s, title } : s)));
-              await refreshSessions().catch(() => {});
-            }}
+            onDelete={deleteListed}
+            onPin={onPin}
+            onRename={renameListed}
           />
         ) : view === "projects" ? (
           <ProjectsPage
@@ -629,14 +770,15 @@ function Shell({
               const asked = loadedAgain.current;
               try {
                 const r = await api.olderEvents(active.id, oldest);
-                // Loaded again meanwhile: what is above the new list is another question.
+                // Loaded again, or another chat opened, meanwhile: what is above the new list is another question.
                 if (asked !== loadedAgain.current) return;
                 setEvents((prev) => [...r.events, ...prev]);
                 setMoreBefore(r.more);
               } catch {
                 // Leave the button where it is; trying again is free.
               } finally {
-                setLoadingBefore(false);
+                // Not the flag of what was asked since: it was reset when the list was replaced, and may be set again.
+                if (asked === loadedAgain.current) setLoadingBefore(false);
               }
             }}
             onSend={async (msg, options) => {
@@ -675,41 +817,59 @@ function Shell({
               }
             }}
           />
+        ) : missing === sessionId ? (
+          <GoneState onSessions={() => navigate("/sessions")} />
         ) : (
           <EmptyState hasSessions={sessions.length > 0} />
         )}
+        </Suspense>
         </ErrorBoundary>
       </main>
 
       {active && uiQueue[0] && (
         <ExtensionDialog
+          // One dialog per question: what the last was answered, or failed with, is not this one's.
+          key={uiQueue[0].id}
           sessionId={active.id}
           request={uiQueue[0]}
           onDone={() => setUiQueue((q) => q.slice(1))}
         />
       )}
 
-      {settings && (
-        <ConfigModal
-          initialTab={LEGACY_TABS[tab ?? ""] ?? (tab as Tab) ?? "general"}
-          onClose={() => navigate(active ? `/s/${active.id}` : "/")}
-          onSetup={() => {
-            navigate(active ? `/s/${active.id}` : "/");
-            setSetup(true);
-          }}
-        />
-      )}
+      {/* Their code is fetched when one opens, and a file that is gone must not take the portal with it. */}
+      <ErrorBoundary resetKey={`${settings}:${setup}`} fallback={(error) => <DialogFailed error={error} onClose={() => { setSetup(false); if (settings) closeSettings(); }} />}>
+      <Suspense fallback={null}>
+        {settings && (
+          <ConfigModal
+            initialTab={LEGACY_TABS[tab ?? ""] ?? (tab && isTab(tab) ? tab : "general")}
+            onClose={closeSettings}
+            onSetup={setUpModel}
+          />
+        )}
 
-      {setup && (
-        <SetupAssistant
-          onClose={() => setSetup(false)}
-          onStartChat={async () => {
-            const s = await api.createSession();
-            await refreshSessions();
-            navigate(`/s/${s.id}`);
-          }}
-        />
-      )}
+        {setup && (
+          <SetupAssistant
+            onClose={() => setSetup(false)}
+            onStartChat={async () => {
+              const s = await api.createSession();
+              await refreshSessions();
+              navigate(`/s/${s.id}`);
+            }}
+          />
+        )}
+      </Suspense>
+      </ErrorBoundary>
+    </div>
+  );
+}
+
+function GoneState({ onSessions }: { onSessions: () => void }) {
+  return (
+    <div className="chat-empty flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
+      <p className="text-sm text-fg-muted">{t("This chat no longer exists.")}</p>
+      <button type="button" onClick={onSessions} className={ghostCls}>
+        {t("Back to Sessions")}
+      </button>
     </div>
   );
 }

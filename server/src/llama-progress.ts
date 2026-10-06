@@ -120,16 +120,31 @@ export function readTimings(t: Record<string, number> | undefined): Timings | un
   };
 }
 
-/** Add `return_progress` to a streaming completion, leaving anything else alone. */
-function withProgress(body: Buffer): Buffer {
+/**
+ * A completion request, read once: the model it names, and the body to send on,
+ * with `return_progress` added to a streaming one and anything else left alone.
+ * The body is the whole conversation, pictures included, and every step of the
+ * agent sends it again, so it is parsed no more than this.
+ */
+function withProgress(raw: Buffer): { body: Buffer; model: string } {
   try {
-    const parsed = JSON.parse(body.toString("utf8"));
-    if (!parsed || typeof parsed !== "object" || parsed.stream !== true) return body;
+    const parsed = JSON.parse(raw.toString("utf8"));
+    if (!parsed || typeof parsed !== "object") return { body: raw, model: "" };
+    const model = typeof parsed.model === "string" ? parsed.model : "";
+    if (parsed.stream !== true) return { body: raw, model };
     parsed.return_progress = true;
-    return Buffer.from(JSON.stringify(parsed));
+    return { body: Buffer.from(JSON.stringify(parsed)), model };
   } catch {
-    return body;
+    return { body: raw, model: "" };
   }
+}
+
+/** The models whose chats keep their prompt cache on disk, as `LLAMA_DISK_CACHE_MODELS` names them; read again only when the variable has changed. */
+let diskCached = { raw: "", models: new Set<string>() };
+function diskCacheModels(): Set<string> {
+  const raw = process.env.LLAMA_DISK_CACHE_MODELS ?? "";
+  if (raw !== diskCached.raw) diskCached = { raw, models: new Set(raw.split(",").map((m) => m.trim()).filter(Boolean)) };
+  return diskCached.models;
 }
 
 /** What `url` answers, or undefined; `denied` when it wanted a key it was not given. */
@@ -247,14 +262,13 @@ function handle(req: http.IncomingMessage, res: http.ServerResponse): void {
   req.on("data", (c: Buffer) => chunks.push(c));
   req.on("end", () => {
     const raw = Buffer.concat(chunks);
-    const body = req.method === "POST" && raw.length ? withProgress(raw) : raw;
+    // Only a chat completion is looked into: the other routes are passed on as they came.
+    const { body, model } = req.method === "POST" && raw.length && target.pathname.endsWith("/chat/completions") ? withProgress(raw) : { body: raw, model: "" };
     const client = target.protocol === "https:" ? https : http;
     const headers = { ...req.headers, host: target.host };
     if (body.length) headers["content-length"] = String(body.length);
 
-    let model = "";
-    try { model = JSON.parse(body.toString()).model ?? ""; } catch { /* Non-completion route. */ }
-    const completion = !!model && target.pathname.endsWith("/chat/completions");
+    const completion = !!model;
 
     // Asked alongside the request rather than before it: a loaded model must
     // not wait on the question, and the request is what starts the load.
@@ -302,7 +316,7 @@ function handle(req: http.IncomingMessage, res: http.ServerResponse): void {
       out.on("error", reject);
       out.end(body);
     });
-    const enabled = (process.env.LLAMA_DISK_CACHE_MODELS ?? "").split(",").includes(model) && completion;
+    const enabled = completion && diskCacheModels().has(model);
     void (enabled ? diskCache.run(upstream, model, sessionId, controller.signal, forward) : forward())
       .finally(() => answering())
       .then(() => res.end())

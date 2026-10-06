@@ -5,7 +5,9 @@
 .ui-select-md { padding: 7px 10px 7px 12px; font-size: 13px; }
 .ui-select-sm { padding: 5px 8px 5px 10px; font-size: 12px; border-radius: 8px; }
 .ui-select:hover:not(:disabled) { border-color: rgb(var(--fg-faint)); background: rgb(var(--raised)); }
-.ui-select.is-open, .ui-select:focus-visible { outline: none; border-color: rgb(var(--accent) / .6); box-shadow: 0 0 0 3px rgb(var(--accent) / .15); }
+.ui-select.is-open { border-color: rgb(var(--accent) / .6); box-shadow: 0 0 0 3px rgb(var(--accent) / .15); }
+/* The accent in full, as an outline: the tint above is the open list's, and was under 3:1 as the mark of the focus. */
+.ui-select:focus-visible { border-color: rgb(var(--accent)); outline: 2px solid rgb(var(--accent)); outline-offset: 2px; }
 .ui-select:disabled { opacity: .5; cursor: not-allowed; }
 .ui-select-value { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ui-select-value.is-placeholder { color: rgb(var(--fg-subtle)); }

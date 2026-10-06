@@ -2,6 +2,7 @@ import { Type } from "typebox";
 import { getDb, getDefaultReportTo, type ReportTo } from "../db.js";
 import { channelSupervisor } from "../channels/supervisor.js";
 import type { RoutineRow } from "../routines/supervisor.js";
+import { fail, say } from "./tool-result.js";
 
 /**
  * Reporting back from a routine.
@@ -73,9 +74,9 @@ export function reportTool(routineSlug: string | null) {
       }),
       async execute(_id: string, p: any) {
         const to = reportToFor(routineSlug);
-        if (!to) return { output: "Nowhere to report to — no destination is configured.", isError: true };
+        if (!to) return fail("Nowhere to report to — no destination is configured.");
         const message = String(p.message ?? "").trim();
-        if (!message) return { output: "Nothing to send.", isError: true };
+        if (!message) return fail("Nothing to send.");
         try {
           await channelSupervisor.send(to.channel, to.target, message);
           if (routineSlug) {
@@ -83,9 +84,9 @@ export function reportTool(routineSlug: string | null) {
               .prepare("UPDATE routines SET last_report_at = ? WHERE slug = ?")
               .run(new Date().toISOString(), routineSlug);
           }
-          return { output: `Sent to ${to.channel}.`, isError: false };
+          return say(`Sent to ${to.channel}.`);
         } catch (e) {
-          return { output: `Could not send: ${(e as Error).message}`, isError: true };
+          return fail(`Could not send: ${(e as Error).message}`);
         }
       },
     });

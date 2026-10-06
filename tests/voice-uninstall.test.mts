@@ -1,15 +1,13 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
 import express from 'express';
+import { fakeDocker } from "./fake-docker.mts";
+import { inProcessHome } from "./helpers.mts";
 
 // Uninstalling the managed voice service, through the API, against a fake Docker daemon: the container and the volume it
 // leaves, and the saved settings the install overwrote. No GPU, no image and no container of this machine is touched.
-const dir = mkdtempSync(path.join(tmpdir(), 'voice-uninstall-'));
-process.env.DATA_DIR = dir;
+const dir = inProcessHome('voice-uninstall-');
 process.env.DOCKER_SOCKET = path.join(dir, 'docker.sock');
 process.env.PORTAL_CONTAINER_NAME = 'portal-test';
 // A host with neither nvidia-smi nor a GPU runtime for Docker: what is installed here is recognition alone, which needs no GPU.
@@ -25,40 +23,35 @@ let images = new Set<string>(['ubuntu:22.04']);
 let pullGate: Promise<void> | null = null;
 // While set, Docker refuses to delete a volume, as it does when another container has it.
 let volumeFails = false;
-let calls: { method: string; url: string }[] = [];
-const server = http.createServer(async (req, res) => {
-  let raw = ''; for await (const c of req) raw += c;
-  const body = raw ? JSON.parse(raw) : undefined; const url = req.url!; const method = req.method!;
-  calls.push({ method, url });
-  res.setHeader('Content-Type', 'application/json');
-  if (url === '/containers/portal-test/json') return res.end(JSON.stringify({ Id: 'portal-one', State: { Running: true } }));
-  if (url === `/containers/${CONTAINER}/json`) { res.statusCode = container ? 200 : 404; return res.end(JSON.stringify(container)); }
-  if (url.startsWith(`/containers/${CONTAINER}/logs`)) return res.end(JSON.stringify('services ready'));
+const docker = await fakeDocker(process.env.DOCKER_SOCKET!, async ({ method, url, path: p, query, body }) => {
+  if (url === '/containers/portal-test/json') return { json: { Id: 'portal-one', State: { Running: true } } };
+  if (url === `/containers/${CONTAINER}/json`) return { status: container ? 200 : 404, json: container };
+  if (url.startsWith(`/containers/${CONTAINER}/logs`)) return { json: 'services ready' };
   if (url.startsWith('/images/create')) {
     await pullGate;
-    const q = new URL(url, 'http://docker').searchParams;
-    images.add(`${q.get('fromImage')}:${q.get('tag')}`);
-    return res.end('{"status":"Download complete"}\n');
+    images.add(`${query.get('fromImage')}:${query.get('tag')}`);
+    return { text: '{"status":"Download complete"}\n' };
   }
-  if (url.startsWith('/images/')) { res.statusCode = images.has(decodeURIComponent(url.slice('/images/'.length, -'/json'.length))) ? 200 : 404; return res.end('{}'); }
+  if (url.startsWith('/images/')) return { status: images.has(decodeURIComponent(url.slice('/images/'.length, -'/json'.length))) ? 200 : 404 };
   // The throwaway container that reads nvidia-smi: Docker has no GPU runtime here.
-  if (url === '/containers/create') { res.statusCode = 500; return res.end(JSON.stringify({ message: NO_RUNTIME })); }
-  if (url === '/volumes/create') { volumes.add(body.Name); return res.end('{}'); }
+  if (url === '/containers/create') return { status: 500, json: { message: NO_RUNTIME } };
+  if (url === '/volumes/create') { volumes.add(body.Name); return {}; }
   if (method === 'DELETE' && url.startsWith('/volumes/')) {
     const name = url.slice('/volumes/'.length);
-    if (!volumes.has(name)) { res.statusCode = 404; return res.end(JSON.stringify({ message: `get ${name}: no such volume` })); }
-    if (volumeFails) { res.statusCode = 409; return res.end(JSON.stringify({ message: 'volume is in use - [another-container]' })); }
+    if (!volumes.has(name)) return { status: 404, json: { message: `get ${name}: no such volume` } };
+    if (volumeFails) return { status: 409, json: { message: 'volume is in use - [another-container]' } };
     // As Docker refuses it: a container still has it.
-    if (container) { res.statusCode = 409; return res.end(JSON.stringify({ message: `volume is in use - [${CONTAINER}]` })); }
-    volumes.delete(name); res.statusCode = 204; return res.end();
+    if (container) return { status: 409, json: { message: `volume is in use - [${CONTAINER}]` } };
+    volumes.delete(name);
+    return { status: 204, text: '' };
   }
-  if (url.includes('/stop?')) container.State.Running = false;
-  if (method === 'DELETE' && url === `/containers/${CONTAINER}`) { container = null; res.statusCode = 204; return res.end(); }
-  if (url.startsWith(`/containers/create?name=${CONTAINER}`)) container = { Config: body, HostConfig: body.HostConfig, State: { Running: false } };
-  if (url === `/containers/${CONTAINER}/start`) container.State.Running = true;
-  res.end('{}');
+  if (method === 'POST' && p === `/containers/${CONTAINER}/stop`) { container.State.Running = false; return {}; }
+  if (method === 'DELETE' && p === `/containers/${CONTAINER}`) { container = null; return { status: 204, text: '' }; }
+  if (method === 'POST' && url.startsWith(`/containers/create?name=${CONTAINER}`)) { container = { Config: body, HostConfig: body.HostConfig, State: { Running: false } }; return {}; }
+  if (method === 'POST' && url === `/containers/${CONTAINER}/start`) { container.State.Running = true; return {}; }
+  return undefined;
 });
-await new Promise<void>(r => server.listen(process.env.DOCKER_SOCKET, r));
+const { calls } = docker;
 const { voiceRouter } = await import('../server/src/api/voice.js');
 const { getDb } = await import('../server/src/db.js');
 const voice = await import('../server/src/extensions/voice-service.js');
@@ -71,8 +64,8 @@ const oldFetch = globalThis.fetch;
 globalThis.fetch = ((url: any, init?: any) => String(url).startsWith(base) ? oldFetch(url, init) : Promise.resolve(new Response('{}'))) as typeof fetch;
 after(async () => {
   globalThis.fetch = oldFetch;
-  await Promise.all([new Promise<void>(r => portal.close(() => r())), new Promise<void>((resolve, reject) => server.close(e => e ? reject(e) : resolve()))]);
-  getDb().close(); rmSync(dir, { recursive: true, force: true });
+  await new Promise<void>(r => portal.close(() => r()));
+  getDb().close();
 });
 
 const json = { 'Content-Type': 'application/json' };
@@ -81,7 +74,7 @@ const post = (p: string, body?: unknown) => oldFetch(`${base}${p}`, { method: 'P
 const put = (body: object) => oldFetch(`${base}/voice`, { method: 'PUT', headers: json, body: JSON.stringify(body) });
 const stored = (key: string) => (getDb().prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined)?.value;
 const reset = () => {
-  container = null; volumes = new Set(); images = new Set(['ubuntu:22.04']); pullGate = null; volumeFails = false; calls = [];
+  container = null; volumes = new Set(); images = new Set(['ubuntu:22.04']); pullGate = null; volumeFails = false; docker.reset();
   getDb().prepare("DELETE FROM settings WHERE key IN ('voice', 'voice_before_managed', 'voice_setup_pending')").run();
 };
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -106,11 +99,11 @@ test('install overwrites the settings, and uninstall puts back exactly what they
   assert.equal(up.state, 'running');
   // What the install does to the settings: the runtime is none for recognition alone, and the addresses are the managed service's.
   assert.deepEqual(fields(await get('/voice')), { enabled: true, runtime: 'none', whisperUrl: MANAGED.whisper, breezeUrl: '', sttModel: '' });
-  calls = [];
+  docker.reset();
   const answer = await post('/voice/uninstall');
   assert.deepEqual([answer.status, await answer.json()], [200, { ok: true }]);
   // A running container is stopped, then removed; the volume with the downloads is not touched.
-  assert.deepEqual(calls.filter(c => c.method === 'POST' || c.method === 'DELETE').map(c => `${c.method} ${c.url}`), [`POST /containers/${CONTAINER}/stop?t=10`, `DELETE /containers/${CONTAINER}`]);
+  assert.deepEqual(calls.filter(c => c.method === 'POST' || c.method === 'DELETE').map(c => `${c.method} ${c.url}`), [`POST /containers/${CONTAINER}/stop?t=10`, `DELETE /containers/${CONTAINER}?force=true`]);
   assert.equal(container, null);
   assert.ok(volumes.has(VOLUME));
   const back = await get('/voice');
@@ -283,18 +276,18 @@ test('a service installed before settings were remembered: only what points at i
 test('the downloaded engines and models go when asked, after the container, and not otherwise', async () => {
   reset(); seedContainer(false);
   assert.equal((await post('/voice/uninstall', { removeData: false })).status, 200);
-  assert.deepEqual(removed(), [`/containers/${CONTAINER}`]);
+  assert.deepEqual(removed(), [`/containers/${CONTAINER}?force=true`]);
   assert.ok(volumes.has(VOLUME));
   // The container is stopped already: nothing to stop. The volume is deleted once nothing has it.
   assert.ok(!calls.some(c => c.url.includes('/stop?')));
-  calls = [];
+  docker.reset();
   assert.equal((await post('/voice/uninstall', { removeData: true })).status, 200);
   assert.deepEqual(removed(), [`/volumes/${VOLUME}`]);
   assert.equal(volumes.has(VOLUME), false);
   // With the container still there, the volume is deleted after it.
   reset(); seedContainer();
   assert.equal((await post('/voice/uninstall', { removeData: true })).status, 200);
-  assert.deepEqual(removed(), [`/containers/${CONTAINER}`, `/volumes/${VOLUME}`]);
+  assert.deepEqual(removed(), [`/containers/${CONTAINER}?force=true`, `/volumes/${VOLUME}`]);
   assert.equal(volumes.size, 0);
   assert.equal((await get('/voice/install')).state, 'absent');
 });

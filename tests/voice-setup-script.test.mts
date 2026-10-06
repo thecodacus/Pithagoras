@@ -1,17 +1,17 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { ASR_MODELS, DEFAULT_CHOICE, asrDevice, asrDevices, cpuServerConfig, parseChoice, serverConfig, ttsDevice, ttsDevices, usesGpu, type Device, type VoiceChoice } from '../server/src/voice-engines.js';
 import { containerSpec } from '../server/src/extensions/voice-service.js';
+import { scratch } from "./helpers.mts";
 
 // The setup script run for real, with every command that would build, download or
 // install something replaced by a stub that writes down what it was asked to do.
 // Nothing is downloaded, built or installed, and no GPU is needed.
 const script = readFileSync('deploy/voice/setup.sh', 'utf8');
-const root = mkdtempSync(path.join(tmpdir(), 'voice-setup-'));
+const root = scratch('voice-setup-');
 const calls = path.join(root, 'calls.log');
 const stubs = path.join(root, 'stubs.sh');
 const volume = path.join(root, 'volume');
@@ -62,13 +62,24 @@ bash() {
 `);
 after(() => rmSync(root, { recursive: true, force: true }));
 
+// The script finds only these programs: anything else it runs is "command not found", and not whatever this machine has,
+// so a line added to it that installs or downloads something fails here instead of doing it.
+const programs = path.join(root, 'bin');
+mkdirSync(programs);
+const where = (name: string) => spawnSync('sh', ['-c', `command -v ${name}`], { encoding: 'utf8' }).stdout.trim();
+for (const name of ['basename', 'cat', 'cp', 'dirname', 'grep', 'head', 'mkdir', 'mv', 'paste', 'rm', 'sed', 'sleep', 'sort', 'touch', 'tr']) symlinkSync(where(name), path.join(programs, name));
+// bash is named in full: the PATH it is run with does not have it.
+const bash = where('bash');
+
 /** Runs the script in the volume, as the container would. */
 function run(env: Record<string, string> = {}) {
   mkdirSync(volume, { recursive: true });
   writeFileSync(calls, '');
-  const result = spawnSync('bash', ['--noprofile', '--norc', '-c', script], {
-    env: { PATH: process.env.PATH!, BASH_ENV: stubs, CALLS: calls, VOLUME: volume, SERVER_STUB: serverStub, GGUF_STUB: ggufStub, ...env }, encoding: 'utf8', timeout: 30000,
+  const result = spawnSync(bash, ['--noprofile', '--norc', '-c', script], {
+    env: { PATH: programs, BASH_ENV: stubs, CALLS: calls, VOLUME: volume, SERVER_STUB: serverStub, GGUF_STUB: ggufStub, ...env }, encoding: 'utf8', timeout: 30000,
   });
+  // A program that is not in the list would not fail the script, only change what it does: it is said here instead.
+  assert.doesNotMatch(result.stderr, /command not found/);
   const log = readFileSync(calls, 'utf8').split('\n').filter(Boolean);
   return { status: result.status, stderr: result.stderr, stdout: result.stdout, log };
 }
@@ -83,6 +94,14 @@ const smi = (log: string[]) => log.filter(l => l.startsWith('nvidia-smi'));
 const startedRaw = (log: string[]) => log.filter(l => /^(whisper-server|audiocpp_server) /.test(l)).sort();
 const started = (log: string[]) => startedRaw(log).map(l => l.replace(/ cvd=.*$/, ''));
 const NONE = (asr: VoiceChoice['asr'], asrModel: string): VoiceChoice => ({ tts: 'none', asr, asrModel });
+
+test('the script reaches only the programs it is given: any other is not found', () => {
+  for (const name of ['curl', 'pip', 'pip3', 'npm', 'wget', 'sudo']) {
+    const result = spawnSync(bash, ['--noprofile', '--norc', '-c', `${name} --version`], { env: { PATH: programs }, encoding: 'utf8' });
+    assert.equal(result.status, 127, name);
+    assert.match(result.stderr, /not found/, name);
+  }
+});
 
 test('the script is valid bash', () => {
   const result = spawnSync('bash', ['-n'], { input: script, encoding: 'utf8' });

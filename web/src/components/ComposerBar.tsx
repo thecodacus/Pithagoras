@@ -9,8 +9,10 @@ import { useNavigate } from "react-router-dom";
 import { MENU_WIDTH, anchorLeft } from "../menu-anchor";
 import { api, type PiConfig, type PiModel, type Session } from "../api";
 import { serialSaver } from "../serial-saver";
+import { local } from "../safe-storage";
 import { cacheModels, cachedModels, catalogueFresh, forgetModels } from "../model-catalogue";
 import { ContextPill } from "./ContextPill";
+import { SwitchTrack } from "./SettingsUi";
 import { t } from "../i18n";
 import { EFFORT_LEVELS, effortLabel } from "../effort";
 
@@ -37,7 +39,7 @@ const levelsKey = (provider: string | undefined, model: string | undefined) => `
 
 function readLevels(): Record<string, string[]> {
   try {
-    const raw = JSON.parse(localStorage.getItem(LEVELS_KEY) || "{}");
+    const raw = JSON.parse(local.get(LEVELS_KEY) || "{}");
     return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
   } catch {
     return {};
@@ -63,7 +65,7 @@ const FOLLOWS_KEY = "pithagoras.thinkingLevelsFollow";
 
 function readFollows(): Record<string, string> {
   try {
-    const raw = JSON.parse(localStorage.getItem(FOLLOWS_KEY) || "{}");
+    const raw = JSON.parse(local.get(FOLLOWS_KEY) || "{}");
     return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
   } catch {
     return {};
@@ -88,24 +90,32 @@ function levelsModel(provider: string | null | undefined, model: string | null |
 function cacheLevels(provider: string, model: string, levels: string[], named?: PiConfig["named"]) {
   if (!model || !levels.length) return;
   const follows = named && !named.model ? levelsKey(named.provider ?? "", "") : undefined;
-  try {
-    localStorage.setItem(LEVELS_KEY, JSON.stringify({
-      ...readLevels(),
-      [levelsKey(provider, model)]: levels,
-      ...(follows ? { [follows]: levels } : {}),
-    }));
-    if (follows) localStorage.setItem(FOLLOWS_KEY, JSON.stringify({ ...readFollows(), [follows]: levelsKey(provider, model) }));
-  } catch {
-    // Same as the catalogue: a full quota is not worth failing the pill over.
-  }
+  // Same as the catalogue: storage that will not take it is not worth failing the pill over.
+  local.set(LEVELS_KEY, JSON.stringify({
+    ...readLevels(),
+    [levelsKey(provider, model)]: levels,
+    ...(follows ? { [follows]: levels } : {}),
+  }));
+  if (follows) local.set(FOLLOWS_KEY, JSON.stringify({ ...readFollows(), [follows]: levelsKey(provider, model) }));
 }
 
 const RECENTS_KEY = "pithagoras.recentModels";
 const MAX_RECENTS = 4;
 
+/**
+ * What a recent is kept by. Two providers can offer a model of the same id, and
+ * keyed by the id alone the one picked last was shown for both. Recents kept
+ * before this are bare ids; see `quick`.
+ */
+const modelKey = (m: { provider: string; id: string }) => `${m.provider}/${m.id}`;
+
+/** The same model, where one side may not know its provider yet: a chat's seed, or pi's own default. */
+const sameModel = (a: { provider: string; id: string }, b: { provider: string; id: string }) =>
+  a.id === b.id && (!a.provider || !b.provider || a.provider === b.provider);
+
 function readRecents(): string[] {
   try {
-    const raw = JSON.parse(localStorage.getItem(RECENTS_KEY) || "[]");
+    const raw = JSON.parse(local.get(RECENTS_KEY) || "[]");
     return Array.isArray(raw) ? raw.filter((x) => typeof x === "string") : [];
   } catch {
     return [];
@@ -114,11 +124,8 @@ function readRecents(): string[] {
 
 function pushRecent(id: string): string[] {
   const next = [id, ...readRecents().filter((x) => x !== id)].slice(0, MAX_RECENTS);
-  try {
-    localStorage.setItem(RECENTS_KEY, JSON.stringify(next));
-  } catch {
-    // Private mode or full storage — recents are a convenience, not a feature.
-  }
+  // Private mode or full storage: recents are a convenience, not a feature.
+  local.set(RECENTS_KEY, JSON.stringify(next));
   return next;
 }
 
@@ -210,6 +217,10 @@ export function ComposerBar({
   const [filter, setFilter] = useState("");
   const [recents, setRecents] = useState<string[]>(readRecents);
   const [busy, setBusy] = useState(false);
+  /** Why the last model picked was not taken, shown in the menu where it was picked. */
+  const [pickError, setPickError] = useState<string | null>(null);
+  /** Why the last change of effort was not taken: shown beside the pills, where the slider snapped back to the old level. */
+  const [levelError, setLevelError] = useState<string | null>(null);
   /** Where the handle sits mid-drag, before the change is sent. */
   const [dragEffort, setDragEffort] = useState<number | null>(null);
   // Each menu opens over its own button; see menu-anchor.ts.
@@ -223,11 +234,18 @@ export function ComposerBar({
     return () => window.removeEventListener("resize", place);
   }, [open]);
 
-  const load = () =>
-    api
-      .config(sessionId)
+  // This component outlives a switch between chats: an answer for one that has
+  // been left is not this one's, and must not draw its model or levels here.
+  const currentSession = useRef(sessionId);
+  currentSession.current = sessionId;
+
+  const load = () => {
+    const asked = sessionId;
+    return api
+      .config(asked)
       .then((next) => {
         cacheLevels(next.state.model.provider, next.state.model.id, next.thinking.levels, next.named);
+        if (currentSession.current !== asked) return;
         // /config is the cheap route and reports neither when pi's catalogue
         // has not answered. The levels are then what was last reported for the
         // model it names — not for the one the seed guessed, which for a chat
@@ -257,6 +275,11 @@ export function ComposerBar({
         }));
       })
       .catch(() => {});
+  };
+
+  /** The chat shown now: what a change asked of another one says, when it settles, is not for this one. */
+  const shown = useRef(sessionId);
+  shown.current = sessionId;
 
   /** Whether the chat had started when last looked at — see the effect on `started`. */
   const wasStarted = useRef(started);
@@ -264,6 +287,9 @@ export function ComposerBar({
     levelsFor.current = levelsModel(session.provider, session.model);
     setCfg(seed(session));
     setOpen(null);
+    setPickError(null);
+    setLevelError(null);
+    setBusy(false);
     setDragEffort(null);
     // Another chat, loaded here: its having started already is no change.
     wasStarted.current = started;
@@ -271,14 +297,16 @@ export function ComposerBar({
   }, [sessionId]);
 
   const refreshCatalogue = () => {
+    const asked = sessionId;
     setLoadingCatalogue(true);
     api
-      .models(sessionId)
+      .models(asked)
       .then((next) => {
-        setCfg(next);
-        levelsFor.current = levelsKey(next.state.model.provider, next.state.model.id);
         cacheModels(next.models?.models ?? []);
         cacheLevels(next.state.model.provider, next.state.model.id, next.thinking.levels, next.named);
+        if (currentSession.current !== asked) return;
+        setCfg(next);
+        levelsFor.current = levelsKey(next.state.model.provider, next.state.model.id);
       })
       .catch(() => {})
       .finally(() => setLoadingCatalogue(false));
@@ -318,8 +346,6 @@ export function ComposerBar({
   // Only the figures are asked for, not the whole config: that one carries the
   // model catalogue, which pi rebuilds from each provider's credentials every
   // time it is asked, and a long run has a great many turns.
-  const currentSession = useRef(sessionId);
-  currentSession.current = sessionId;
   useEffect(() => {
     if (!running || !turns) return;
     const asked = sessionId;
@@ -349,6 +375,7 @@ export function ComposerBar({
       setOpen(null);
       setShowAll(false);
       setFilter("");
+      setPickError(null);
     },
     trigger,
   );
@@ -356,34 +383,43 @@ export function ComposerBar({
   // With the chat, not with the menu: ready by the time the menu opens.
   const subagents = useSubagentChoice(sessionId);
   const models = cfg.models.models ?? [];
-  const byId = useMemo(() => new Map(models.map((m) => [m.id, m])), [models]);
+  const byKey = useMemo(() => new Map(models.map((m) => [modelKey(m), m])), [models]);
 
-  // Short list: models picked here before, plus the current one.
+  // Short list: models picked here before, plus the current one. A recent kept
+  // before they were keyed by provider is a bare id: the first model of that id.
   const quick = useMemo(() => {
-    const ids = [...recents];
-    if (cfg.state.model.id && !ids.includes(cfg.state.model.id)) ids.push(cfg.state.model.id);
-    return ids.map((id) => byId.get(id) ?? (id === cfg.state.model.id ? cfg.state.model : null)).filter(Boolean) as PiModel[];
-  }, [recents, cfg, byId]);
+    const current = cfg.state.model;
+    const keys = [...recents];
+    if (current.id && !keys.some((k) => k === modelKey(current) || k === current.id)) keys.push(modelKey(current));
+    const picked = keys
+      .map((k) => byKey.get(k) ?? models.find((m) => m.id === k) ?? (k === modelKey(current) || k === current.id ? current : null))
+      .filter(Boolean) as PiModel[];
+    // Two recents can come to one model: an old bare id and the key it was kept under since.
+    return picked.filter((m, i) => picked.findIndex((o) => modelKey(o) === modelKey(m)) === i);
+  }, [recents, cfg, byKey, models]);
 
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
     return (q ? models.filter((m) => (m.id + m.name).toLowerCase().includes(q)) : models).slice(0, 200);
   }, [models, filter]);
 
-  // With its provider: without one the server takes the chat's, which names
-  // another provider's model, or none, once a chat moves between providers or
-  // the one it was on is renamed.
+  // The provider goes with the id: without it the server looks for the model
+  // among the chat's own provider, and one that another provider lists is not found.
   const applyModel = async (m: PiModel) => {
+    const asked = sessionId;
     setBusy(true);
+    setPickError(null);
     try {
       await api.setConfig(sessionId, { provider: m.provider, modelId: m.id });
-      setRecents(pushRecent(m.id));
+      setRecents(pushRecent(modelKey(m)));
       await load();
       setOpen(null);
       setShowAll(false);
       setFilter("");
+    } catch (e) {
+      if (shown.current === asked) setPickError((e as Error).message);
     } finally {
-      setBusy(false);
+      if (shown.current === asked) setBusy(false);
     }
   };
 
@@ -432,14 +468,20 @@ export function ComposerBar({
       setDragEffort(null);
       return;
     }
+    const asked = sessionId;
     setBusy(true);
+    setLevelError(null);
     try {
       await saver.request(level);
+    } catch (e) {
+      if (shown.current === asked) setLevelError((e as Error).message);
     } finally {
       // Only now: the slider stays where it was dragged, and the controls stay
       // busy, until the last save has landed.
-      setBusy(false);
-      setDragEffort(null);
+      if (shown.current === asked) {
+        setBusy(false);
+        setDragEffort(null);
+      }
     }
   };
   const commitEffort = (index: number) => applyLevel(levels[index]);
@@ -453,6 +495,9 @@ export function ComposerBar({
           type="button"
           disabled={busy}
           onClick={() => setOpen(open === "model" ? null : "model")}
+          aria-label={t("Model: {name}", { name: shortName(cfg.state.model) })}
+          aria-haspopup="true"
+          aria-expanded={open === "model"}
           className={`max-w-[220px] truncate rounded-lg px-2 py-1.5 transition disabled:opacity-50 ${
             open === "model" ? "bg-fg/10 text-fg" : "text-fg-subtle hover:bg-fg/5 hover:text-fg-muted"
           }`}
@@ -472,6 +517,9 @@ export function ComposerBar({
           // On/off models flip right here; there is no scale to open a panel for.
           onClick={() => (onOff ? flipThinking() : setOpen(open === "effort" ? null : "effort"))}
           aria-pressed={onOff ? thinkingOn : undefined}
+          aria-label={onOff ? undefined : t("Effort: {level}", { level: effortLabel(cfg.state.thinkingLevel) })}
+          aria-haspopup={onOff ? undefined : "true"}
+          aria-expanded={onOff ? undefined : open === "effort"}
           className={`rounded-lg px-2 py-1 transition first-letter:uppercase disabled:opacity-50 ${
             open === "effort"
               ? "bg-fg/10 text-fg"
@@ -496,6 +544,9 @@ export function ComposerBar({
           ref={pills.tools}
           type="button"
           onClick={() => setOpen(open === "tools" ? null : "tools")}
+          aria-label={t("Which tools this conversation may use")}
+          aria-haspopup="true"
+          aria-expanded={open === "tools"}
           className={`rounded-lg px-2 py-1 transition ${
             open === "tools" ? "bg-fg/10 text-fg" : "text-fg-subtle hover:bg-fg/5 hover:text-fg-muted"
           }`}
@@ -510,6 +561,7 @@ export function ComposerBar({
             onChanged={load}
           />
         )}
+        {levelError && <p role="alert" className="basis-full px-2 py-0.5 text-danger">{levelError}</p>}
         {/* The same mark as a working chat has in the lists, and its word shimmering as "Thinking" does. */}
         {running && (
           <span className="composer-working ml-1 inline-flex items-center gap-1.5">
@@ -522,7 +574,7 @@ export function ComposerBar({
 
       {/* Tools */}
       {open === "tools" && (
-        <div ref={menuRef} style={{ left: menuLeft }} className="composer-menu float-in absolute bottom-full left-0 z-20 mb-2 w-72 max-w-full overflow-hidden rounded-xl border border-line bg-surface py-1 shadow-pop">
+        <div ref={menuRef} role="group" aria-label={t("Tools in this chat")} style={{ left: menuLeft }} className="composer-menu float-in absolute bottom-full left-0 z-20 mb-2 w-72 max-w-full overflow-hidden rounded-xl border border-line bg-surface py-1 shadow-pop">
           <p className="px-3 py-1 text-[11px] text-fg-subtle">{t("Tools in this chat")}</p>
           <ToolSwitches sessionId={sessionId} />
         </div>
@@ -530,7 +582,7 @@ export function ComposerBar({
 
       {/* Models */}
       {open === "model" && (
-        <div ref={menuRef} style={{ left: menuLeft }} className="composer-menu float-in absolute bottom-full left-0 z-20 mb-2 w-72 max-w-full overflow-hidden rounded-xl border border-line bg-surface py-1 shadow-pop">
+        <div ref={menuRef} role="group" aria-label={t("Models")} style={{ left: menuLeft }} className="composer-menu float-in absolute bottom-full left-0 z-20 mb-2 w-72 max-w-full overflow-hidden rounded-xl border border-line bg-surface py-1 shadow-pop">
           <div className="flex items-center gap-2 px-3 py-1">
             <p className="text-[11px] text-fg-subtle">{t("Models")}</p>
             {/* The cached copy goes first: a fetch that fails leaves nothing old behind for the next menu. */}
@@ -549,14 +601,14 @@ export function ComposerBar({
             <>
               {quick.map((m) => (
                 <button
-                  key={m.id}
+                  key={modelKey(m)}
                   type="button"
                   onClick={() => applyModel(m)}
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-fg hover:bg-raised"
                   title={m.id}
                 >
                   <span className="truncate">{shortName(m)}</span>
-                  {m.id === cfg.state.model.id && <span className="text-fg-muted">✓</span>}
+                  {sameModel(m, cfg.state.model) && <span className="text-fg-muted">✓</span>}
                   <OriginTag provider={m.provider} />
                 </button>
               ))}
@@ -578,19 +630,20 @@ export function ComposerBar({
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
                 placeholder={t("Filter models…")}
+                aria-label={t("Filter models…")}
                 className="mx-2 mb-1 w-[calc(100%-1rem)] rounded border border-line bg-canvas px-2 py-1 text-xs outline-none focus:border-accent"
               />
               <div className="max-h-72 overflow-y-auto">
                 {filtered.map((m) => (
                   <button
-                    key={m.id}
+                    key={modelKey(m)}
                     type="button"
                     onClick={() => applyModel(m)}
                     className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-fg-muted hover:bg-raised"
                     title={m.id}
                   >
                     <span className="truncate">{shortName(m)}</span>
-                    {m.id === cfg.state.model.id && <span className="text-fg-muted">✓</span>}
+                    {sameModel(m, cfg.state.model) && <span className="text-fg-muted">✓</span>}
                     <OriginTag provider={m.provider} />
                   </button>
                 ))}
@@ -600,11 +653,13 @@ export function ComposerBar({
               </div>
             </>
           )}
+          {pickError && <p role="alert" className="px-3 py-1 text-xs text-danger">{pickError}</p>}
           <SubagentModelPicker subagents={subagents} models={models} />
           <div className="my-1 border-t border-line" />
           <button
             type="button"
-            onClick={() => { setOpen(null); navigate(`/s/${sessionId}/settings/models`); }}
+            // The menu goes with the click, and Settings gives focus back to what had it: the pill, not an item that is gone.
+            onClick={() => { pills.model.current?.focus(); setOpen(null); navigate(`/s/${sessionId}/settings/models`); }}
             className="flex w-full items-center px-3 py-1.5 text-left text-xs text-fg-subtle transition hover:bg-fg/5 hover:text-fg"
           >
             {t("Add or change providers…")}
@@ -614,7 +669,7 @@ export function ComposerBar({
 
       {/* Effort */}
       {open === "effort" && levels.length > 1 && (
-        <div ref={menuRef} style={{ left: menuLeft }} className="composer-menu float-in absolute bottom-full left-0 z-20 mb-2 w-72 max-w-full rounded-xl border border-line bg-surface p-3 shadow-pop">
+        <div ref={menuRef} role="group" aria-label={t("Effort")} style={{ left: menuLeft }} className="composer-menu float-in absolute bottom-full left-0 z-20 mb-2 w-72 max-w-full rounded-xl border border-line bg-surface p-3 shadow-pop">
           {onOff ? (
             // Reached through /effort; the pill flips the same switch directly.
             <button
@@ -626,13 +681,7 @@ export function ComposerBar({
               className="flex w-full items-center justify-between text-sm text-fg-muted disabled:opacity-50"
             >
               <span>{t("Thinking")}</span>
-              <span className={`relative h-5 w-9 rounded-full transition ${thinkingOn ? "bg-warn" : "bg-raised"}`}>
-                <span
-                  className={`absolute top-0.5 h-4 w-4 rounded-full bg-surface transition-all ${
-                    thinkingOn ? "left-[1.125rem]" : "left-0.5"
-                  }`}
-                />
-              </span>
+              <SwitchTrack on={thinkingOn} tone="warn" />
             </button>
           ) : (
             <>
@@ -649,6 +698,8 @@ export function ComposerBar({
                 max={levels.length - 1}
                 step={1}
                 value={effortIndex}
+                aria-label={t("Effort")}
+                aria-valuetext={effortLabel(levels[effortIndex] ?? cfg.state.thinkingLevel)}
                 onChange={(e) => setDragEffort(Number(e.target.value))}
                 onPointerUp={(e) => commitEffort(Number(e.currentTarget.value))}
                 onKeyUp={(e) => commitEffort(Number(e.currentTarget.value))}

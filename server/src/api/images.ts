@@ -14,7 +14,7 @@ import {
 import { JobRefusal, MAX_RUNNING, listJobs, startEdit, startGenerations, stopJob, type EditJob, type GenerateJob } from "../image-jobs.js";
 import { MAX_PROMPT } from "../image-generation.js";
 import { nativeConflict, parsePictureSettings } from "../image-settings.js";
-import { pictureExt } from "../prompt-images.js";
+import { decodeBase64, pictureExt } from "../prompt-images.js";
 import { MAX_PICTURE_BYTES } from "../workspace-files.js";
 import { fail, sendPicture } from "./files.js";
 
@@ -72,16 +72,12 @@ export function parseGenerate(body: unknown): GenerateJob | string {
   return nativeConflict(prompt, settings) ?? { ...settings, prompt, count };
 }
 
-const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
-
-/** A mask as the page sends it, base64 or a data: URL, decoded; the size is worked out before anything large is. */
+/** A mask as the page sends it, base64 or a data: URL, decoded. */
 function parseMask(value: unknown): Buffer | string {
   if (typeof value !== "string") return "The mask must be a picture, as base64";
-  const comma = value.startsWith("data:") ? value.indexOf(",") : -1;
-  const data = (comma >= 0 ? value.slice(comma + 1) : value).replace(/\s+/g, "");
-  if (!data || !BASE64.test(data)) return "The mask is not base64";
-  if (Math.floor((data.length * 3) / 4) > MAX_PICTURE_BYTES + 3) return `The mask is over ${MAX_PICTURE_BYTES / 1024 / 1024} MB`;
-  return Buffer.from(data, "base64");
+  const decoded = decodeBase64(value, MAX_PICTURE_BYTES);
+  if ("error" in decoded) return decoded.error === "invalid" ? "The mask is not base64" : `The mask is over ${MAX_PICTURE_BYTES / 1024 / 1024} MB`;
+  return decoded.bytes;
 }
 
 /** A request to change pictures, checked; the reason when it may not be made. */
@@ -142,7 +138,7 @@ export function imagesRouter(): Router {
         if (typeof ids === "string") return res.status(400).json({ error: ids });
         return res.json({ pictures: picturesById(ids) });
       }
-      const { origin, kind, before, limit } = req.query;
+      const { origin, kind, before, limit, again } = req.query;
       if (origin !== undefined && !(typeof origin === "string" && ORIGINS.has(origin))) return res.status(400).json({ error: "origin is page, chat or folder" });
       if (kind !== undefined && !(typeof kind === "string" && KINDS.has(kind))) return res.status(400).json({ error: "kind is generated, edited, uploaded or unknown" });
       if (before !== undefined && !(typeof before === "string" && /^\d+:[0-9a-f]+$/.test(before))) return res.status(400).json({ error: "before is the next of the page before" });
@@ -153,6 +149,8 @@ export function imagesRouter(): Router {
           ...(origin ? { origin: origin as PictureOrigin } : {}),
           ...(kind ? { kind: kind as PictureKind } : {}),
           ...(typeof before === "string" ? { before } : {}),
+          // A page asking again for a list it has: see ListQuery.again.
+          ...(again === "1" ? { again: true } : {}),
           limit: asked,
         }),
       );

@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
-import { config } from "./browser-service.js";
+import { DATA_DIR } from "../data-dir.js";
 
 /**
  * The same browser, without a container.
@@ -25,7 +25,7 @@ const CANDIDATES = [
   "/Applications/Chromium.app/Contents/MacOS/Chromium",
 ].filter(Boolean) as string[];
 
-const PROFILE = path.join(process.env.DATA_DIR || "/data", "browser-profile");
+const PROFILE = path.resolve(DATA_DIR, "browser-profile");
 
 /** The first candidate that exists, resolving bare names against PATH. */
 export function findBinary(): string | null {

@@ -2,10 +2,10 @@ import { ActivityProgress } from './ActivityProgress';
 import type { Activity } from '../transcript';
 import { useWorkPanels } from "../use-work-panels";
 import { FilesPanel } from "./FilesPanel";
-import { latestFileActivity, type FileActivity } from "../file-activity";
+import { keepFileActivity, latestFileActivity, type FileActivity } from "../file-activity";
 import { VoiceToolActivity } from "./VoiceToolActivity";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type DragEvent, type MutableRefObject } from "react";
-import { buildTranscript, type Item } from "../transcript";
+import type { Item } from "../transcript";
 import { LuMic, LuMicOff, LuX, LuGlobe, LuMaximize2, LuMinimize2, LuMinus, LuTerminal, LuFileText, LuFolderOpen, LuImage, LuImagePlus, LuRotateCcw, LuSquare, LuMessageSquareText, LuSlidersHorizontal } from "react-icons/lu";
 import { VoicePictures, shownPictures } from "./VoicePictures";
 import { VoiceConversation } from "./VoiceConversation";
@@ -95,7 +95,8 @@ export function VoiceStage({ sessionId, folder, workPhase, canvasOpen, onCanvasM
   // the browser and terminal do, and follows it from there. A file opened from
   // a tool card is put after everything that has happened, so that the panel
   // takes it, and the agent's next file after that again.
-  const agentFile = useMemo(() => latestFileActivity(toolEvents, folder), [toolEvents, folder]);
+  const lastFile = useRef<FileActivity | null>(null);
+  const agentFile = useMemo(() => (lastFile.current = keepFileActivity(lastFile.current, latestFileActivity(toolEvents, folder))), [toolEvents, folder]);
   const [openedFile, setOpenedFile] = useState<FileActivity | null>(null);
   const fileActivity = openedFile && openedFile.seq > (agentFile?.seq ?? 0) ? openedFile : agentFile;
   const filesSeen = useRef(agentFile?.seq ?? 0);
@@ -112,9 +113,9 @@ export function VoiceStage({ sessionId, folder, workPhase, canvasOpen, onCanvasM
   const [browserError, setBrowserError] = useState('');
   const thoughtViewport = useRef<HTMLDivElement>(null);
   const thought = useMemo(() => {
-    const latest = buildTranscript(toolEvents).at(-1);
+    const latest = items.at(-1);
     return latest?.kind === 'assistant' && !latest.done && !latest.text ? latest.thinking : '';
-  }, [toolEvents]);
+  }, [items]);
   useEffect(() => {
     const el = thoughtViewport.current;
     if (!el) return;
@@ -145,6 +146,7 @@ export function VoiceStage({ sessionId, folder, workPhase, canvasOpen, onCanvasM
     picturesSeen.current = last.seq;
     setPictureIndex(pictures.length - 1); setPicturesShown(true); onCue("focus");
   }, [pictures, onCue]);
+  const openTerminal = () => { setTerminalUsed(true); setTerminalShown(true); onCue("focus"); };
   const openPictures = () => { setPictureIndex(Math.max(0, pictures.length - 1)); setPicturesShown(true); onCue("focus"); };
   /** A tool card was tapped: bring up what it was about. */
   const openCall = (call: ToolCall) => {
@@ -152,7 +154,7 @@ export function VoiceStage({ sessionId, folder, workPhase, canvasOpen, onCanvasM
       const seq = toolEvents.reduce((n, e) => Math.max(n, e.seq), fileActivity?.seq ?? 0) + 0.5;
       if (!filesUsed) { setFilesSince(seq - 1); setFilesUsed(true); }
       setOpenedFile({ seq, path: call.path, tool: "read" }); setFilesShown(true); onCue("focus");
-    } else if (call.target === "terminal") { setTerminalUsed(true); setTerminalShown(true); onCue("focus"); }
+    } else if (call.target === "terminal") openTerminal();
     else if (call.target === "browser") open();
     else if (call.target === "canvas") { if (!canvasOpen) onCanvasToggle(); }
     else if (call.target === "pictures") openPictures();
@@ -190,7 +192,7 @@ export function VoiceStage({ sessionId, folder, workPhase, canvasOpen, onCanvasM
     "voice.canvas": () => { onCanvasToggle(); },
     "voice.files": () => { if (filesShown) setFilesShown(false); else openFiles(); },
     "voice.pictures": () => { if (picturesShown) setPicturesShown(false); else if (pictures.length) openPictures(); else return false; },
-    "voice.terminal": () => { if (terminalShown) setTerminalShown(false); else { setTerminalUsed(true); setTerminalShown(true); onCue("focus"); } },
+    "voice.terminal": () => { if (terminalShown) setTerminalShown(false); else openTerminal(); },
     "voice.browser": () => { if (shown) minimize(); else if (browserAvailable || loaded) open(); else return false; },
     "voice.settings": () => { setSettings(v => !v); },
     "voice.faster": () => step(1),
@@ -245,8 +247,8 @@ export function VoiceStage({ sessionId, folder, workPhase, canvasOpen, onCanvasM
   };
   useEffect(() => {
     if (terminalActivity <= terminalSeen.current) return;
-    terminalSeen.current = terminalActivity; setTerminalUsed(true);
-    setTerminalShown(true); onCue("focus");
+    terminalSeen.current = terminalActivity;
+    openTerminal();
   }, [terminalActivity, onCue]);
   useEffect(() => {
     if (browserActivity <= activity.current) return;
@@ -394,12 +396,12 @@ export function VoiceStage({ sessionId, folder, workPhase, canvasOpen, onCanvasM
         {!filesShown && <button type="button" onClick={openFiles} title={`${t("Show files")}${hint("voice.files")}`} aria-label={t("Show files")}><LuFolderOpen /></button>}
         {pictures.length > 0 && !picturesShown && <button type="button" onClick={openPictures} title={`${t("Show pictures")}${hint("voice.pictures")}`} aria-label={t("Show pictures")}><LuImage /></button>}
         {(browserAvailable || loaded) && !shown && <button type="button" onClick={open} title={`${t("Show browser")}${hint("voice.browser")}`} aria-label={t("Show browser")}><LuGlobe /></button>}
-        {!terminalShown && <button type="button" aria-label={t("Show terminal")} title={`${t("Show terminal")}${hint("voice.terminal")}`} onClick={() => { setTerminalUsed(true); setTerminalShown(true); onCue("focus"); }}><LuTerminal /></button>}
+        {!terminalShown && <button type="button" aria-label={t("Show terminal")} title={`${t("Show terminal")}${hint("voice.terminal")}`} onClick={openTerminal}><LuTerminal /></button>}
         <button ref={settingsToggle} type="button" data-voice-settings-toggle onClick={() => setSettings(v => !v)} title={`${t("Voice settings")}${hint("voice.settings")}`} aria-label={t("Voice settings")} aria-expanded={settings}><LuSlidersHorizontal /></button>
       </div>
       {settings && <VoiceSettings anchor={settingsToggle} sounds={sounds} onSounds={onSounds} rate={rate} onRate={onRate} steer={steer} onSteer={onSteer} ptt={ptt} onPtt={onPtt} onClose={() => setSettings(false)} />}
     </header>
-    {attachments.length > 0 && <div className="voice-attachments" aria-label={t("Pictures for your next message")}>
+    {attachments.length > 0 && <div className="voice-attachments" role="group" aria-label={t("Pictures for your next message")}>
       <div>{attachments.map(a => <figure key={a.id}>
         <img src={a.data} alt={a.name} />
         <button type="button" aria-label={t("Remove {name}", { name: a.name })} title={t("Remove")} onClick={() => onRemovePicture(a.id)}><LuX /></button>
@@ -442,12 +444,12 @@ export function VoiceStage({ sessionId, folder, workPhase, canvasOpen, onCanvasM
     <div className="voice-presence">
       <div className="voice-avatar"><VoiceOrb mode={mode} levels={levels} look={orbStyle} /></div>
       <div className="voice-dock-center">
-        {workPhase && ['processing the prompt','compacting the conversation'].includes(workPhase.label) ? <ActivityProgress phase={workPhase} compact /> : <>
+        {workPhase && (workPhase.label === 'processing the prompt' || workPhase.label === 'compacting the conversation') ? <ActivityProgress phase={workPhase} /> : <>
         <div className="voice-status" role="status"><span />{phase === 'Compacting context' ? t('Compacting context') : thought && anyPanel ? t("Thinking") : status}</div>
-        {anyPanel && thought && phase !== 'Compacting context' && <div ref={thoughtViewport} className="voice-thought-stream" aria-label={t("Live model thinking")}>{thought.slice(-1200)}</div>}
+        {anyPanel && thought && phase !== 'Compacting context' && <div ref={thoughtViewport} className="voice-thought-stream" role="group" aria-label={t("Live model thinking")}>{thought.slice(-1200)}</div>}
         </>}
       </div>
-      {!anyPanel && transcript && (input || holding || phase === "Transcribing") && <p className="voice-live-transcript" aria-label={t("Live transcription")}>{transcript}</p>}
+      {!anyPanel && transcript && (input || holding || phase === "Transcribing") && <p className="voice-live-transcript" role="group" aria-label={t("Live transcription")}>{transcript}</p>}
 
       <div className="voice-stage-controls">
         {ptt

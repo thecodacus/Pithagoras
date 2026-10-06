@@ -40,8 +40,9 @@ running commands, so install ones you trust. The registry can be another one
 | path | `/absolute/path/to/package` |
 
 They persist across restarts, because `HOME` points at the data volume. **Update
-all** upgrades everything; the bin icon removes one. Chats started from then on
-have the package; open ones pick it up with `/reload`.
+all** upgrades the installed packages; pi itself comes with the portal's version,
+so a new pi arrives with an update of the portal. The bin icon removes one. Chats
+started from then on have the package; open ones pick it up with `/reload`.
 
 ## Switching one off
 
@@ -126,6 +127,32 @@ anything.
 
 An unanswered dialog times out after five minutes rather than wedging the
 session forever.
+
+A status line or a widget an extension keeps refreshing does not count as use of
+the chat, and does not cut what the agent is writing into pieces: only a dialog
+does either.
+
+## When a chat's agent is let go
+
+A chat that nobody has used for twenty minutes has its agent let go, to free
+what it holds; the next message starts it again, on the same conversation. A
+routine that runs in a clean session lets its agent go when the run ends (not
+while a subagent or a job it started is still going: see below), and so does
+deleting a chat or stopping the portal. Extensions are told first, with
+pi's `session_shutdown` event (reason `quit`), so that they can stop their timers
+and the servers they started. One that has not finished after three seconds is
+let go regardless.
+
+That includes the jobs an extension started for the agent, which it ends when it
+is told. So a chat whose agent left a job running in its folder
+([Background jobs](#subagents-and-background-jobs), below) is not let go for
+being idle until the job is over. That holds for the chat that started the job,
+which is the one whose tool call was running when it began; another chat in the
+same folder is let go as usual. It holds for the agent of a routine in a clean
+session as well: it is kept when the run ends, and let go once the job is over
+and it has been idle. Deleting the chat or stopping the portal ends such a job
+all the same.
+
 ## Switching tools off for one chat
 
 The blocks icon in the composer says which tools the agent may reach for **in

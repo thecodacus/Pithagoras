@@ -3,9 +3,15 @@
 // ?ghslow=1 for a GitHub that takes seconds to answer, ?rename=1 for a renamed file with more changes in the
 // tree, ?conflict=1 for a merge stopped on a conflict, ?op=am for patches stopped half way, ?prefix=src for a
 // chat whose folder is src/ in the repository, ?comparefail=1 for a comparison git refuses, ?logfail=1 for a
-// history that fails the first time it is asked. window.moveHead() moves HEAD, as a commit in the shell would.
+// history that fails the first time it is asked, ?many=1 for a history of 250 commits (answered slowly, a page of
+// 100 at a time), ?bigdiff=1 for diffs of 6,500 rows, ?prtruncated=1 for a pull request diff that stops in its last
+// file, ?fork=1 for a pull request from a fork's `main` while `main` is checked out, ?pullsfail=1 and ?currentfail=1
+// for GitHub failing the first time it is asked for the list and for this branch's pull request, ?prdifffail=1 for
+// a pull request whose diff cannot be had, ?prfiles=1 for one that also renamed a file and deleted another, ?unmerged=1 for a branch that is not merged and has to be deleted
+// anyway, ?branch=<name> for another branch checked out. window.stateFails = true makes reading the repository
+// fail, as a portal that cannot be reached would. window.moveHead() moves HEAD, as a commit in the shell would.
 // What the panel asked for is in window.gitCalls; window.agentWrote() changes a file the way the agent would.
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import '../src/styles';
 import { GIT_TABS, GitPanel, type GitTab } from '../src/components/git/GitPanel';
@@ -18,7 +24,7 @@ const calls: { method: string; url: string; body?: any }[] = [];
 
 type File = { path: string; from?: string; x: string; y: string; kind: string; staged?: any; unstaged?: any };
 const repo = {
-  branch: 'feature/login',
+  branch: params.get('branch') ?? (params.get('fork') ? 'main' : 'feature/login'),
   head: 'a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0',
   upstream: 'origin/feature/login' as string | null,
   ahead: 2,
@@ -45,9 +51,14 @@ const commits = [
   { sha: 'b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1', short: 'b2c3d4e', parents: ['c'], author: 'Ada', email: 'ada@example.com', date: now - 7200, refs: [], subject: 'Add the login form' },
   { sha: 'c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2', short: 'c3d4e5f', parents: [], author: 'Grace', email: 'grace@example.com', date: now - 86400 * 3, refs: ['origin/main', 'main'], subject: 'Start' },
 ];
-const diffOf = (path: string) =>
+// ?many=1: a long history, so that "Older commits…" has pages to load.
+const longHistory = Array.from({ length: 250 }, (_, i) => ({ ...commits[0], sha: String(i).padStart(40, '0'), short: String(i).padStart(7, '0'), subject: `Commit number ${i}` }));
+const smallDiff = (path: string) =>
   `diff --git a/${path} b/${path}\nindex 1..2 100644\n--- a/${path}\n+++ b/${path}\n@@ -10,6 +10,8 @@ export function login(user: User) {\n   const hash = await digest(user.password);\n-  if (hash === stored) return true;\n+  if (!stored) throw new Error("no password set");\n+  if (timingSafeEqual(hash, stored)) {\n+    return makeSession(user);\n+  }\n   return false;\n }\n`;
-const branches = [
+const bigDiff = (path: string) =>
+  `diff --git a/${path} b/${path}\nindex 1..2 100644\n--- a/${path}\n+++ b/${path}\n@@ -0,0 +1,6500 @@\n${Array.from({ length: 6500 }, (_, i) => `+line ${i + 1}`).join('\n')}\n`;
+const diffOf = (path: string) => (params.get('bigdiff') ? bigDiff(path) : smallDiff(path));
+let branches = [
   { name: 'feature/login', remote: false, sha: 'a1b2c3d', upstream: 'origin/feature/login', ahead: 2, behind: 0, gone: false, current: true, date: now - 600, subject: 'Check the password before the session is made' },
   { name: 'main', remote: false, sha: 'c3d4e5f', upstream: 'origin/main', ahead: 0, behind: 3, gone: false, current: false, date: now - 86400 * 3, subject: 'Start' },
   { name: 'old/experiment', remote: false, sha: 'd4e5f6a', upstream: 'origin/old/experiment', ahead: 0, behind: 0, gone: true, current: false, date: now - 86400 * 40, subject: 'Try another store' },
@@ -60,10 +71,15 @@ const gh = params.get('gh') === 'off'
 // The pull request opened here, once it is.
 let created: any = null;
 let logAsked = 0;
+let pullsFailed = 0;
+let currentFailed = 0;
 const pulls = [
   { number: 41, title: 'Login with a password', author: { login: 'ada' }, headRefName: 'feature/login', baseRefName: 'main', isDraft: false, state: 'OPEN', updatedAt: new Date(Date.now() - 3600_000).toISOString(), url: 'https://github.com/me/app/pull/41', reviewDecision: 'REVIEW_REQUIRED', additions: 40, deletions: 6 },
   { number: 38, title: 'Dark mode for the settings', author: { login: 'grace' }, headRefName: 'feature/dark', baseRefName: 'main', isDraft: true, state: 'OPEN', updatedAt: new Date(Date.now() - 86400_000).toISOString(), url: 'https://github.com/me/app/pull/38' },
 ];
+
+// ?fork=1: a pull request from a contributor's `main`, while `main` is what is checked out here.
+if (params.get('fork')) pulls.unshift({ number: 43, title: 'Fix a typo from a fork', author: { login: 'bob' }, headRefName: 'main', baseRefName: 'main', isDraft: false, state: 'OPEN', updatedAt: new Date(Date.now() - 600_000).toISOString(), url: 'https://github.com/me/app/pull/43', isCrossRepository: true } as any);
 
 const realFetch = window.fetch;
 window.fetch = (async (input: any, init?: any) => {
@@ -76,6 +92,7 @@ window.fetch = (async (input: any, init?: any) => {
   const path = url.replace('/api/sessions/s/git', '').split('?')[0];
   const q = new URLSearchParams(url.split('?')[1] ?? '');
   if (params.get('repo') === 'none' && path === '') return reply({ repo: false, folder: '/work/notes' });
+  if (path === '' && (window as any).stateFails) return reply({ error: 'The portal could not be reached' }, 500);
   if (path === '') return reply({ repo: true, root: '/work/app', prefix: params.get('prefix') ?? '', ...repo, truncated: false, remotes: [{ name: 'origin', address: 'github.com:me/app', web: 'https://github.com/me/app' }] });
   if (path === '/gh') {
     if (params.get('ghslow')) await new Promise((r) => setTimeout(r, 4000));
@@ -106,6 +123,11 @@ window.fetch = (async (input: any, init?: any) => {
   }
   if (path === '/log') {
     if (params.get('logfail') && logAsked++ === 0) return reply({ error: 'Unable to create index.lock: File exists' }, 409);
+    if (params.get('many')) {
+      await new Promise((r) => setTimeout(r, 300));
+      const skip = Number(q.get('skip') ?? 0);
+      return reply({ commits: longHistory.slice(skip, skip + Number(q.get('limit') ?? 100)) });
+    }
     return reply({ commits });
   }
   if (path.startsWith('/commits/')) {
@@ -117,14 +139,25 @@ window.fetch = (async (input: any, init?: any) => {
     repo.branch = body.name;
     return reply({ ok: true });
   }
+  if (path === '/branches/delete') {
+    // ?unmerged=1: git refuses the plain delete of a branch whose commits are on no other.
+    if (params.get('unmerged') && !body.force) return reply({ error: `the branch '${body.name}' is not fully merged` }, 409);
+    branches = branches.filter((b) => b.name !== body.name);
+    return reply({ ok: true });
+  }
   if (path === '/switch') {
     repo.branch = body.remote ? body.name.split('/').slice(1).join('/') : body.name;
     return reply({ ok: true });
   }
   if (path === '/stashes') return reply({ stashes: [{ ref: 'stash@{0}', sha: '5'.repeat(40), date: now - 4000, message: 'On feature/login: half a refactor' }] });
+  if (path === '/compare' && q.get('base') === 'old/experiment') return reply({ error: 'old/experiment and HEAD have nothing in common' }, 409);
   if (path === '/compare' && params.get('comparefail')) return reply({ error: 'upstream/main and HEAD have nothing in common' }, 409);
   if (path === '/compare') return reply({ comparison: { base: 'origin/main', head: repo.branch, mergeBase: 'c3d4e5f', commits: commits.slice(0, 2), files: [{ path: 'src/auth/login.ts', status: 'M', added: 12, removed: 3, binary: false }] } });
-  if (path === '/pulls' && method === 'GET') return reply({ pulls });
+  if (path === '/pulls' && method === 'GET') {
+    if (params.get('pullsfail') && !pullsFailed++) return reply({ error: 'GitHub is not answering' }, 502);
+    return reply({ pulls });
+  }
+  if (path === '/pulls/current' && params.get('currentfail') && !currentFailed++) return reply({ error: 'gh timed out' }, 502);
   if (path === '/pulls/current') return reply({ pull: repo.branch === 'feature/login' ? { ...pulls[0], body: '' } : created?.headRefName === repo.branch ? created : null });
   if (path === '/pulls' && method === 'POST') {
     created = { ...pulls[0], number: 42, title: body.title, headRefName: repo.branch, body: body.body };
@@ -135,7 +168,12 @@ window.fetch = (async (input: any, init?: any) => {
     const p = pulls.find((x) => String(x.number) === path.slice(7)) ?? { ...pulls[0], number: 42, title: 'New', headRefName: repo.branch };
     return reply({ pull: { ...p, body: 'Adds **login** with a password.\n\n- checks the hash in constant time', mergeable: 'MERGEABLE', statusCheckRollup: [{ name: 'test', conclusion: 'SUCCESS', status: 'COMPLETED' }, { name: 'lint', status: 'IN_PROGRESS' }], commits: [{ oid: commits[0].sha, messageHeadline: commits[0].subject }], comments: [{ author: { login: 'grace' }, body: 'Looks good — one question about the hash.', createdAt: new Date(Date.now() - 1800_000).toISOString() }], reviews: [] } });
   }
-  if (/^\/pulls\/\d+\/diff$/.test(path)) return reply({ diff: diffOf('src/auth/login.ts') + diffOf('src/auth/session.ts'), truncated: false });
+  if (/^\/pulls\/\d+\/diff$/.test(path)) {
+    if (params.get('prdifffail')) return reply({ error: 'gh pr diff failed' }, 502);
+    // ?prfiles=1: a file renamed with nothing changed in it, and one deleted, besides the two changed.
+    const more = params.get('prfiles') ? 'diff --git a/src/auth/jwt.ts b/src/auth/token.ts\nsimilarity index 100%\nrename from src/auth/jwt.ts\nrename to src/auth/token.ts\ndiff --git a/src/auth/old.ts b/src/auth/old.ts\ndeleted file mode 100644\nindex 1..0\n--- a/src/auth/old.ts\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-one\n-two\n' : '';
+    return reply({ diff: diffOf('src/auth/login.ts') + diffOf('src/auth/session.ts') + more, truncated: params.get('prtruncated') === '1' });
+  }
   if (/^\/pulls\/\d+\/(merge|comment|review|checkout)$/.test(path)) return reply({ ok: true, said: '' });
   return reply({ ok: true });
 }) as typeof fetch;

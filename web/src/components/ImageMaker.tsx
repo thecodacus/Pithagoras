@@ -143,7 +143,7 @@ export function ImageMaker({
   const sourcesNow = useRef(sources);
   sourcesNow.current = sources;
   // Making and changing have a switch and an address each: either can be on without the other.
-  const generating = features.enabled && features.baseUrl !== "";
+  const generating = features.ready;
   const changing = features.editReady;
   const full = running >= limit;
   const count = Math.min(form.count, Math.max(1, limit - running));
@@ -561,7 +561,7 @@ export function ImageMaker({
                       />
                     </button>
                     {sources.length > 1 && <span className="pointer-events-none absolute bottom-0.5 left-0.5 rounded bg-surface/85 px-1 text-[10px] tabular-nums text-fg">{i + 1}</span>}
-                    {masking && i === 0 && <span className="pointer-events-none absolute left-0.5 top-0.5 rounded bg-accent px-1 text-[10px] text-white">{t("Mask")}</span>}
+                    {masking && i === 0 && <span className="pointer-events-none absolute left-0.5 top-0.5 rounded bg-accent px-1 text-[10px] text-accent-fg">{t("Mask")}</span>}
                     <button
                       type="button"
                       onClick={() => {
@@ -715,7 +715,8 @@ export function ImageMaker({
                   ? t("Paint over what should change in picture 1, “{name}”. The mask belongs to the first picture only: to paint on another, move it to the first place, which starts the mask over. Without a mask the whole picture may change. The mask is not kept.", { name: sourceName(sources[0]) })
                   : t("Paint over what should change. Without a mask the whole picture may change. The mask goes with the first picture, and is not kept.")}
               </p>
-              <MaskPainter ref={mask} src={api.galleryFileUrl(sources[0].id)} />
+              {/* Keyed by the picture: another one must not keep the strokes, or a "could not be loaded", of the one before. */}
+              <MaskPainter key={sources[0].id} ref={mask} src={api.galleryFileUrl(sources[0].id)} />
             </div>
           )}
         </div>
@@ -733,7 +734,7 @@ export function ImageMaker({
             className={primaryCls}
           >
             {busy ? <LuLoader aria-hidden className="h-4 w-4 animate-spin" /> : editing ? <LuWandSparkles aria-hidden className="h-4 w-4" /> : <LuSparkles aria-hidden className="h-4 w-4" />}
-            {editing ? (count > 1 ? t("Make {n} changes", { n: count }) : t("Change the picture")) : count > 1 ? t("Make {n} pictures", { n: count }) : t("Make the picture")}
+            {editing ? tp(count, "Change the picture", "Make {n} changes") : tp(count, "Make the picture", "Make {n} pictures")}
           </button>
           {editing && (
             <>

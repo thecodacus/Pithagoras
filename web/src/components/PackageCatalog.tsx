@@ -6,6 +6,7 @@ import { confirmDialog } from "./ConfirmDialog";
 import { load, peek } from "../settings-cache";
 import { inputCls } from "./SettingsUi";
 import { formatNumber, t } from "../i18n";
+import { SkeletonGroup } from "./Skeleton";
 
 /**
  * pi packages published on npm, to install with a click rather than a spec
@@ -98,9 +99,9 @@ export function PackageCatalog({
           <button type="button" onClick={() => fetchList(asked)} className="text-accent hover:underline">{t("Try again")}</button>
         </div>
       ) : !found ? (
-        <div className="skeleton-group mt-2 space-y-1.5" aria-label={t("Loading packages")}>
+        <SkeletonGroup className="mt-2 space-y-1.5" label={t("Loading packages")}>
           {[0, 1, 2].map((i) => <div key={i} className="skeleton h-16 w-full" />)}
-        </div>
+        </SkeletonGroup>
       ) : found.length === 0 ? (
         <p className="mt-2 rounded-xl border border-dashed border-line px-3 py-6 text-center text-xs text-fg-subtle">
           {asked ? t("Nothing published matches “{query}”.", { query: asked }) : t("Nothing published matches.")}

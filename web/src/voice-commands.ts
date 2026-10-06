@@ -24,7 +24,7 @@ const REPEAT = [
 ];
 
 /** A transcript as it is compared: lower case, without punctuation, one space between words. */
-export function normalizeUtterance(text: string): string {
+function normalizeUtterance(text: string): string {
   return text
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s]/gu, " ")

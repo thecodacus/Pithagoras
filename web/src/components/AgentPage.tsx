@@ -18,17 +18,21 @@ import {
   LuRefreshCw,
   LuTrash2,
   LuUser,
+  LuX,
 } from "react-icons/lu";
 import { PageHeader, Stat } from "./PageHeader";
 import { RowsSkeleton } from "./Skeleton";
-import { api, type Agent, type AgentSession, type AgentSetup as Setup } from "../api";
+import { api, ApiError, type Agent, type AgentSession, type AgentSetup as Setup } from "../api";
 import { AgentSetup } from "./AgentSetup";
-import { confirmDialog } from "./ConfirmDialog";
+import { confirmDeleteSession } from "./SessionActions";
 import { Modal } from "./Modal";
+import { ErrorBanner, LoadFailed, primarySmCls } from "./SettingsUi";
 import { StatusDot } from "./StatusDot";
 import { TitleInput } from "./TitleInput";
 import { pollWhileVisible } from "../poll";
 import { msg, t, tp } from "../i18n";
+import { tabKeys } from "../tab-keys";
+import { useFlash } from "../use-flash";
 import { when } from "../time";
 
 /**
@@ -40,6 +44,8 @@ export function AgentPage({ onSelect }: { onSelect: (id: string) => void }) {
   const [params, setParams] = useSearchParams();
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [creating, setCreating] = useState(false);
+  // The files an agent's folder already had, and so its answers did not replace: said on its page until it is told to go or the agent is left, not again.
+  const [madeKept, setMadeKept] = useState<{ id: string; files: string[] } | null>(null);
   const [error, setError] = useState("");
 
   const loadAgents = useCallback(
@@ -59,6 +65,11 @@ export function AgentPage({ onSelect }: { onSelect: (id: string) => void }) {
 
   const asked = params.get("agent");
   const agent = asked ? agents?.find((a) => a.id === asked) : undefined;
+  // However the agent is left — the link back, the browser's Back, the sidebar — the note goes with it. Only when the
+  // link changes: a new agent's note is set a moment before the link comes to name it.
+  useEffect(() => {
+    setMadeKept((made) => (made && made.id !== asked ? null : made));
+  }, [asked]);
 
   if (creating) {
     return (
@@ -68,6 +79,7 @@ export function AgentPage({ onSelect }: { onSelect: (id: string) => void }) {
           onSubmit={async (input) => {
             const made = await api.createAgent(input);
             await loadAgents();
+            setMadeKept({ id: made.id, files: answersLeft(made.kept) });
             setCreating(false);
             setParams({ agent: made.id });
           }}
@@ -79,7 +91,7 @@ export function AgentPage({ onSelect }: { onSelect: (id: string) => void }) {
   if (!agents) {
     return (
       <div className="mx-auto w-full max-w-3xl px-4 py-6">
-        {error ? <div className="rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div> : <RowsSkeleton />}
+        {error ? <LoadFailed error={error} onRetry={loadAgents} /> : <RowsSkeleton />}
       </div>
     );
   }
@@ -92,6 +104,8 @@ export function AgentPage({ onSelect }: { onSelect: (id: string) => void }) {
       // Its own state for each agent: a draft of one's SOUL.md is not another's.
       key={agent.id}
       agent={agent}
+      kept={madeKept?.id === agent.id ? madeKept.files : []}
+      onKept={(files) => setMadeKept({ id: agent.id, files })}
       back={
         <button
           onClick={() => setParams({})}
@@ -109,6 +123,9 @@ export function AgentPage({ onSelect }: { onSelect: (id: string) => void }) {
     />
   );
 }
+
+/** What the wizard's answers are written to: of the files an agent's folder already had, the ones it left as they were. */
+const answersLeft = (kept?: string[]) => (kept ?? []).filter((file) => file === "SOUL.md" || file === "PrimaryUser.md");
 
 /** A card for each agent, with its avatar and name, and one that makes a new agent. */
 function AgentCards({ agents, onOpen, onNew }: { agents: Agent[]; onOpen: (id: string) => void; onNew: () => void }) {
@@ -163,6 +180,9 @@ function AgentCards({ agents, onOpen, onNew }: { agents: Agent[]; onOpen: (id: s
   );
 }
 
+/** Conversations started here rather than arriving through a channel. */
+const BROWSER = "browser";
+
 /**
  * The agent's conversations, one per chat rather than one overall.
  *
@@ -171,17 +191,19 @@ function AgentCards({ agents, onOpen, onNew }: { agents: Agent[]; onOpen: (id: s
  * That is what stops a group chat and a DM sharing a memory. They are ordinary
  * sessions, so they open in the ordinary chat view.
  */
-/** Conversations started here rather than arriving through a channel. */
-const BROWSER = "browser";
-
 function AgentView({
   agent,
+  kept,
+  onKept,
   back,
   onChanged,
   onDeleted,
   onSelect,
 }: {
   agent: Agent;
+  /** The files its folder already had, which the answers did not replace (see `answersLeft`), until they are dismissed. Held by the page, so that it is said once and not again each time the agent is opened. */
+  kept: string[];
+  onKept: (files: string[]) => void;
   back: ReactNode;
   onChanged: () => Promise<void>;
   onDeleted: () => Promise<void>;
@@ -189,6 +211,7 @@ function AgentView({
 }) {
   const [sessions, setSessions] = useState<AgentSession[]>([]);
   const [setup, setSetup] = useState<Setup | null>(null);
+  const [setupFailed, setSetupFailed] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState("");
@@ -196,6 +219,8 @@ function AgentView({
   // refresh works, and must not wipe out — or be wiped by — the answer to a
   // rename or a delete.
   const [loadError, setLoadError] = useState("");
+  // Whether the list was ever read: a failure before that is not "out of date", there is nothing to be out of date.
+  const listRead = useRef(false);
   // The conversation whose name is open for editing, if any; the agent's own as "agent".
   const [renaming, setRenaming] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -216,6 +241,7 @@ function AgentView({
     api
       .agentSessions(agent.id)
       .then((r) => {
+        listRead.current = true;
         setSessions(r.sessions);
         setLoadError("");
       })
@@ -225,8 +251,21 @@ function AgentView({
       .catch((e) => setLoadError((e as Error).message))
       .finally(() => setLoading(false));
 
+  // A file that is a link is left alone and has no editor under Files, so the note does not send anybody there.
+  const links = kept.filter((name) => setup?.files.find((f) => f.name === name)?.link);
+  const edits = kept.filter((name) => !links.includes(name));
+
+  const readSetup = () =>
+    api.agentSetup(agent.id).then(
+      (r) => {
+        setSetupFailed(null);
+        setSetup(r);
+      },
+      (e) => setSetupFailed((e as Error).message),
+    );
+
   useEffect(() => {
-    api.agentSetup(agent.id).then(setSetup).catch(() => {});
+    void readSetup();
     load();
     return pollWhileVisible(load, 5000);
     // Keyed on the agent by its parent: one agent per mount.
@@ -263,17 +302,7 @@ function AgentView({
   };
 
   const remove = async (s: AgentSession) => {
-    const fresh = s.channel && s.channel.slug !== BROWSER;
-    const ok = await confirmDialog({
-      title: t("Delete \"{name}\"?", { name: s.title }),
-      message: fresh
-        ? t("The agent forgets this conversation, and the next message in that chat starts a new one.")
-        : t("It is stopped if it is running, and its transcript is removed."),
-      confirmLabel: t("Delete"),
-      danger: true,
-      deletes: true,
-    });
-    if (!ok) return;
+    if (!(await confirmDeleteSession(s.title, Boolean(s.channel && s.channel.slug !== BROWSER)))) return;
     setError("");
     try {
       await api.deleteSession(s.id);
@@ -315,7 +344,9 @@ function AgentView({
         <AgentSetup
           home={setup.home}
           onSubmit={async (input) => {
-            setSetup(await api.runAgentWizard(agent.id, input));
+            const done = await api.runAgentWizard(agent.id, input);
+            setSetup(done);
+            onKept(answersLeft(done.kept));
             await onChanged();
           }}
         />
@@ -367,14 +398,17 @@ function AgentView({
               <button
                 onClick={async () => {
                   setStarting(true);
+                  setError("");
                   try {
                     onSelect((await api.startAgentChat(agent.id)).id);
+                  } catch (e) {
+                    setError((e as Error).message);
                   } finally {
                     setStarting(false);
                   }
                 }}
                 disabled={starting}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-accent/12 px-3 py-1.5 text-sm text-accent ring-1 ring-inset ring-accent/25 transition hover:bg-accent/20 disabled:opacity-40"
+                className={primarySmCls}
               >
                 {starting ? (
                   <LuRefreshCw className="h-4 w-4 animate-spin" />
@@ -386,7 +420,7 @@ function AgentView({
             }
           >
             <div className="mt-4 flex flex-wrap items-center gap-2">
-              <Stat value={sessions.length} label={t("conversations")} />
+              <Stat value={sessions.length} label={tp(sessions.length, "conversation", "conversations")} />
               <Stat value={sessions.filter((s) => s.status === "running").length} label={t("running")} tone="text-accent" />
               <div className="flex min-w-0 items-center gap-1.5 rounded-lg bg-raised/60 px-2.5 py-1">
                 <LuFolder className="h-3 w-3 shrink-0 text-fg-faint" />
@@ -399,26 +433,58 @@ function AgentView({
             </div>
           </PageHeader>
 
+          {kept.length > 0 && (setup || setupFailed) && (
+            <div role="status" className="mt-4 flex items-start gap-2 rounded-lg bg-warn/10 px-3 py-2 text-sm text-warn">
+              <span className="min-w-0 flex-1">
+                {edits.length > 0 &&
+                  tp(
+                    edits.length,
+                    "This agent's folder already had {files}, so what you answered was not written to it. Edit it under Files.",
+                    "This agent's folder already had {files}, so what you answered was not written to them. Edit them under Files.",
+                    { files: edits.join(", ") },
+                  )}
+                {edits.length > 0 && links.length > 0 && " "}
+                {links.length > 0 &&
+                  tp(
+                    links.length,
+                    "This agent's folder already had {files} as a link, so what you answered was not written to it. It is left as it is.",
+                    "This agent's folder already had {files} as links, so what you answered was not written to them. They are left as they are.",
+                    { files: links.join(", ") },
+                  )}
+              </span>
+              <button type="button" onClick={() => onKept([])} aria-label={t("Dismiss")} title={t("Dismiss")} className="shrink-0 rounded p-0.5 hover:bg-warn/10">
+                <LuX aria-hidden className="h-4 w-4" />
+              </button>
+            </div>
+          )}
+
           <AgentTabs tab={tab} onTab={setTab} unread={agent.unread} />
 
-          {error && (
-            <div className="mt-4 rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>
-          )}
+          {error && <ErrorBanner className="mt-4" onClose={() => setError("")}>{error}</ErrorBanner>}
 
           {tab === "activity" && <ActivityFeed agent={agent} onChanged={onChanged} onSelect={onSelect} />}
           {tab === "heartbeat" && <HeartbeatSettings agent={agent} onChanged={onChanged} />}
           {tab === "skills" && <AgentSkills agent={agent} />}
           {tab === "files" && setup?.initialised && <AgentFiles agent={agent.id} setup={setup} onSaved={setSetup} />}
+          {tab === "files" && !setup && setupFailed && (
+            <div className="mt-4">
+              <LoadFailed error={setupFailed} onRetry={readSetup} />
+            </div>
+          )}
 
           {tab === "conversations" && (
           <>
-          {loadError && (
+          {loadError && listRead.current && (
             <div className="mt-4 rounded-lg bg-warn/10 px-3 py-2 text-sm text-warn">
               {t("Could not refresh the conversations — what is shown may be out of date.")} {loadError}
             </div>
           )}
           {loading ? (
             <RowsSkeleton />
+          ) : loadError && !listRead.current ? (
+            <div className="mt-4">
+              <LoadFailed error={loadError} onRetry={load} />
+            </div>
           ) : sessions.length === 0 ? (
             <div className="mt-4 rounded-xl border border-dashed border-line px-4 py-10 text-center">
               <p className="text-sm text-fg-muted">{t("Nothing has reached the agent yet.")}</p>
@@ -534,13 +600,14 @@ type AgentTab = (typeof AGENT_TABS)[number][0];
 /** The tabs under an agent's header; Activity counts what is unread. */
 function AgentTabs({ tab, onTab, unread }: { tab: AgentTab; onTab: (id: AgentTab) => void; unread: number }) {
   return (
-    <div role="tablist" aria-label={t("Agent sections")} className="mt-5 flex gap-1 overflow-x-auto border-b border-line">
+    <div role="tablist" aria-label={t("Agent sections")} onKeyDown={tabKeys} className="mt-5 flex gap-1 overflow-x-auto border-b border-line">
       {AGENT_TABS.map(([id, label]) => (
         <button
           key={id}
           role="tab"
           type="button"
           aria-selected={tab === id}
+          tabIndex={tab === id ? 0 : -1}
           onClick={() => onTab(id)}
           className={`-mb-px inline-flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition ${
             tab === id ? "border-accent text-fg" : "border-transparent text-fg-muted hover:text-fg"
@@ -598,7 +665,7 @@ function DeleteAgent({ agent, onClose, onDeleted }: { agent: Agent; onClose: () 
       onClose={onClose}
       footer={
         <div className="flex items-center justify-end gap-2">
-          {error && <p className="mr-auto text-xs text-danger">{error}</p>}
+          {error && <p role="alert" className="mr-auto text-xs text-danger">{error}</p>}
           <button onClick={onClose} className="rounded-lg px-3 py-1.5 text-sm text-fg-muted hover:bg-fg/5">
             {t("Cancel")}
           </button>
@@ -619,12 +686,11 @@ function DeleteAgent({ agent, onClose, onDeleted }: { agent: Agent; onClose: () 
       ) : (
         <div className="space-y-3">
           <p className="text-sm text-fg-muted">
-            {agent.chats === 1
-              ? t("Its one chat is stopped and deleted with it.")
-              : t("Its {n} chats are stopped and deleted with it.", { n: agent.chats })}
+            {tp(agent.chats, "Its one chat is stopped and deleted with it.", "Its {n} chats are stopped and deleted with it.")}{" "}
+            {t("The background jobs running in its folder, a dev server for example, are stopped too, whichever you choose below.")}
           </p>
           {choice("keep", t("Keep its folder"), t("Its files and memory stay in {home}. An agent made under the same name picks them up again.", { home: agent.home }))}
-          {choice("delete", t("Delete its folder too"), t("Everything in {home} is removed, its memory with it. This cannot be undone.", { home: agent.home }))}
+          {choice("delete", t("Delete its folder too"), t("Everything in {home} is removed, its memory and its routines with it. This cannot be undone.", { home: agent.home }))}
         </div>
       )}
     </Modal>
@@ -651,36 +717,67 @@ function RowBody({ s, title }: { s: AgentSession; title: ReactNode }) {
   );
 }
 
-/** What a WATCH.md might say, shown in an empty one. */
-const WATCH_EXAMPLE = [
-  "# What to keep an eye on",
-  "",
-  "- The open pull requests on the project: tell me about one waiting more than three days.",
-  "- The notes in ~/inbox: anything that needs an answer this week.",
-  "",
-  "Only tell me what needs me. Stay quiet otherwise.",
-].join("\n");
+/** What a WATCH.md might say, shown in an empty one: the markdown stays, the words are the reader's. */
+const watchExample = () =>
+  [
+    `# ${t("What to keep an eye on")}`,
+    "",
+    `- ${t("The open pull requests on the project: tell me about one waiting more than three days.")}`,
+    `- ${t("The notes in ~/inbox: anything that needs an answer this week.")}`,
+    "",
+    t("Only tell me what needs me. Stay quiet otherwise."),
+  ].join("\n");
 
 /** The files that define the agent, editable in place. */
 function AgentFiles({ agent, setup, onSaved }: { agent: string; setup: Setup; onSaved: (s: Setup) => void }) {
   const [open, setOpen] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [saved, flashSaved] = useFlash();
+  // When the file was read: the agent writes these files too (MEMORY.md above all), and a save from an older copy must not replace what it wrote since.
+  const [readAt, setReadAt] = useState(0);
+  const [changed, setChanged] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const file = setup.files.find((f) => f.name === open);
   // Understory holds the memory: the file stays, and is not read.
   const unread = (name: string) => name === "MEMORY.md" && setup.memory === "understory";
 
-  const save = async () => {
+  const show = (f: Setup["files"][number]) => {
+    setOpen(f.name);
+    setDraft(f.content);
+    setReadAt(f.mtime);
+    setChanged(false);
+    setError(null);
+  };
+
+  const save = async (overwrite = false) => {
     if (!file) return;
     setBusy(true);
+    setError(null);
     try {
-      onSaved(await api.saveAgentFile(agent, file.name, draft));
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
+      const next = await api.saveAgentFile(agent, file.name, draft, overwrite ? undefined : readAt);
+      onSaved(next);
+      setReadAt(next.files.find((f) => f.name === file.name)?.mtime ?? 0);
+      setChanged(false);
+      flashSaved();
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) setChanged(true);
+      else setError((e as Error).message);
     } finally {
       setBusy(false);
+    }
+  };
+
+  const loadNew = async () => {
+    if (!file) return;
+    try {
+      const next = await api.agentSetup(agent);
+      onSaved(next);
+      const fresh = next.files.find((f) => f.name === file.name);
+      if (fresh) show(fresh);
+    } catch (e) {
+      setError((e as Error).message);
     }
   };
 
@@ -690,9 +787,10 @@ function AgentFiles({ agent, setup, onSaved }: { agent: string; setup: Setup; on
         {setup.files.map((f) => (
           <button
             key={f.name}
+            aria-pressed={open === f.name}
             onClick={() => {
-              setOpen(open === f.name ? null : f.name);
-              setDraft(f.content);
+              if (open === f.name) setOpen(null);
+              else show(f);
             }}
             className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs transition ${
               open === f.name
@@ -721,16 +819,39 @@ function AgentFiles({ agent, setup, onSaved }: { agent: string; setup: Setup; on
               {t("Not read while Understory is the agent's memory (Settings → Add-ons → Memory). It is kept, and read again once Understory is switched off.")}
             </p>
           )}
+          {file.link ? (
+            <p role="note" className="rounded-lg bg-fg/5 px-3 py-2 text-xs text-fg-muted">
+              {t("This file is a link, so it is left alone: it is not shown or written here.")}
+            </p>
+          ) : (
+          <>
           <textarea
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
+            aria-label={file.name}
             rows={14}
             spellCheck={false}
-            placeholder={file.name === "WATCH.md" ? WATCH_EXAMPLE : undefined}
+            placeholder={file.name === "WATCH.md" ? watchExample() : undefined}
             className="w-full resize-y rounded-lg border border-line bg-raised/60 px-3 py-2 font-mono text-xs leading-relaxed outline-none focus:border-accent/60"
           />
+          {changed && (
+            <div role="alert" className="mt-2 flex flex-wrap items-center gap-2 rounded-lg bg-warn/10 px-3 py-1.5 text-xs text-warn">
+              <span className="min-w-0 flex-1">{t("This file changed after you opened it.")}</span>
+              <button onClick={() => void loadNew()} className="rounded px-1.5 py-0.5 underline hover:text-fg">
+                {t("Load the new version")}
+              </button>
+              <button onClick={() => void save(true)} className="rounded px-1.5 py-0.5 underline hover:text-fg">
+                {t("Save mine anyway")}
+              </button>
+            </div>
+          )}
+          {error && (
+            <p role="alert" className="mt-2 text-xs text-danger">
+              {error}
+            </p>
+          )}
           <button
-            onClick={save}
+            onClick={() => void save()}
             disabled={busy || draft === file.content}
             className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-fg/5 px-3 py-2 text-sm text-fg transition hover:bg-fg/10 disabled:opacity-40"
           >
@@ -741,6 +862,8 @@ function AgentFiles({ agent, setup, onSaved }: { agent: string; setup: Setup; on
             ) : null}
             {saved ? t("Saved") : t("Save")}
           </button>
+          </>
+          )}
         </div>
       )}
     </section>

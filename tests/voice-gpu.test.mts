@@ -1,16 +1,14 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import express from 'express';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fakeDocker } from "./fake-docker.mts";
+import { inProcessHome } from "./helpers.mts";
 
 // Choosing the GPU for the managed voice: the card chosen on the page (by UUID) and `VOICE_GPU` (by index) are the
 // two ways to ask for one, and both go through the one GPU check, the engine choice and the container that the
 // managed service already has. A fake Docker daemon stands in for the host: no GPU and no container is touched.
-const dir = mkdtempSync(path.join(tmpdir(), 'voice-gpu-'));
-process.env.DATA_DIR = dir;
+const dir = inProcessHome('voice-gpu-');
 process.env.DOCKER_SOCKET = path.join(dir, 'docker.sock');
 process.env.PORTAL_CONTAINER_NAME = 'portal-test';
 // No nvidia-smi on the portal's host: the cards are read in a throwaway container, as a portal in a container does.
@@ -26,45 +24,39 @@ const BASE = 'ubuntu:22.04';
 let container: any = null;
 // What nvidia-smi inside the image prints.
 let reading = SMI;
-let calls: { method: string; url: string; body: any }[] = [];
-const server = http.createServer(async (req, res) => {
-  let raw = ''; for await (const c of req) raw += c;
-  const body = raw ? JSON.parse(raw) : undefined; const url = req.url!; const method = req.method!;
-  calls.push({ method, url, body });
-  res.setHeader('Content-Type', 'application/json');
-  if (url === '/containers/portal-test/json') return res.end(JSON.stringify({ Id: 'portal-one', State: { Running: true } }));
-  if (url === '/containers/pithagoras-voice/json') { res.statusCode = container ? 200 : 404; return res.end(JSON.stringify(container)); }
-  if (url.startsWith('/containers/pithagoras-voice/logs')) return res.end(JSON.stringify('services ready'));
-  if (url.startsWith('/images/')) return res.end('{}');
+const docker = await fakeDocker(process.env.DOCKER_SOCKET!, ({ method, url, path: p, body }) => {
+  if (url === '/containers/portal-test/json') return { json: { Id: 'portal-one', State: { Running: true } } };
+  if (url === '/containers/pithagoras-voice/json') return { status: container ? 200 : 404, json: container };
+  if (url.startsWith('/containers/pithagoras-voice/logs')) return { json: 'services ready' };
+  if (url.startsWith('/images/')) return {};
+  if (url === '/volumes/create') return {};
   // The throwaway container that reads nvidia-smi inside the image.
-  if (url === '/containers/create') return res.end(JSON.stringify({ Id: 'probe-1' }));
-  if (url === '/containers/probe-1/wait') return res.end(JSON.stringify({ StatusCode: 0 }));
-  if (url.startsWith('/containers/probe-1/logs')) return res.end(JSON.stringify(reading));
-  if (url.includes('/stop?')) container.State.Running = false;
-  if (method === 'DELETE' && url === '/containers/pithagoras-voice') container = null;
-  if (url.startsWith('/containers/create?name=pithagoras-voice')) container = { Config: body, HostConfig: body.HostConfig, State: { Running: false } };
-  if (url === '/containers/pithagoras-voice/start') container.State.Running = true;
-  res.end('{}');
+  if (url === '/containers/create') return { json: { Id: 'probe-1' } };
+  if (url === '/containers/probe-1/start') return {};
+  if (url === '/containers/probe-1/wait') return { json: { StatusCode: 0 } };
+  if (url.startsWith('/containers/probe-1/logs')) return { json: reading };
+  if (method === 'DELETE' && p === '/containers/probe-1') return {};
+  if (method === 'POST' && p === '/containers/pithagoras-voice/stop') { container.State.Running = false; return {}; }
+  if (method === 'DELETE' && p === '/containers/pithagoras-voice') { container = null; return {}; }
+  if (method === 'POST' && url.startsWith('/containers/create?name=pithagoras-voice')) { container = { Config: body, HostConfig: body.HostConfig, State: { Running: false } }; return {}; }
+  if (method === 'POST' && url === '/containers/pithagoras-voice/start') { container.State.Running = true; return {}; }
+  return undefined;
 });
-await new Promise<void>(r => server.listen(process.env.DOCKER_SOCKET, r));
+const { calls } = docker;
 const oldFetch = globalThis.fetch;
 // The voice processes answer their health checks.
 globalThis.fetch = (async () => new Response('{}')) as typeof fetch;
-after(async () => {
-  globalThis.fetch = oldFetch;
-  await new Promise<void>((resolve, reject) => server.close(e => e ? reject(e) : resolve()));
-  rmSync(dir, { recursive: true, force: true });
-});
+after(() => { globalThis.fetch = oldFetch; });
 const voice = await import('../server/src/extensions/voice-service.js');
 const { parseGpus, askedCard, holds, deviceId, cardOf } = await import('../server/src/voice-gpu.js');
 voice.hostReader.read = () => ({ totalMiB: 16384, freeMiB: 12000, threads: 8 });
 
-const reset = () => { container = null; reading = SMI; calls = []; voice.useGpu(''); delete process.env.VOICE_GPU; };
+const reset = () => { container = null; reading = SMI; docker.reset(); voice.useGpu(''); delete process.env.VOICE_GPU; };
 const settle = async () => { for (let n = 0; n < 200 && (await voice.status()).busy; n++) await new Promise(r => setTimeout(r, 10)); };
 const created = () => calls.filter(c => c.url === '/containers/create?name=pithagoras-voice');
 const cardOfCreated = () => created()[0].body.HostConfig.DeviceRequests[0];
 /** The voice container was deleted, not the throwaway one that reads nvidia-smi, and the models volume was not touched. */
-const gone = () => calls.some(c => c.method === 'DELETE' && c.url === '/containers/pithagoras-voice');
+const gone = () => calls.some(c => c.method === 'DELETE' && c.url === '/containers/pithagoras-voice?force=true');
 const volumeKept = () => !calls.some(c => c.method === 'DELETE' && c.url.startsWith('/volumes'));
 /** A managed container of the default engines, as an earlier portal made it: on a card by index, or on Docker's own pick without one. */
 const made = (devices: any, running = false, recipe = 'breeze+whisper:base') => ({ Config: { Labels: { 'pithagoras.addon': 'voice', 'pithagoras.voice-network': 'shared-v1', 'pithagoras.voice-recipe': recipe } },
@@ -203,7 +195,7 @@ test('a new choice recreates a service on another card with its engines and mode
   assert.ok(gone() && volumeKept());
   assert.equal(container.State.Running, true);
   // Chosen again: what is there is started as it is.
-  calls = [];
+  docker.reset();
   await voice.install();
   await settle();
   assert.equal(gone() || created().length > 0, false);
@@ -338,7 +330,7 @@ test('PUT /api/voice/gpu is how a card is chosen: it stores the UUID, moves a ru
     await settle();
     assert.deepEqual(cardOfCreated().DeviceIDs, [B]);
     // Running: moved at once, with the models kept.
-    calls = [];
+    docker.reset();
     container.State.Running = true;
     answer = await put(A);
     assert.deepEqual([answer.status, await answer.json()], [200, { selected: A, restarting: true }]);

@@ -41,7 +41,8 @@ has and when one last moved.
   [Tools](#tools). A project that does this carries a *tools* mark on its row.
 - **Delete** removes the project: its chats and its folder, after a confirmation
   that says how many chats and files go with it. It is refused while a chat in
-  the project is running. When the folder holds git repositories — it is one,
+  the project is running; the background jobs running in its folder are stopped with it, and the
+  confirmation says so. When the folder holds git repositories — it is one,
   has submodules, or has repositories cloned into its subfolders — the
   confirmation also lists what only the folder holds: uncommitted changes (a
   new folder counts once), commits no remote has, and stashes. It then asks
@@ -71,6 +72,10 @@ A project's instructions are the folder's `AGENTS.md`, which pi reads by itself
 when a chat starts in it. The editor and the file are the same thing: edit it in
 the portal or in the folder, whichever is nearer. Saving an empty text removes the
 file. Home has none of its own.
+
+The agent works in the folder and may write `AGENTS.md` too. A save made from a
+copy that has changed since is not applied: the dialog says "This file changed
+after you opened it" and offers **Load the new version** or **Save mine anyway**.
 
 Chats started after a change pick it up. A chat that is already open does after
 `/reload`.

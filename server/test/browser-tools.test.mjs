@@ -1,11 +1,8 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
-import path from "node:path";
 import { chromium } from "playwright-core";
-import { freePort } from "./server-harness.mjs";
+import { freePort, inProcessHome } from "./server-harness.mjs";
 
 /**
  * The portal's browser tools against a real Chromium over its debugging port,
@@ -13,7 +10,7 @@ import { freePort } from "./server-harness.mjs";
  * each call, a stale ref, a scroll past a sticky sidebar, reading and finding.
  */
 
-const home = mkdtempSync(path.join(tmpdir(), "browser-tools-"));
+inProcessHome("browser-tools-");
 
 const FORM = `<!doctype html><title>Signup</title><h1>Sign up</h1>
 <form onsubmit="event.preventDefault(); const b = document.getElementById('save'); b.disabled = true; b.textContent = 'Saved'; document.getElementById('msg').hidden = false;">
@@ -29,6 +26,11 @@ const LONG = `<!doctype html><title>Long</title>
 <article id=essay><h2>Essay</h2><p>${words(600)}</p></article>
 <h2>Pricing</h2><p>It costs nothing.</p></main>`;
 
+// One link that opens a tab at once, and a button that opens one a moment after the click.
+const TABS = `<!doctype html><title>Tabs</title>
+<a href="/long" target="_blank">Open it in a tab</a>
+<button onclick="setTimeout(() => window.open('/long', '_blank'), 150)">Open it soon</button>`;
+
 // A button that notes where the agent's cursor was when it was clicked, and a link to the next page.
 const CURSOR = (n) => `<!doctype html><title>Cursor ${n}</title>
 <button id=go style="position:absolute;left:400px;top:300px;width:120px;height:40px" onclick="window.__clickedAt = window.__agentCursor && window.__agentCursor.where(); this.textContent = 'Done'">Go</button>
@@ -37,7 +39,7 @@ const CURSOR = (n) => `<!doctype html><title>Cursor ${n}</title>
 const site = createServer((req, res) => {
   res.setHeader("content-type", "text/html");
   const cursorPage = req.url.match(/^\/cursor\/(\d+)/);
-  res.end(cursorPage ? CURSOR(Number(cursorPage[1])) : req.url === "/long" ? LONG : FORM);
+  res.end(cursorPage ? CURSOR(Number(cursorPage[1])) : req.url === "/long" ? LONG : req.url === "/tabs" ? TABS : FORM);
 });
 let browser;
 let tools = {};
@@ -46,7 +48,6 @@ let base = "";
 after(async () => {
   site.close();
   await browser?.close();
-  rmSync(home, { recursive: true, force: true });
 });
 
 /**
@@ -68,9 +69,6 @@ async function setUp() {
   await new Promise((r) => site.listen(0, "127.0.0.1", r));
   base = `http://127.0.0.1:${site.address().port}`;
   process.env.BROWSER_CDP_URL = `http://127.0.0.1:${cdpPort}`;
-  process.env.DATA_DIR = home;
-  process.env.PI_CODING_AGENT_DIR = path.join(home, "agent");
-  mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
   const { browserTools } = await import("../dist/browser/tools.js");
   browserTools("chat-1")({ registerTool: (t) => (tools[t.name] = t) });
 }
@@ -195,5 +193,37 @@ test("the browser tools, on a real browser", { skip: browser ? false : "no Chrom
     const shot = await tools.browser_screenshot.execute("call", {});
     assert.equal(shot.content[0].type, "image");
     assert.equal(shot.content[0].mimeType, "image/jpeg");
+  });
+
+  await t.test("a chat that is gone does not keep its tab and what it was shown", async () => {
+    const { forgetBrowserSession } = await import("../dist/browser/tools.js");
+    assert.equal(forgetBrowserSession("chat-1"), true, "it was holding them");
+    assert.equal(forgetBrowserSession("chat-1"), false, "and does not any more");
+    assert.equal(forgetBrowserSession("never-used-the-browser"), false);
+    // Used again, it is simply given a tab.
+    assert.match(await call("browser_snapshot"), /^Page: /);
+  });
+
+  await t.test("an action does not wait for a tab that never opens", async () => {
+    const view = await call("browser_navigate", { url: `${base}/form` });
+    const ref = refOf(view, /textbox "Name"/);
+    // Once a fixed wait of a second and a half sat in each, so none could be quicker than that.
+    // The fastest of three, so that a busy machine does not decide it.
+    const took = [];
+    for (const text of ["Ada", "Grace", "Edith"]) {
+      const started = Date.now();
+      await call("browser_type", { ref, text });
+      took.push(Date.now() - started);
+    }
+    assert.ok(Math.min(...took) < 1300, `a type took ${took.join(", ")} ms`);
+  });
+
+  await t.test("a tab an action opens is still shown, at once or a moment after", async () => {
+    for (const [name, pattern] of [["Open it in a tab", /link "Open it in a tab"/], ["Open it soon", /button "Open it soon"/]]) {
+      const view = await call("browser_navigate", { url: `${base}/tabs` });
+      const opened = await call("browser_click", { ref: refOf(view, pattern) });
+      assert.match(opened, /it opened a new tab, which is where you are now/, name);
+      assert.match(opened, /Page: Long/, name);
+    }
   });
 });

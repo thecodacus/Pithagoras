@@ -1,19 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
+import { inProcessHome } from "./server-harness.mjs";
 
-const home = mkdtempSync(path.join(tmpdir(), "pithagoras-routine-migration-"));
-const env = {
-  ...process.env,
-  DATA_DIR: home,
-  WORKSPACE_ROOT: path.join(home, "ws"),
-  AGENT_HOME: path.join(home, "agent-home"),
-  PI_CODING_AGENT_DIR: path.join(home, "agent"),
-};
-mkdirSync(env.PI_CODING_AGENT_DIR, { recursive: true });
+// The server's own database, made by another process first: this one is told the same folders.
+inProcessHome("pithagoras-routine-migration-");
+const env = { ...process.env };
 
 test("routine sessions from before routines had a place are moved to where Home is now", async () => {
   // A database as it was before: no place on routines, and a routine session
@@ -29,7 +22,6 @@ test("routine sessions from before routines had a place are moved to where Home 
   `;
   execFileSync(process.execPath, ["--input-type=module", "-e", before], { env, stdio: "inherit" });
 
-  Object.assign(process.env, env);
   const { findRoutineSession, getDb } = await import("../dist/db.js");
   const where = (id) => getDb().prepare("SELECT workspace FROM sessions WHERE id = ?").get(id).workspace;
   assert.equal(where("old-run"), env.AGENT_HOME);

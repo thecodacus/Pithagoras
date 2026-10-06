@@ -120,7 +120,7 @@ test('the first call skips thinking for the providers listed: by default every w
  };
  for (const provider of ['llama.cpp', 'llama-server=http://127.0.0.1:8080', 'llama-swap']) assert.equal(call(new VoiceFirstTurn(), provider), false, provider);
  assert.equal(call(new VoiceFirstTurn(), 'anthropic'), undefined, 'not listed');
- assert.equal(call(new VoiceFirstTurn(), 'llama-swapper'), undefined, 'a name is matched whole, not as a prefix');
+ assert.equal(call(new VoiceFirstTurn(() => ['llama-swap']), 'llama-swapper'), undefined, 'a listed name is matched whole, not as a prefix');
  // A saved list replaces the default one, read at the call.
  let saved: string[] | undefined = ['my-gateway'];
  const turn = () => new VoiceFirstTurn(() => saved);

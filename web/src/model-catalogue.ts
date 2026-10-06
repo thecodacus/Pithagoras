@@ -1,4 +1,5 @@
 import type { PiModel } from "./api";
+import { local } from "./safe-storage";
 
 /**
  * The model catalogue, kept between sessions and reloads.
@@ -20,9 +21,9 @@ export const CATALOGUE_TTL_MS = 60 * 60 * 1000;
 interface Cached { at: number; models: PiModel[] }
 
 function read(): Cached | null {
+  local.remove(OLD_KEY);
+  const raw = local.get(CATALOGUE_KEY);
   try {
-    localStorage.removeItem(OLD_KEY);
-    const raw = localStorage.getItem(CATALOGUE_KEY);
     return raw ? (JSON.parse(raw) as Cached) : null;
   } catch {
     return null;
@@ -39,18 +40,8 @@ export const catalogueFresh = (now = Date.now()): boolean => {
 export const cachedModels = (now = Date.now()): PiModel[] => (catalogueFresh(now) ? read()!.models : []);
 
 export const cacheModels = (models: PiModel[], now = Date.now()) => {
-  try {
-    if (models.length) localStorage.setItem(CATALOGUE_KEY, JSON.stringify({ at: now, models } satisfies Cached));
-  } catch {
-    // A full quota is not worth failing a dropdown over.
-  }
+  if (models.length) local.set(CATALOGUE_KEY, JSON.stringify({ at: now, models } satisfies Cached));
 };
 
 /** A provider was changed: the next model menu opened, in any tab, fetches the list again. */
-export const forgetModels = () => {
-  try {
-    localStorage.removeItem(CATALOGUE_KEY);
-  } catch {
-    // Nothing kept, nothing to forget.
-  }
-};
+export const forgetModels = () => local.remove(CATALOGUE_KEY);

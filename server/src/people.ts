@@ -28,6 +28,8 @@ export interface PersonRow {
   last_seen: string | null;
   /** Set once, so a stranger messaging repeatedly does not page you each time. */
   announced_at: string | null;
+  /** 1 once somebody here chose the name, which the platform's own then no longer replaces. */
+  renamed: number;
 }
 
 /** Identities are scoped by channel: a Slack id and a Telegram id never collide. */
@@ -45,6 +47,16 @@ export function listPeople(): PersonRow[] {
 }
 
 /**
+ * A name as the agent and the primary user are shown it: one line, no angle
+ * brackets, no longer than a name is. Platforms let anybody call themselves
+ * anything, and a name goes into the speaker block the model reads as the
+ * portal's own words and into the message that asks the primary user to approve.
+ */
+export function cleanName(name: string): string {
+  return [...name.replace(/[<>]/g, "").replace(/[\p{Cc}\p{Cf}\s]+/gu, " ").trim()].slice(0, 64).join("").trim();
+}
+
+/**
  * Record that someone spoke, returning who the portal thinks they are.
  *
  * A sender nobody has classified is stored as "unknown" rather than dropped —
@@ -59,20 +71,32 @@ export function seen(key: string, name: string): PersonRow {
      VALUES (?, ?, 'unknown', ?, ?)
      ON CONFLICT(key) DO UPDATE SET last_seen = excluded.last_seen,
        -- Keep whatever they are called now, unless someone renamed them here.
-       name = CASE WHEN people.notes = '' THEN excluded.name ELSE people.name END`
-  ).run(key, name || key, now, now);
+       name = CASE WHEN people.renamed = 0 THEN excluded.name ELSE people.name END`
+  ).run(key, cleanName(name) || key, now, now);
   return getPerson(key)!;
 }
 
+/**
+ * Sets what somebody is called here, which the platform's name then no longer
+ * replaces. Not when it is the name they already have: the roster's Save sends
+ * the name with every change of role, and that is not a rename.
+ */
+export function rename(key: string, name: string): void {
+  const chosen = cleanName(name);
+  if (!chosen || chosen === getPerson(key)?.name) return;
+  getDb().prepare("UPDATE people SET name = ?, renamed = 1 WHERE key = ?").run(chosen, key);
+}
+
 export function setRole(key: string, role: Role, name?: string): PersonRow | undefined {
-  const sets = ["role = ?"];
-  const values: unknown[] = [role];
-  if (typeof name === "string" && name.trim()) {
-    sets.push("name = ?");
-    values.push(name.trim());
-  }
-  getDb().prepare(`UPDATE people SET ${sets.join(", ")} WHERE key = ?`).run(...values, key);
+  getDb().prepare("UPDATE people SET role = ? WHERE key = ?").run(role, key);
+  if (typeof name === "string") rename(key, name);
   return getPerson(key);
+}
+
+/** Is this the only person the agent works for? Taking that away opens every channel to strangers: see hasPrimary. */
+export function isOnlyPrimary(key: string): boolean {
+  if (getPerson(key)?.role !== "primary") return false;
+  return !getDb().prepare("SELECT 1 FROM people WHERE role = 'primary' AND key != ? LIMIT 1").get(key);
 }
 
 export function markAnnounced(key: string): void {

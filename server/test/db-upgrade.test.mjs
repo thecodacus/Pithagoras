@@ -2,17 +2,16 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, openSync, writeSync, closeSync, utimesSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, openSync, writeSync, closeSync, utimesSync } from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
+import { freePort, inProcessHome } from "./server-harness.mjs";
 
-const home = mkdtempSync(path.join(tmpdir(), "pithagoras-upgrade-"));
-process.env.DATA_DIR = home;
+const home = inProcessHome("pithagoras-upgrade-");
 
-const { DamagedDatabase, backupsIn, integrityProblems, pruneBackups, runUpgrade } = await import("../dist/db-upgrade-steps.js");
+const { DamagedDatabase, backupTo, backupsIn, integrityProblems, pruneBackups, runUpgrade } = await import("../dist/db-upgrade-steps.js");
 const { SCHEMA_VERSION } = await import("../dist/schema-version.js");
-const { upgradeCheck } = await import("../dist/db-upgrade.js");
+const { repairSteps, upgradeCheck } = await import("../dist/db-upgrade.js");
 
 /** A database as an older portal left it: sessions and events, no version. */
 function oldDatabase(file, rows = 2000) {
@@ -106,7 +105,7 @@ const until = async (ok, ms = 20000) => { const end = Date.now() + ms; while (Da
 test("a whole upgrade on startup: backed up, upgraded with the real migrations, then it returns", async () => {
   const a = fresh("startup");
   oldDatabase(a.file, 500);
-  const run = startUpgrade(a.dir, 47000 + Math.floor(Math.random() * 1000));
+  const run = startUpgrade(a.dir, await freePort());
   const exited = await new Promise((resolve) => run.child.on("exit", resolve));
   assert.equal(exited, 0, run.output());
   assert.match(run.output(), /READY/);
@@ -121,10 +120,12 @@ test("a damaged database on startup keeps the page up with how to repair it, rat
   const a = fresh("startup-damaged");
   oldDatabase(a.file);
   damage(a.file);
-  const port = 48000 + Math.floor(Math.random() * 1000);
+  const port = await freePort();
   const run = startUpgrade(a.dir, port);
   try {
     assert.ok(await until(async () => { try { return (await fetch(`http://127.0.0.1:${port}/api/sessions`)).status === 500; } catch { return false; } }), run.output());
+    // The answers above are this process's page, not whatever else listens on a port: it was there to be had.
+    assert.doesNotMatch(run.output(), /could not be shown/);
     const api = await (await fetch(`http://127.0.0.1:${port}/api/sessions`)).json();
     assert.match(api.error, /damaged/);
     assert.equal(api.upgrading, false);
@@ -154,4 +155,89 @@ test("an upgrade whose page cannot have its port still upgrades", async () => {
   } finally {
     holder.close();
   }
+});
+
+test("a backup that fails or is cut off leaves no file that could be taken for one, and the next try finds its room", async () => {
+  const a = fresh("partial");
+  oldDatabase(a.file, 60_000);
+  const backups = path.join(a.dir, "backups");
+  mkdirSync(backups, { recursive: true });
+  // A good backup from before.
+  const good = path.join(backups, "portal-v1-20260101-000000.db");
+  writeFileSync(good, "good");
+  utimesSync(good, 1000, 1000);
+  // The process stops in the middle of the copy: a disk that fills, or a restart, does the same to it.
+  const dest = path.join(backups, "portal-v0-20260102-000000.db");
+  const script = `const m = await import(${JSON.stringify(new URL("../dist/db-upgrade-steps.js", import.meta.url).href)}); await m.backupTo(${JSON.stringify(a.file)}, ${JSON.stringify(dest)}, () => process.kill(process.pid, "SIGKILL"));`;
+  const killed = await new Promise((resolve) => spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: "ignore" }).on("exit", (code, signal) => resolve(signal)));
+  assert.equal(killed, "SIGKILL");
+  assert.ok(readdirSync(backups).some((f) => f.endsWith(".partial")), "what it had written is there, under a name of its own");
+  assert.ok(!existsSync(dest), "and not under the name of a backup");
+  assert.deepEqual(backupsIn(backups), [good], "so it is not counted, and not kept in place of a good one");
+  pruneBackups(backups, 1);
+  assert.ok(existsSync(good));
+
+  // A copy that fails with an error leaves nothing either.
+  const failing = path.join(backups, "portal-v0-20260104-000000.db");
+  await assert.rejects(backupTo(a.file, failing, () => { throw new Error("the disk is full"); }), /disk is full/);
+  assert.ok(!existsSync(failing) && !existsSync(failing + ".partial"));
+
+  // The next try removes what was left before it looks for room: that file holds the space it needs.
+  const leftover = readdirSync(backups).find((f) => f.endsWith(".partial"));
+  assert.ok(leftover);
+  let sawLeftover = true;
+  const made = await runUpgrade({ file: a.file, from: 0, backupDir: backups, free: () => { sawLeftover = existsSync(path.join(backups, leftover)); return Infinity; }, migrate: async () => {} }, () => {});
+  assert.equal(sawLeftover, false, "removed before the room is looked at");
+  assert.ok(made && existsSync(made));
+  assert.ok(readdirSync(backups).every((f) => /^portal-v\d+-\d{8}-\d{6}\.db$/.test(f)), readdirSync(backups).join(", "));
+});
+
+test("the repair steps name the container the portal is told it has, and have a form for a portal that is not in one", () => {
+  const named = repairSteps({ PORTAL_CONTAINER_NAME: "pi-portal" }, "/srv/data", true).join("\n");
+  assert.match(named, /docker stop pi-portal/);
+  assert.match(named, /\.Mounts.*pi-portal\)/);
+  assert.match(named, /docker start pi-portal/);
+  assert.doesNotMatch(named, /pithagoras/);
+  assert.match(repairSteps({}, "/srv/data", true).join("\n"), /docker stop pithagoras/, "the name the Compose files give it, when none is said");
+  assert.doesNotMatch(repairSteps({ PORTAL_CONTAINER_NAME: "x; rm -rf /" }, "/srv/data", true).join("\n"), /x; rm/, "a name that is no container's is not put in a command");
+  const native = repairSteps({}, "/srv/my data", false).join("\n");
+  assert.match(native, /sqlite3 '\/srv\/my data\/portal\.db' \.recover \| sqlite3 '\/srv\/my data\/portal-recovered\.db'/);
+  assert.doesNotMatch(native, /docker/);
+});
+
+test("a database from a newer portal is not opened: the page says so, and the file is as it was", async () => {
+  const a = fresh("newer");
+  oldDatabase(a.file, 20);
+  const d = new Database(a.file);
+  d.pragma(`user_version = ${SCHEMA_VERSION + 1}`);
+  d.close();
+  assert.deepEqual(upgradeCheck(a.file), { needed: false, from: SCHEMA_VERSION + 1, newer: true });
+  // One at the version is as it was: no check, no flag.
+  const same = fresh("same-version");
+  oldDatabase(same.file, 5);
+  const e = new Database(same.file);
+  e.pragma(`user_version = ${SCHEMA_VERSION}`);
+  e.close();
+  assert.deepEqual(upgradeCheck(same.file), { needed: false, from: SCHEMA_VERSION });
+
+  const before = hash(a.file);
+  const port = await freePort();
+  const run = startUpgrade(a.dir, port);
+  try {
+    assert.ok(await until(async () => { try { return (await fetch(`http://127.0.0.1:${port}/api/sessions`)).status === 500; } catch { return false; } }), run.output());
+    // The answers above are this process's page, not whatever else listens on a port: it was there to be had.
+    assert.doesNotMatch(run.output(), /could not be shown/);
+    const api = await (await fetch(`http://127.0.0.1:${port}/api/sessions`)).json();
+    assert.match(api.error, /newer portal/);
+    assert.equal(api.upgrading, false);
+    const html = await (await fetch(`http://127.0.0.1:${port}/`)).text();
+    assert.match(html, /from a newer version/);
+    assert.doesNotMatch(html, /To repair it/);
+    assert.equal(run.child.exitCode, null, "still running, not restarted into the same failure");
+    assert.doesNotMatch(run.output(), /READY/);
+  } finally {
+    run.child.kill();
+  }
+  assert.equal(hash(a.file), before);
+  assert.deepEqual(backupsIn(path.join(a.dir, "backups")), []);
 });

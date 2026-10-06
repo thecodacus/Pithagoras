@@ -1,14 +1,13 @@
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
-import { freePort, serverEnv, startServer, testHome } from "./server-harness.mjs";
+import { freePort, inProcessHome, serverEnv, startServer } from "./server-harness.mjs";
 
 /**
  * What /api/tools says of the picture tools, against the whole server: the tool
  * lists group the portal's own in one box and keep an extension's of the same
  * name with its extension, and go by the `inline` mark on the route's answer.
  */
-const home = testHome("pithagoras-tools-picture-mark-");
-process.env.DATA_DIR = home;
+const home = inProcessHome("pithagoras-tools-picture-mark-");
 const db = await import("../dist/db.js");
 db.rememberTools([
   { name: "show_image", source: "pictures", package: null, inline: true },
@@ -18,7 +17,7 @@ db.rememberTools([
   { name: "web_search", source: "pi-web-access", package: null, inline: false },
 ]);
 // Kept before the mark was recorded: none at all, from no package, under the portal's label.
-const kept = JSON.parse(db.getStoredSettings().tools_seen);
+const kept = JSON.parse(db.getSetting("tools_seen"));
 delete kept.find((t) => t.name === "edit_image").inline;
 db.putSetting("tools_seen", JSON.stringify(kept));
 

@@ -1,6 +1,7 @@
 import type { PortalEvent } from "./api";
-import { unwrap } from "./tool-activity";
+import { unwrapCall } from "./tool-activity";
 import { argsSummary } from "./tool-args";
+import { toolArgsOf, toolNameOf } from "./tool-payload";
 import { msg, t } from "./i18n";
 import { GENERATED_PICTURE_MARK } from "../../server/src/generated-picture";
 
@@ -32,7 +33,7 @@ export interface ShownPicture {
  */
 export function shownPicture(payload: any): ShownPicture | undefined {
   if (payload?.isError) return undefined;
-  const name = String(payload?.toolName ?? payload?.name ?? "");
+  const name = toolNameOf(payload);
   const details = payload?.result?.details;
   if (name === "generate_image" || name === "edit_image" ? details?.[GENERATED_PICTURE_MARK] !== true : name !== "show_image") return undefined;
   if (typeof details?.path !== "string" || !details.path) return undefined;
@@ -231,6 +232,33 @@ function userItem(seq: number, p: any): UserItem {
     ...(images ? { images } : {}),
     ...(p?.steer === true ? { steer: true } : {}),
   };
+}
+
+/** Whether two values hold the same, however deep: what an entry is made of is strings, numbers and plain objects. */
+function sameValue(a: any, b: any, depth = 0): boolean {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== "object" || typeof b !== "object" || !a || !b || depth > 8 || Array.isArray(a) !== Array.isArray(b)) return false;
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every((key) => key in b && sameValue(a[key], b[key], depth + 1));
+}
+
+/**
+ * The entries as they were before wherever one has not changed.
+ *
+ * `buildTranscript` makes every entry anew from the events, so every row of a
+ * conversation looks changed to the one drawing it, for each word of a reply.
+ * Handing back the earlier entry where it says the same lets a row that is
+ * drawn only when its entry changes be left alone.
+ */
+export function keepItems(was: Item[], next: Item[]): Item[] {
+  if (!was.length) return next;
+  const before = new Map<string, Item>();
+  for (const item of was) before.set(item.id, item);
+  return next.map((item) => {
+    const old = before.get(item.id);
+    return old && sameValue(old, item) ? old : item;
+  });
 }
 
 /**
@@ -441,12 +469,12 @@ export function buildTranscript(events: PortalEvent[], options: { ended?: boolea
       case "tool_execution_start": {
         closeCurrent();
         answerEnd = null;
-        const args = p.input ?? p.args ?? p.parameters;
+        const args = toolArgsOf(p);
         items.push({
           kind: "tool",
           id: `t${ev.seq}`,
           callId: typeof p.toolCallId === "string" ? p.toolCallId : undefined,
-          name: String(p.toolName ?? p.name ?? "tool"),
+          name: toolNameOf(p, "tool"),
           status: "running",
           detail: summarizeToolInput(p),
           ...(p[GENERATED_PICTURE_MARK] === true ? { portalPicture: true as const } : {}),
@@ -491,7 +519,7 @@ export function buildTranscript(events: PortalEvent[], options: { ended?: boolea
       case "tool_execution_end": {
         // Close the most recent still-running tool of the same name. By its id,
         // one taken for cut off too: its end is what really happened.
-        const name = String(p.toolName ?? p.name ?? "tool");
+        const name = toolNameOf(p, "tool");
         for (let i = items.length - 1; i >= 0; i--) {
           const it = items[i];
           if (it.kind === "tool" &&
@@ -599,7 +627,7 @@ export function buildTranscript(events: PortalEvent[], options: { ended?: boolea
 
 /** The call an update belongs to: by its id, or else the newest one of that name still running. */
 function findRunningTool(items: Item[], p: any): Extract<Item, { kind: "tool" }> | undefined {
-  const name = String(p.toolName ?? p.name ?? "");
+  const name = toolNameOf(p);
   for (let i = items.length - 1; i >= 0; i--) {
     const it = items[i];
     if (it.kind !== "tool") continue;
@@ -609,20 +637,31 @@ function findRunningTool(items: Item[], p: any): Extract<Item, { kind: "tool" }>
 }
 
 function summarizeToolInput(p: any): string | undefined {
-  const raw = p.input ?? p.args ?? p.parameters;
+  const raw = toolArgsOf(p);
+  const call = unwrapCall(toolNameOf(p), raw);
   // Through the MCP adapter, what the tool inside was given.
-  const input = String(p.toolName ?? p.name ?? "") === "mcp" && raw && typeof raw === "object" && typeof raw.tool === "string" ? unwrap(p).input : raw;
-  return argsSummary(input);
+  return argsSummary(call.name !== toolNameOf(p) ? call.input : raw);
 }
 
-/** Highest seq seen, so a reconnect resumes exactly where the stream left off. */
-export function lastSeq(events: PortalEvent[]): number {
-  return events.length ? events[events.length - 1].seq : 0;
-}
+/**
+ * Which phase the agent is in. These are ids that the status line, the voice
+ * stage and the progress card compare against, not wording: each of them says
+ * what the phase is called to the user in its own words, so rewording one here
+ * is a compile error where it is read rather than a card that quietly goes.
+ */
+export type ActivityLabel =
+  | "compacting the conversation"
+  | "loading the model"
+  | "processing the prompt"
+  | "retrying after an error"
+  | "thinking"
+  | "writing the reply"
+  | "working"
+  // A tool, by its name.
+  | `running ${string}`;
 
 export interface Activity {
-  /** What the agent is doing, in the second person's words rather than pi's. */
-  label: string;
+  label: ActivityLabel;
   /** When this phase started, for the elapsed counter. */
   since?: number;
   /** Prefill, when llama.cpp is reporting it. */
@@ -702,7 +741,8 @@ export function activity(events: PortalEvent[]): Activity {
 
       case "message_snapshot": {
         const blocks = Array.isArray(p.message?.content) ? p.message.content : [];
-        const last = [...blocks].reverse().find((c: any) => c?.type === 'text' && c.text || c?.type === 'thinking' && c.thinking);
+        // A tool call being written counts: its arguments are the reply, for as long as they take.
+        const last = [...blocks].reverse().find((c: any) => c?.type === 'toolCall' || c?.type === 'text' && c.text || c?.type === 'thinking' && c.thinking);
         if (last) return { label: last.type === 'thinking' ? 'thinking' : 'writing the reply', since: ev.at };
         break;
       }

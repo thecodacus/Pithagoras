@@ -9,9 +9,19 @@ import {
   LuShieldCheck,
 } from "react-icons/lu";
 import { PageHeader } from "./PageHeader";
+import { BrowserInstall } from "./BrowserInstall";
+import { ErrorBanner, LoadFailed, SwitchRow, inputCls } from "./SettingsUi";
 import { api, type BrowserStatus } from "../api";
 import { pollWhileVisible } from "../poll";
-import { t, tx } from "../i18n";
+import { labelOf, msg, t, tx } from "../i18n";
+
+/** What kind of conversation allowed or refused the browser, as the portal names it. */
+const SESSION_KIND: Record<string, string> = {
+  task: msg("task"),
+  agent: msg("agent"),
+  routine: msg("routine"),
+  heartbeat: msg("heartbeat"),
+};
 
 /**
  * The agent's browser.
@@ -24,10 +34,14 @@ export function BrowserPage({ onOpenSession }: { onOpenSession: (id: string) => 
   const [status, setStatus] = useState<BrowserStatus | null>(null);
   const [allowlist, setAllowlist] = useState("");
   const [dirty, setDirty] = useState(false);
+  // What a button was refused, kept until the next press; and what the poll could not read, which is only true
+  // until the next poll that can. Two messages, so that a poll that works does not take back one nobody read yet.
   const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [shown, setShown] = useState(false);
 
   const act = async (fn: () => Promise<unknown>) => {
+    setError(null);
     try {
       await fn();
       await load();
@@ -42,9 +56,10 @@ export function BrowserPage({ onOpenSession }: { onOpenSession: (id: string) => 
       .browser()
       .then((s) => {
         setStatus(s);
+        setLoadError(null);
         if (!dirty) setAllowlist(s.allowlist);
       })
-      .catch((e) => setError((e as Error).message));
+      .catch((e) => setLoadError((e as Error).message));
 
   useEffect(() => {
     load();
@@ -54,9 +69,15 @@ export function BrowserPage({ onOpenSession }: { onOpenSession: (id: string) => 
   if (!status) {
     return (
       <div className="h-full overflow-y-auto px-4 py-6">
-        <p className="mx-auto flex w-full max-w-3xl items-center gap-2 text-sm text-fg-subtle">
-          <LuRefreshCw className="h-3.5 w-3.5 animate-spin" /> {t("Loading…")}
-        </p>
+        <div className="mx-auto w-full max-w-3xl">
+          {loadError ? (
+            <LoadFailed error={loadError} onRetry={load} />
+          ) : (
+            <p className="flex items-center gap-2 text-sm text-fg-subtle">
+              <LuRefreshCw className="h-3.5 w-3.5 animate-spin" /> {t("Loading…")}
+            </p>
+          )}
+        </div>
       </div>
     );
   }
@@ -78,13 +99,13 @@ export function BrowserPage({ onOpenSession }: { onOpenSession: (id: string) => 
   return (
     <div className="h-full overflow-y-auto px-4 py-6">
       <div className="mx-auto w-full max-w-3xl">
-        {error && (
-          <div className="mb-4 rounded-xl border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
-            {error}
-          </div>
+        {(error || loadError) && (
+          <ErrorBanner className="mb-4" onClose={error ? () => setError(null) : undefined}>
+            {error || loadError}
+          </ErrorBanner>
         )}
 
-        <InstallPanel status={status} onAct={act} />
+        <InstallPanel status={status} reload={load} onError={(message) => setError(message || null)} />
 
         <PageHeader
           icon={<LuGlobe />}
@@ -216,15 +237,12 @@ export function BrowserPage({ onOpenSession }: { onOpenSession: (id: string) => 
         )}
 
         <section className="mb-6">
-          <label className="flex items-start gap-2.5 text-sm text-fg">
-            <input type="checkbox" className="mt-0.5" checked={status.cursor} onChange={(e) => act(() => api.setBrowserCursor(e.target.checked))} />
-            <span>
-              {t("Show the agent's cursor")}
-              <span className="mt-0.5 block text-xs text-fg-muted">
-                {t("Before each click, typed text or choice, an arrow glides to the element and says what it is about to do, so you can follow along. Off, the actions do not wait for it.")}
-              </span>
-            </span>
-          </label>
+          <SwitchRow
+            title={t("Show the agent's cursor")}
+            detail={t("Before each click, typed text or choice, an arrow glides to the element and says what it is about to do, so you can follow along. Off, the actions do not wait for it.")}
+            on={status.cursor}
+            onChange={(on) => act(() => api.setBrowserCursor(on))}
+          />
         </section>
 
         {status.pages.length > 0 && (
@@ -253,6 +271,7 @@ export function BrowserPage({ onOpenSession }: { onOpenSession: (id: string) => 
             {dirty && (
               <button
                 onClick={async () => {
+                  setError(null);
                   try {
                     await api.setBrowserAllowlist(allowlist);
                     setDirty(false);
@@ -278,7 +297,8 @@ export function BrowserPage({ onOpenSession }: { onOpenSession: (id: string) => 
               setDirty(true);
             }}
             placeholder={"*.google.com\ngithub.com"}
-            className="w-full rounded-lg border border-line bg-raised/60 px-3 py-2 font-mono text-xs outline-none transition placeholder:text-fg-faint focus:border-accent/60"
+            aria-label={t("Where it may go")}
+            className={`${inputCls} font-mono text-xs`}
           />
           <p className="mt-1.5 text-[11px] text-fg-faint">
             {t("Checked when the agent asks for a URL, and every allowed one is recorded in Audit. A page that redirects itself is not covered — that needs a filtering proxy, which is not built yet.")}
@@ -317,7 +337,7 @@ export function BrowserPage({ onOpenSession }: { onOpenSession: (id: string) => 
                     <span className="shrink-0 text-[11px] text-fg-faint">
                       {s.allowed ? t("on") : t("off")}
                     </span>
-                    <span className="shrink-0 text-[11px] text-fg-faint">{s.kind}</span>
+                    <span className="shrink-0 text-[11px] text-fg-faint">{labelOf(SESSION_KIND, s.kind)}</span>
                   </button>
                 </li>
               ))}
@@ -334,7 +354,8 @@ export function BrowserPage({ onOpenSession }: { onOpenSession: (id: string) => 
           )}
         </section>
 
-        {!status.running && (
+        {/* Only for a browser that is supposed to be up: one that was stopped, never installed, or is the machine's own Chrome is not broken, and has no compose service to start. */}
+        {!status.running && (status.install.mode === "external" || (status.install.mode === "docker" && status.install.container === "running")) && (
           <p className="mt-4 flex items-start gap-2 rounded-xl border border-warn/30 bg-warn/10 p-3 text-xs text-fg-muted">
             <LuCircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-warn" />
             <span>{tx("The browser container is not answering. It is a separate service — {command} on the host that runs the portal.", { command: <span className="font-mono">docker compose up -d browser</span> })}</span>
@@ -355,12 +376,13 @@ export function BrowserPage({ onOpenSession }: { onOpenSession: (id: string) => 
  */
 function InstallPanel({
   status,
-  onAct,
+  reload,
+  onError,
 }: {
   status: BrowserStatus;
-  onAct: (fn: () => Promise<unknown>) => void;
+  reload: () => Promise<unknown>;
+  onError: (message: string) => void;
 }) {
-  const [password, setPassword] = useState("");
   const i = status.install;
 
   if (i.container === "running") return null;
@@ -374,7 +396,6 @@ function InstallPanel({
   }
 
   const dockerMode = i.mode === "docker";
-  const needsPassword = dockerMode && !status.config.hasPassword;
 
   return (
     <div className="mb-5 rounded-xl border border-accent/30 bg-accent/5 p-3">
@@ -389,53 +410,7 @@ function InstallPanel({
             }`}
       </p>
 
-      {needsPassword && (
-        <div className="mt-2 flex flex-wrap gap-2">
-          <input
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder={t("a password for its web UI")}
-            className="min-w-[14rem] flex-1 rounded-lg border border-line bg-raised/60 px-2 py-1.5 text-xs outline-none focus:border-accent/60"
-          />
-          <button
-            onClick={async () => {
-              const { password: p } = await api.suggestBrowserPassword();
-              setPassword(p);
-            }}
-            className="rounded-lg bg-fg/5 px-2.5 py-1.5 text-[11px] text-fg-muted transition hover:bg-fg/10"
-          >
-            {t("Suggest one")}
-          </button>
-        </div>
-      )}
-
-      <div className="mt-2 flex flex-wrap gap-2">
-        <button
-          disabled={needsPassword && !password.trim()}
-          onClick={() =>
-            onAct(async () => {
-              if (password.trim()) await api.setBrowserConfig({ password: password.trim() });
-              await (i.container === "stopped" ? api.startBrowser() : api.installBrowser());
-            })
-          }
-          className="rounded-lg bg-accent/12 px-3 py-1.5 text-xs text-accent ring-1 ring-inset ring-accent/25 transition hover:bg-accent/20 disabled:opacity-40"
-        >
-          {i.container === "stopped" ? t("Start it") : i.image || !dockerMode ? t("Install") : t("Install (downloads 4.6GB)")}
-        </button>
-        {i.container === "stopped" && (
-          <button
-            onClick={() => onAct(() => api.removeBrowser(false))}
-            className="rounded-lg bg-fg/5 px-3 py-1.5 text-xs text-fg-muted transition hover:bg-fg/10"
-          >
-            {t("Remove")}
-          </button>
-        )}
-      </div>
-
-      {i.pulling.active && (
-        <p className="mt-2 font-mono text-[11px] text-fg-faint">{i.pulling.line}</p>
-      )}
-      {i.pulling.error && <p className="mt-2 text-[11px] text-danger">{i.pulling.error}</p>}
+      <BrowserInstall status={status} reload={reload} onError={onError} />
     </div>
   );
 }

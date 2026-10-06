@@ -79,7 +79,7 @@ export function installMotion(): void {
   });
 }
 
-export function setAnimations(on: boolean): void {
+function setAnimations(on: boolean): void {
   kept = on;
   local.set(KEY, on ? "on" : "off");
   sync();

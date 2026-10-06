@@ -7,7 +7,7 @@ The [Docker add-ons guide](/guide/add-ons) covers GPU prerequisites, automatic Q
 :::
 
 ::: info Already installed?
-Start with the controls below. Manual Compose and native systemd services are alternative deployments; do not run them alongside the managed installer.
+Start with the controls below. A manual Compose setup and a native audio.cpp unit are alternative deployments; do not run them alongside the managed installer.
 :::
 
 Enable **Voice** under **Settings → Add-ons** to talk to any open session.
@@ -35,7 +35,10 @@ after it. The current Whisper API remains clip-based, so this is speculative
 transcription rather than a token-streaming ASR model. Long turns are segmented
 at 60 seconds and listening resumes automatically.
 
-Microphone access needs HTTPS or localhost. Voice mode replaces the chat and
+Microphone access needs HTTPS or localhost. A microphone the browser refuses — blocked
+for the site, none connected, in use by another program — is said in the portal's
+language, with where to change it (the site settings behind the icon left of the
+address), for dictation and voice mode alike. Voice mode replaces the chat and
 composer with an audio-reactive orb: by default teal for your voice and violet
 for spoken replies. The screen keeps only status, the controls and live words while you
 speak. Quiet synthesized sound cues mark connection, submission, mute and tool
@@ -134,7 +137,9 @@ the voice turns you take, see [Voice latency profiling](/guide/voice-profiling).
 corner, to make it the size you want; the canvas panel has the same grips. A
 window keeps that size until the windows are arranged differently — one opens
 or closes — and then the layout places them again. On a phone the windows take
-the width and cannot be resized.
+the width and cannot be resized. Without a pointer, a window's bottom corner is
+reached with `Tab`: the arrow keys make the window larger or smaller (`Shift`
+for bigger steps), and `Home` or `Enter` give it back to the layout.
 
 **Reloading.** A reload keeps voice mode on in that tab. Where the browser will
 not play audio before the page is touched, the voice screen says "Click or
@@ -182,7 +187,8 @@ Choose where the words go with the switch on that line. The choice is remembered
 
 Stopping dictation still delivers a sentence you were in the middle of. Starting
 voice mode turns dictation off, since both use the microphone, and leaving the
-session drops anything not yet transcribed instead of sending it elsewhere.
+session drops anything not yet transcribed instead of sending it elsewhere: a
+sentence you are still saying when you open another chat is not sent to that one.
 Whisper's placeholders for silence, such as `[BLANK_AUDIO]`, are not typed.
 
 Messages sent by dictation are ordinary text messages. Unlike voice-mode turns
@@ -209,7 +215,7 @@ git clone https://github.com/ggml-org/whisper.cpp voice-runtime/whisper.cpp
 git clone https://github.com/breezeblue-ai/breeze-tts voice-runtime/breeze-tts
 bash voice-runtime/whisper.cpp/models/download-ggml-model.sh base voice-runtime/whisper.cpp/models
 uvx --from huggingface-hub hf download BreezeBlue/Breeze-TTS-2 --local-dir voice-runtime/Breeze-TTS-2
-docker compose -f docker-compose.yml -f docker-compose.voice.yml --profile voice up -d --build whisper breeze
+docker compose -f docker-compose.voice.yml --profile voice up -d --build whisper breeze
 ```
 
 The source checkouts are retained locally, so subsequent builds use those same
@@ -217,7 +223,7 @@ revisions until you update them. Downloading models and compiling the images
 can take a while. Inspect startup with:
 
 ```sh
-docker compose -f docker-compose.yml -f docker-compose.voice.yml --profile voice logs -f whisper breeze
+docker compose -f docker-compose.voice.yml --profile voice logs -f whisper breeze
 curl --fail http://127.0.0.1:7860/health
 ```
 
@@ -284,13 +290,18 @@ both are loaded.
 
 ### Start the runtime
 
-With Compose, on the GPU of your choice:
+With Compose:
 
 ```sh
-VOICE_GPU=1 docker compose -f docker-compose.yml -f docker-compose.voice.yml \
+docker compose -f docker-compose.voice.yml \
   --profile voice-multilingual up -d audiocpp
 curl --fail http://127.0.0.1:7871/health
 ```
+
+`VOICE_GPU` is the index of the GPU the service runs on, as `nvidia-smi` lists
+them, and it is `0` when unset: on a host with one GPU, leave it alone. With
+more than one, name the card the session model does not use, in front of the
+command or in `.env`: `VOICE_GPU=<index> docker compose …`.
 
 `server.json` binds loopback, and Compose publishes the container's port on
 `127.0.0.1:7871`: the service has no authentication, so nothing should reach it
@@ -300,7 +311,7 @@ audio.cpp's own name for voice cloning — not a truncated `"clone"`.
 `deploy/voice-multilingual/` also holds a systemd unit for a native audio.cpp
 build. It reads the same `server.json`, so point `/models` at your GGUF
 directory — a symlink is enough — or edit the two paths in that file. Build the
-server where the unit expects it, next to the existing Breeze unit's binary:
+server where the unit's `ExecStart` expects it:
 
 ```sh
 cd /opt/audio.cpp
@@ -308,7 +319,8 @@ scripts/build_linux.sh --backend cuda --target audiocpp_server
 ```
 
 The unit uses GPU 0 unless `/etc/default/pithagoras-audio-cpp-multilingual`
-sets another, for example `VOICE_GPU=1`.
+sets another with `VOICE_GPU=<index>`, which is what a host with two GPUs does to
+leave the first to the session model.
 
 ### Point the portal at it
 
@@ -338,6 +350,8 @@ digits; only synthesis sees the words. Each pack knows how its language groups
 thousands, so German "100.000" is spoken as one number rather than as a decimal.
 Dates, clock times, version strings, ranges and anything with a leading zero
 keep their digits: reading them as quantities would be worse than leaving them.
+So do the digits of a name such as `v20.11` or `Qwen3.5`, which are not spoken
+as a number of their own.
 Adding a language is one entry in `server/src/voice-numbers.ts`; a language
 without a pack keeps its digits, and the add-on says so under the language.
 
@@ -373,18 +387,28 @@ models:
     cmd: |
       /path/to/audiocpp_server --config /path/to/server.json
       --host 127.0.0.1 --port ${PORT}
-    env: ["CUDA_DEVICE_ORDER=PCI_BUS_ID", "CUDA_VISIBLE_DEVICES=1"]
+    # The GPU for speech, as nvidia-smi lists them; leave both lines out with one GPU.
+    env: ["CUDA_DEVICE_ORDER=PCI_BUS_ID", "CUDA_VISIBLE_DEVICES=<index>"]
     aliases: [chatterbox, qwen3-asr]
     ttl: 900          # stop the process after 15 quiet minutes
     unlisted: true    # not a chat model, so keep it out of /v1/models
 ```
 
-Breeze, the English voice, is a third model in the same `server.json` (`"id":
-"breeze"`, `"family": "breeze_tts"`, `"mode": "streaming"`, the layout in
-`deploy/cortex-voice/audio-cpp.json`) with `breeze` added to the aliases. Choose
-**Breeze audio.cpp · streaming** as the speech runtime in the portal and it sends
-`model: breeze`. The
-audio.cpp build has to include the family: a build made with
+Breeze, the English voice, is a third model in the same `server.json`, with
+`breeze` added to the aliases:
+
+```json
+{
+  "id": "breeze",
+  "family": "breeze_tts",
+  "path": "/models/Breeze-TTS-2-GGUF/breeze-tts-2-q8_0.gguf",
+  "task": "tts",
+  "mode": "streaming"
+}
+```
+
+Choose **Breeze audio.cpp · streaming** as the speech runtime in the portal and
+it sends `model: breeze`. The audio.cpp build has to include the family: a build made with
 `--model-set custom --models chatterbox,qwen3_asr` cannot load it, so add
 `breeze_tts` to `--models` and rebuild. With `"max_loaded_models": 2` the server
 keeps Qwen3-ASR and whichever speaking voice was used last resident, and
@@ -400,9 +424,12 @@ gateway measured 6.5 s for a first spoken sentence.
 
 The gateway runs one model at a time unless told otherwise, so without a
 `routing` section every speech request would unload the language model. Put the
-audio entry in a matrix set with the LLM that leaves its GPU free. Speech lives
-on the second GPU, so it goes next to a model pinned to the first, and a model
-split across both stays alone:
+audio entry in a matrix set with the LLM that leaves its GPU free. In this
+example speech lives on the second of two GPUs, so it goes next to a model pinned
+to the first, and a model split across both stays alone. With one GPU, the audio
+entry can share a set with a model only if that model leaves the roughly 5.5 GB
+the two speech models need; otherwise leave it out of the sets and the gateway
+swaps them:
 
 ```yaml
 routing:
@@ -441,8 +468,9 @@ models swaps through all of them.
 
 ## First spoken response
 
-On the host executor with a llama.cpp provider, each voice prompt disables
-thinking for its first model call and asks for a brief spoken answer before
+On the host executor with a llama.cpp provider (a llama.cpp server or a
+llama-swap gateway, as set on the Providers page or as its name says), each
+voice prompt disables thinking for its first model call and asks for a brief spoken answer before
 tools. Later calls after tools use the session’s existing thinking setting.
 A conditional rule in the system prompt asks for plain, concise speech when the
 latest user message begins with `[Audio mode]`. The portal adds that prefix to
@@ -474,6 +502,17 @@ Tool calls and file contents keep their required formats. Saved thinking
 preferences are unchanged. This skips initial
 reasoning latency, but prompt processing and sentence synthesis still take time.
 Other providers and the container executor retain their normal thinking behavior.
+
+**Settings → Add-ons → Voice → Reply without thinking first on** names the
+providers instead, as the model menu shows them, separated by commas. Switching
+thinking off goes through the llama.cpp chat template, so only llama.cpp servers
+and the gateways in front of them, such as llama-swap, follow it. Until a list
+is saved, the portal goes by what the Providers page says each provider is, so
+a llama.cpp server with any name counts; the field then shows the usual names.
+A saved list counts exactly the providers it names, each as it is or as
+`name=<address>`, and an empty list keeps thinking on everywhere. **Reset to
+the default list** goes back to the portal's own judgement, which follows its
+updates.
 
 ### Speaking instructions
 
@@ -511,8 +550,12 @@ the comparison guide.
 ## Status lines while it works
 
 Voice mode says a few short lines of its own while the agent is busy, so a silence
-is not mistaken for a hang. They come from the portal, in English, and not from the
-model; they are not part of the conversation and are not added to the transcript.
+is not mistaken for a hang. They come from the portal, in the language the portal
+is set to (English or German, see [Settings → Language](/guide/settings#language)),
+and not from the model; they are not part of the conversation and are not added to
+the transcript. The same goes for the short line that stands in for a code block
+when a reply is read aloud, "Code is shown in the transcript.": the code itself is
+never spoken. The lines below are given in English.
 
 - **Thinking.** When the agent has been thinking for about two seconds and has not
   started to answer, a phrase such as "Let me think about that for a moment." is
@@ -554,9 +597,7 @@ rest by **Save voice settings**.
 
 **Speech generation → Fast** uses CFG 1, avoiding the extra guidance branch.
 **Expressive** uses CFG 4 for stronger voice direction. Fast can change delivery
-and voice similarity, so compare using the same reference. The Breeze runtime
-also caches up to eight encoded reference clips in CPU memory, keyed by audio
-content rather than temporary upload filename.
+and voice similarity, so compare using the same reference.
 
 ## Input language and accuracy
 
@@ -613,7 +654,7 @@ other tab or wait for it to finish. Keep one active voice conversation per GPU
 service. Disabling the add-on hides controls; stop its containers separately:
 
 ```sh
-docker compose -f docker-compose.yml -f docker-compose.voice.yml --profile voice stop whisper breeze
+docker compose -f docker-compose.voice.yml --profile voice stop whisper breeze
 ```
 
 ## Development checks
@@ -631,66 +672,18 @@ model inference or microphone hardware.
 Runtime references: [Breeze](https://github.com/breezeblue-ai/breeze-tts),
 [Whisper.cpp server](https://github.com/ggml-org/whisper.cpp/tree/master/examples/server).
 
-## Alternative: native services
-
-::: details Show alternative deployment details
-`deploy/cortex-voice` holds example systemd units for running the speech services
-natively on a host, without Docker: `pithagoras-whisper` (Whisper.cpp on the CPU),
-`pithagoras-breeze` (the Python Breeze runtime) and `pithagoras-audio-cpp`
-(Breeze on audio.cpp). They were written for one machine, so change the paths in
-them to where Breeze's source, Python environment and weights, the audio.cpp
-build and Whisper.cpp sit on yours before installing them. Whisper is built
-without CUDA and uses the CPU, leaving the GPU to Breeze. Both endpoints bind to
-loopback and use the same default URLs as the add-on.
-
-Install the unit files into `/etc/systemd/system`, reload systemd, and start
-`pithagoras-whisper`. Start `pithagoras-breeze` when sufficient GPU memory is
-available. Breeze reserves roughly 8 GB of the GPU; use
-`systemctl stop pithagoras-breeze` to release its memory, or
-`systemctl disable --now pithagoras-breeze` before returning the GPU to another
-service permanently. Do not run these units alongside the managed add-on or the
-Compose voice services; they use the same ports.
-
-Browser tests use the public JFK speech sample bundled with Whisper.cpp as a
-synthetic microphone stream; they do not record from your physical microphone.
-:::
-
-## Alternative: native audio.cpp streaming runtime
-
-::: details Show alternative deployment details
-The example uses audio.cpp at commit `efb04233dab73aeee4b2912042a90e7b36329061`,
-built for the CUDA architecture of the GPU (`86` there) with the `breeze_tts`
-model, from the `breeze_tts_2_q8_0` Q8 package.
-`pithagoras-audio-cpp.service` serves loopback port 7861; the Voice add-on uses
-runtime `audio-cpp` and URL `http://127.0.0.1:7861/v1/audio/speech`.
-The reference recording and transcript are sent inline and cached by the runtime.
-
-The player begins with 650 ms of PCM buffered, then schedules arriving audio
-chunks contiguously. Synthesis stays single-file while playback runs independently.
-Barge-in cancels the HTTP stream and scheduled audio. The Python runtime retains
-whole-phrase buffering because its measured synthesis is slower than playback.
-
-On an RTX 3060 with a language model resident, a warmed reference-clone sample
-generated 4.88 seconds of audio in 3.05 seconds, with first audio at 0.94 seconds.
-The prior Python runtime took 8.40 seconds for the same text (its output duration
-was 4.32 seconds). The audio.cpp process used 4414 MiB VRAM. These are sample
-measurements, not latency guarantees for every input. A separate portal request
-produced 8 seconds of audio in 4.94 seconds, with first bytes at 0.99 seconds.
-
-Rollback: stop `pithagoras-audio-cpp`, start `pithagoras-breeze`, select runtime
-`breeze`, and restore the speech URL to port 7860. Only one TTS unit should be
-enabled at boot. The language model and Whisper do not need to restart.
-:::
-
 ## Session prefill snapshots
 
 `LLAMA_DISK_CACHE_MODELS` names the llama.cpp models, comma-separated, whose
 prompt cache is kept per session. Set it to `my-model` and that model's chats
 get per-session slot snapshots.
-The llama.cpp server needs a `slot-save-path` to write them to, such as
-`/path/to/session-cache/`.
-The portal serializes inference and save/restore operations for its single model
-slot, saves after successful responses, and restores when changing sessions.
+The llama.cpp server has to run with `--parallel 1`, one slot, because a
+snapshot is always of slot 0, and with a `--slot-save-path` to write the
+snapshots to, such as `/path/to/session-cache/`. A server that reports more than
+one slot in its `/props` is left alone: no snapshots are taken, and chats run at
+the same time as they would without the variable.
+The portal serializes inference and save/restore operations for that single
+model slot, saves after successful responses, and restores when changing sessions.
 Filenames hash the model and session ID. Cache files persist on the llama host;
 missing or incompatible files fall back to normal prompt evaluation. These files
 contain model state derived from conversation content and the directory is mode 700.
@@ -750,8 +743,8 @@ automatically after a host reboot; start it in Settings when needed. Setup failu
 remain visible in the log and can be retried. Whisper listens on loopback port 8188
 and Breeze on 7862, inside the portal's own network namespace: the voice container
 joins the portal container's network (or the host's, for a native portal) and
-publishes no host ports. These differ from the older manual systemd setup, which
-the installer does not modify. Stop older TTS services before using the managed
+publishes no host ports. These differ from a manually managed setup, the Compose overlay or a native unit,
+which the installer does not modify. Stop such TTS services before using the managed
 service to avoid loading two copies into VRAM. A managed container made by an
 earlier version is migrated automatically; see
 [Docker add-ons](/guide/add-ons#service-addresses-and-health-checks).

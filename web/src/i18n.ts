@@ -7,8 +7,10 @@ import { local } from "./safe-storage";
  * English is written in the code, as it always was, and is its own key:
  * `t("New chat")` is "New chat" until a language has another word for it. A
  * language is one file in `locales/`, mapping each English text to its own —
- * adding one means adding that file and nothing else. What a language lacks
- * is shown in English rather than not at all; the tests say what is missing.
+ * adding one means adding that file and nothing else, named by its code
+ * (`de.ts`). Only the language in use is fetched: a file of text is large,
+ * and an English reader has no need of a German one. What a language lacks is
+ * shown in English rather than not at all; the tests say what is missing.
  *
  * Words in the text are `{name}`, filled in from what is passed along:
  * `t("Saved {file}", { file })`. A count takes `tp`, since languages do not
@@ -43,18 +45,39 @@ export interface Locale {
 /** What is written in the code. */
 export const ENGLISH: Locale = { code: "en", name: "English", strings: {} };
 
+/** The languages whose text is here. */
 const locales = new Map<string, Locale>([[ENGLISH.code, ENGLISH]]);
+/** The languages there are, with how to fetch the text of each: from `locales/`, at the start. */
+const offered = new Map<string, () => Promise<Locale>>();
 
-/** A language to offer. Added before the app is drawn, from `locales/`. */
+/** A language's name in itself, as it is offered: "Deutsch", "Português (Brasil)". */
+export function selfName(code: string): string {
+  try {
+    const name = new Intl.DisplayNames([code], { type: "language" }).of(code);
+    if (name && name !== code) return name[0].toLocaleUpperCase(code) + name.slice(1);
+  } catch {
+    // A code the browser has no name for: it is its own.
+  }
+  return code;
+}
+
+/** A language there is, whose text is fetched when it is wanted. */
+export function offerLocale(code: string, load: () => Promise<Locale>): void {
+  offered.set(code, load);
+}
+
+/** A language whose text is at hand, and taken up if it is the one in effect. */
 export function addLocale(locale: Locale): void {
   locales.set(locale.code, locale);
-  settle();
+  apply();
 }
 
 /** Every language there is, English first, then by name. */
 export function languages(): { code: string; name: string }[] {
-  const rest = [...locales.values()].filter((l) => l !== ENGLISH).sort((a, b) => a.name.localeCompare(b.name));
-  return [ENGLISH, ...rest].map(({ code, name }) => ({ code, name }));
+  const rest = new Map<string, string>();
+  for (const code of offered.keys()) rest.set(code, selfName(code));
+  for (const l of locales.values()) if (l !== ENGLISH) rest.set(l.code, l.name);
+  return [{ code: ENGLISH.code, name: ENGLISH.name }, ...[...rest].map(([code, name]) => ({ code, name })).sort((a, b) => a.name.localeCompare(b.name))];
 }
 
 /** A language, or whatever the browser is set to. */
@@ -76,14 +99,41 @@ const browserLanguages = (): readonly string[] => {
  * English when there is none.
  */
 export function resolve(choice: LanguageChoice, wanted: readonly string[] = browserLanguages()): Locale {
-  const find = (code: string) => locales.get(code) ?? locales.get(code.split("-")[0]);
-  if (choice !== "system") return find(choice) ?? ENGLISH;
+  return locales.get(codeOf(choice, wanted)) ?? ENGLISH;
+}
+
+/** The code of the language a choice comes to, there being text for it here or to be fetched. */
+function codeOf(choice: LanguageChoice, wanted: readonly string[] = browserLanguages()): string {
+  const find = (code: string) => [code, code.split("-")[0]].find((c) => locales.has(c) || offered.has(c));
+  if (choice !== "system") return find(choice) ?? ENGLISH.code;
   for (const code of wanted) {
     const hit = code && find(code);
     if (hit) return hit;
   }
-  return ENGLISH;
+  return ENGLISH.code;
 }
+
+/**
+ * Fetch the text of the language in effect, if only its name is here. Never
+ * fails: one that cannot be fetched leaves the page as it was, and the next
+ * change of language tries again.
+ */
+export function loadLanguage(): Promise<void> {
+  const code = codeOf(choice);
+  const load = locales.has(code) ? undefined : offered.get(code);
+  if (!load) return Promise.resolve();
+  // Once for one language, however many ask: a choice made and the browser's language changing.
+  let fetching = fetches.get(code);
+  if (!fetching) {
+    fetching = load().then(addLocale, () => {
+      // Offline, or the deploy changed under the page.
+    });
+    fetches.set(code, fetching);
+    void fetching.finally(() => fetches.delete(code));
+  }
+  return fetching;
+}
+const fetches = new Map<string, Promise<void>>();
 
 const storedChoice = (): LanguageChoice => local.get(KEY) || "system";
 
@@ -104,9 +154,13 @@ export function formatsFor(code: string, wanted: readonly string[] = browserLang
   return wanted.find((l) => l.split("-")[0] === base) ?? (code === ENGLISH.code && wanted[0] ? wanted[0] : code);
 }
 
-/** The language a choice comes to now, and how it writes numbers and dates. */
+/**
+ * The language a choice comes to now, and how it writes numbers and dates.
+ * One whose text is not here yet waits for it: the page stays as it is, not
+ * English for the moment between.
+ */
 function settle(): void {
-  current = resolve(choice);
+  if (locales.has(codeOf(choice))) current = resolve(choice);
   formatLocale = formatsFor(current.code);
 }
 settle();
@@ -125,6 +179,7 @@ export function setLanguage(next: LanguageChoice): void {
   if (next === "system") local.remove(KEY);
   else local.set(KEY, next);
   apply();
+  void loadLanguage();
 }
 
 /** Take up the language again — the browser's may have changed — and tell the page. */

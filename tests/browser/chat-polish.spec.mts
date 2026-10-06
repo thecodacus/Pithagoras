@@ -1,4 +1,5 @@
-import { test, expect, type Page } from '@playwright/test';
+import { type Page } from '@playwright/test';
+import { test, expect, mockPortal, reply } from './portal-mock';
 import { DEFAULT_ORB } from '../../server/src/orb-style';
 
 test('a tool call reads as its parameters, closed and opened, not as JSON', async ({ page }) => {
@@ -24,7 +25,7 @@ test('a tool call reads as its parameters, closed and opened, not as JSON', asyn
 
   // An MCP tool that answers in JSON: its answer is read the same way.
   const mcp = page.locator('.chat-tool', { hasText: 'github_list_issues' });
-  await expect(mcp.locator('.chat-tool-detail')).toHaveText('Owner: Piggidragon · Repo: pithagoras · State: open · Labels: bug, ui');
+  await expect(mcp.locator('.chat-tool-detail')).toHaveText('Owner: octo-org · Repo: pithagoras · State: open · Labels: bug, ui');
   await mcp.locator('.chat-tool-head').click();
   const output = mcp.locator('.chat-tool-output');
   await expect(output).toHaveClass(/is-structured/);
@@ -130,18 +131,9 @@ test('a working chat shows the π mark and a shimmering word in the composer, an
 test('a working chat in the sidebar has the π mark and a shimmering title', async ({ page }) => {
   const session = { id: 's1', title: 'Busy chat', workspace: '/w/site', status: 'running', kind: 'task', pinned: false, updated_at: new Date().toISOString() };
   const idle = { ...session, id: 's2', title: 'Quiet chat', status: 'idle' };
-  await page.route('**/api/**', async (route) => {
-    const p = new URL(route.request().url()).pathname;
-    let reply: unknown = {};
-    if (p === '/api/auth/status') reply = { authed: true, authRequired: false };
-    else if (p === '/api/sessions') reply = { sessions: [session, idle], executor: 'host' };
-    else if (p === '/api/models') reply = { models: [], providers: {} };
-    await route.fulfill({ json: reply });
-  });
-  await page.addInitScript(() => {
-    (window as any).EventSource = class { onmessage: any; onopen: any; onerror: any; addEventListener() {} close() {} };
-    localStorage.setItem('pithagoras.setup', 'done');
-  });
+  await mockPortal(page, async ({ path: p }) => {
+    if (p === '/api/sessions') return { sessions: [session, idle], executor: 'host' };
+  }, { settings: true });
   await page.goto('/');
   const sidebar = page.getByRole('complementary', { name: 'Sidebar' });
   const busyTitle = sidebar.getByText('Busy chat');
@@ -183,21 +175,11 @@ test('parameters keep their numbers and their spaces, and an id too long for a n
 test('an agent conversation keeps its title in place when it starts working', async ({ page }) => {
   const at = new Date().toISOString();
   const row = (id: string, title: string, status: string) => ({ id, title, status, workspace: '/a', kind: 'agent', pinned: false, updated_at: at, channel_key: `tg:${id}`, channel: null });
-  await page.route('**/api/**', async (route) => {
-    const p = new URL(route.request().url()).pathname;
-    let reply: unknown = {};
-    if (p === '/api/auth/status') reply = { authed: true, authRequired: false };
-    else if (p === '/api/sessions') reply = { sessions: [], executor: 'host' };
-    else if (p === '/api/agents') reply = { agents: [{ id: 'home', name: 'Nova', home: '/a', first: true, initialised: true, chats: 2, channels: [], orb: DEFAULT_ORB, voice: '' }] };
-    else if (p === '/api/agent/sessions') reply = { sessions: [row('x', 'Working agent chat', 'running'), row('y', 'Resting agent chat', 'idle')], agentHome: '/a' };
-    else if (p === '/api/agents/home/setup') reply = { initialised: true, home: '/a', files: [] };
-    else if (p === '/api/models') reply = { models: [], providers: {} };
-    await route.fulfill({ json: reply });
-  });
-  await page.addInitScript(() => {
-    (window as any).EventSource = class { addEventListener() {} close() {} };
-    localStorage.setItem('pithagoras.setup', 'done');
-  });
+  await mockPortal(page, async ({ path: p }) => {
+    if (p === '/api/agents') return { agents: [{ id: 'home', name: 'Nova', home: '/a', first: true, initialised: true, chats: 2, channels: [], orb: DEFAULT_ORB, voice: '' }] };
+    if (p === '/api/agent/sessions') return { sessions: [row('x', 'Working agent chat', 'running'), row('y', 'Resting agent chat', 'idle')], agentHome: '/a' };
+    if (p === '/api/agents/home/setup') return { initialised: true, home: '/a', files: [] };
+  }, { settings: true });
   // The agent's own page, opened from its card.
   await page.goto('/agents?agent=home');
   const main = page.getByRole('main');
@@ -209,25 +191,15 @@ test('an agent conversation keeps its title in place when it starts working', as
 });
 
 test('the agent setup shows its steps as the assistant does, Back before Create, and nothing to change while Create runs', async ({ page }) => {
-  await page.route('**/api/**', async (route) => {
-    const p = new URL(route.request().url()).pathname;
-    let reply: unknown = {};
-    if (p === '/api/auth/status') reply = { authed: true, authRequired: false };
-    else if (p === '/api/sessions') reply = { sessions: [], executor: 'host' };
-    else if (p === '/api/agents') reply = { agents: [{ id: 'home', name: 'Agent', home: '/a', first: true, initialised: false, chats: 0, channels: [], orb: DEFAULT_ORB, voice: '' }] };
-    else if (p === '/api/agent/sessions') reply = { sessions: [], agentHome: '/a' };
-    else if (p === '/api/agents/home/setup' && route.request().method() === 'POST') {
+  await mockPortal(page, async ({ path: p, method }) => {
+    if (p === '/api/agents') return { agents: [{ id: 'home', name: 'Agent', home: '/a', first: true, initialised: false, chats: 0, channels: [], orb: DEFAULT_ORB, voice: '' }] };
+    if (p === '/api/agent/sessions') return { sessions: [], agentHome: '/a' };
+    if (p === '/api/agents/home/setup' && method === 'POST') {
       await new Promise((r) => setTimeout(r, 400));
-      return route.fulfill({ status: 409, json: { error: `That name is taken: /home/user/.pi/agent/${'deeply_nested_directory_'.repeat(5)}/SOUL.md` } });
+      return reply(409, { error: `That name is taken: /home/user/.pi/agent/${'deeply_nested_directory_'.repeat(5)}/SOUL.md` });
     }
-    else if (p === '/api/agents/home/setup') reply = { initialised: false, home: '/a', files: [] };
-    else if (p === '/api/models') reply = { models: [], providers: {} };
-    await route.fulfill({ json: reply });
-  });
-  await page.addInitScript(() => {
-    (window as any).EventSource = class { addEventListener() {} close() {} };
-    localStorage.setItem('pithagoras.setup', 'done');
-  });
+    if (p === '/api/agents/home/setup') return { initialised: false, home: '/a', files: [] };
+  }, { settings: true });
   await page.setViewportSize({ width: 390, height: 900 });
   // An agent that is not set up yet opens on its setup.
   await page.goto('/agents?agent=home');
@@ -295,5 +267,4 @@ test('a finished reply says how fast it was written and read, and the tokens in 
   expect(details).toContain('Answer: 41 tokens, written in 1.14 s');
   expect(details).toContain('Draft: 22 of 30 tokens kept');
   await line.scrollIntoViewIfNeeded();
-  await page.screenshot({ path: '/tmp/pithagoras-reply-stats.png', clip: await page.locator('.reply-actions').last().evaluate((el) => { const r = el.parentElement!.getBoundingClientRect(); return { x: r.x - 8, y: r.y - 8, width: Math.min(r.width + 16, 900), height: r.height + 16 }; }) });
 });

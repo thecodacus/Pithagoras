@@ -1,7 +1,10 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { agentHome } from "./agent.js";
+import { agentHome } from "./agent-home.js";
+import { writeFileAtomic } from "./atomic-write.js";
 import { understoryOn } from "./features.js";
+import { WATCH_FILE } from "./pi/context-files.js";
+import { CHANGED, FileError, baseDir, writeText } from "./workspace-files.js";
 
 /**
  * The agent's home directory.
@@ -15,26 +18,53 @@ import { understoryOn } from "./features.js";
  */
 
 export const AGENT_FILES = ["SOUL.md", "PrimaryUser.md", "MEMORY.md"] as const;
-export type AgentFile = (typeof AGENT_FILES)[number];
 
 /**
  * The files shown and edited on the agent's page: those three, and WATCH.md,
  * what its heartbeat keeps an eye on. WATCH.md is not context and is not made
  * by the wizard: an agent without one simply has nothing to watch.
  */
-const EDITABLE_FILES = [...AGENT_FILES, "WATCH.md"] as const;
+const EDITABLE_FILES = [...AGENT_FILES, WATCH_FILE] as const;
 
 /** A file of an agent's: the first agent's, unless another's home is given. */
 const filePath = (name: string, home = agentHome()) => path.join(home, name);
 
-export const isInitialised = (home = agentHome()): boolean => AGENT_FILES.every((f) => existsSync(filePath(f, home)));
+/**
+ * Whether the three files are there. By lstat, as the wizard asks: a link that leads
+ * nowhere is something there, and the wizard does not write through it, so asking
+ * `existsSync` would offer a wizard that can never finish.
+ */
+export const isInitialised = (home = agentHome()): boolean =>
+  AGENT_FILES.every((f) => lstatSync(filePath(f, home), { throwIfNoEntry: false }));
+
+/**
+ * A file of the agent's as it is now: its text and when it last changed, or
+ * nothing when it is not there or is not a plain file.
+ *
+ * Opened without following a link, and without waiting on a pipe. With the
+ * container executor the home is mounted into the container, so the agent can
+ * leave a link in place of SOUL.md that points at something the portal reads
+ * and writes as itself, such as its own database.
+ */
+function readPlain(name: string, home: string): { content: string; mtime: number } | undefined {
+  let fd: number;
+  try {
+    fd = openSync(filePath(name, home), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch {
+    return undefined;
+  }
+  try {
+    const st = fstatSync(fd);
+    return st.isFile() ? { content: readFileSync(fd, "utf8"), mtime: st.mtimeMs } : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    closeSync(fd);
+  }
+}
 
 export function readAgentFile(name: string, home = agentHome()): string {
-  try {
-    return readFileSync(filePath(name, home), "utf8");
-  } catch {
-    return "";
-  }
+  return readPlain(name, home)?.content ?? "";
 }
 
 export function agentFileStatus(home = agentHome()) {
@@ -43,19 +73,39 @@ export function agentFileStatus(home = agentHome()) {
     initialised: isInitialised(home),
     // Where the agent's memory is kept: while Understory holds it, MEMORY.md is not read.
     memory: understoryOn() ? ("understory" as const) : ("file" as const),
-    files: EDITABLE_FILES.map((name) => ({
-      name,
-      exists: existsSync(filePath(name, home)),
-      content: readAgentFile(name, home),
-    })),
+    files: EDITABLE_FILES.map((name) => {
+      const read = readPlain(name, home);
+      // `mtime` is what a save sends back as `expected`: the agent writes these files too.
+      // `link`: a link is shown as nothing and not written through, so the page says so, not offers an empty editor.
+      const link = Boolean(lstatSync(filePath(name, home), { throwIfNoEntry: false })?.isSymbolicLink());
+      return { name, exists: existsSync(filePath(name, home)), content: read?.content ?? "", mtime: read?.mtime ?? 0, link };
+    }),
   };
 }
 
-export function writeAgentFile(name: string, content: string, home = agentHome()): void {
+/**
+ * Saves one of the agent's files, put in place whole (see writeText).
+ *
+ * `expected` is the modification time the page was showing. If the file has
+ * changed since, the save is refused with a FileError "conflict" instead of
+ * putting the page's older text over what the agent wrote. 0 is what the page
+ * saw of a file that was not there (WATCH.md, until it is first written): it is
+ * made, unless the agent has made it since. Nothing expected saves whatever is there.
+ */
+export function writeAgentFile(name: string, content: string, home = agentHome(), expected?: number): void {
   if (!(EDITABLE_FILES as readonly string[]).includes(name)) {
     throw new Error(`"${name}" is not one of the agent's files`);
   }
-  writeFileSync(filePath(name, home), content.endsWith("\n") ? content : `${content}\n`, "utf8");
+  // A link is left alone, as the read leaves it: writing "through" one inside the folder would change what it leads to.
+  if (lstatSync(filePath(name, home), { throwIfNoEntry: false })?.isSymbolicLink()) {
+    throw new FileError("invalid", `${name} is a link, so it is left alone`);
+  }
+  try {
+    writeText(baseDir(home), name, content.endsWith("\n") ? content : `${content}\n`, expected || undefined, expected === 0);
+  } catch (e) {
+    if (e instanceof FileError && e.code === "exists") throw new FileError("conflict", CHANGED);
+    throw e;
+  }
 }
 
 export interface WizardInput {
@@ -68,13 +118,18 @@ export interface WizardInput {
 }
 
 /**
- * Write the three files from the wizard's answers.
+ * Write the three files from the wizard's answers, those that are not there.
  *
  * The templates are opinionated on purpose: an empty SOUL.md produces a
  * characterless agent, and someone setting this up for the first time has no
  * reason to know what belongs in one.
+ *
+ * A file that is there is left as it is, and named in the answer. A folder
+ * kept when its agent was deleted holds a SOUL.md and a PrimaryUser.md written
+ * by hand, and the agent made again under the name is told it picks them up.
+ * MEMORY.md above all: it is the one file here that cannot be reconstructed.
  */
-export function runWizard(input: WizardInput, home = agentHome()): void {
+export function runWizard(input: WizardInput, home = agentHome()): { kept: string[] } {
   const name = input.agentName.trim() || "the agent";
   const vibe = input.vibe?.trim();
   const principles = input.principles?.trim();
@@ -163,11 +218,11 @@ _How things should be done, learned from being corrected._
 _Names, systems, how things are set up. True and not obvious._
 `;
 
-  writeFileSync(filePath("SOUL.md", home), soul, "utf8");
-  writeFileSync(filePath("PrimaryUser.md", home), user, "utf8");
-  // Never clobber a memory that already exists — it is the one file here that
-  // cannot be reconstructed.
-  if (!existsSync(filePath("MEMORY.md", home))) {
-    writeFileSync(filePath("MEMORY.md", home), memory, "utf8");
+  const kept: string[] = [];
+  for (const [file, text] of [["SOUL.md", soul], ["PrimaryUser.md", user], ["MEMORY.md", memory]] as const) {
+    // lstat, not exists: a link that points nowhere is something there, and is not written through.
+    if (lstatSync(filePath(file, home), { throwIfNoEntry: false })) kept.push(file);
+    else writeFileAtomic(filePath(file, home), text);
   }
+  return { kept };
 }

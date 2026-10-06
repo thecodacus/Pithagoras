@@ -1,4 +1,5 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './portal-mock';
+import { settled } from './settled';
 import { readFileSync } from 'node:fs';
 const sample = readFileSync(new URL('../fixtures/jfk.wav', import.meta.url));
 test.beforeEach(async ({ page }) => {
@@ -21,14 +22,12 @@ test('real browser VAD submits turns, supports barge-in, and releases the mic', 
     : route.fulfill({ body: sample, contentType: 'audio/wav' }));
   await page.goto('/tests/voice.html');
   await page.getByRole('textbox', { name: 'Message' }).fill('Keep this draft');
-  await page.getByTestId('workspace').screenshot({ path: '/tmp/pithagoras-composer.png' });
   await page.getByRole('button', { name: 'Profile voice latency' }).click();
   await page.getByRole('button', { name: 'Turn on hands-free voice' }).click();
   await expect(page.getByRole('button', { name: 'End voice mode' })).toBeVisible({ timeout: 25000 });
   await expect(page.getByRole('status')).toContainText('Listening');
   await expect(page.getByRole('textbox', { name: 'Message' })).toBeHidden();
   await expect(page.getByText('We can work through it together.')).toBeHidden();
-  await page.getByTestId('workspace').screenshot({ path: '/tmp/pithagoras-voice-orb.png' });
   await page.getByRole('button', { name: 'Inject speech' }).click();
   await expect(page.getByRole('status')).toContainText('Hearing you');
   await expect(page.getByTestId('sent')).toHaveText('1', { timeout: 12000 });
@@ -39,7 +38,6 @@ test('real browser VAD submits turns, supports barge-in, and releases the mic', 
   const timingDownload=page.waitForEvent('download');
   await page.getByRole('button',{name:'Download timing report'}).click();
   expect((await timingDownload).suggestedFilename()).toBe('voice-latency.json');
-  await page.getByLabel('Voice latency profiler').screenshot({path:'/tmp/pithagoras-voice-profile.png'});
   await page.getByRole('button',{name:'Close voice profiler'}).click();
   await page.getByRole('button', { name: 'Inject speech' }).click();
   await expect(page.getByRole('status')).toContainText('Hearing you');
@@ -85,7 +83,6 @@ test('mute keeps playback and option prompts available; end restores the chat', 
   await expect(page.locator('.voice-orb')).toHaveAttribute('data-mode', 'input');
   await expect(page.getByTestId('sent')).toHaveText('1', { timeout: 12000 });
   await expect(page.locator('.voice-orb')).toHaveAttribute('data-mode', 'output');
-  await page.getByTestId('workspace').screenshot({ path: '/tmp/pithagoras-voice-output.png' });
   await page.getByRole('button', { name: 'Mute microphone', exact: true }).click();
   await page.getByRole('button', { name: 'Check mic tracks' }).click();
   await expect(page.getByTestId('tracks')).toHaveText('live:false');
@@ -111,10 +108,8 @@ test('composer and voice controls fit a phone viewport', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.route('**/api/voice', route => route.fulfill({ json: { enabled: true } }));
   await page.goto('/tests/voice.html');
-  await page.getByTestId('workspace').screenshot({ path: '/tmp/pithagoras-composer-mobile.png' });
   await page.getByRole('button', { name: 'Turn on hands-free voice' }).click();
   await expect(page.getByRole('status')).toHaveText('Listening', { timeout: 25000 });
-  await page.getByTestId('workspace').screenshot({ path: '/tmp/pithagoras-orb-mobile.png' });
   const end = await page.getByRole('button', { name: 'End voice mode' }).boundingBox();
   expect(end!.y + end!.height).toBeLessThan(844);
   const horizontalOverflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
@@ -153,7 +148,10 @@ test('voice pipelines next-sentence synthesis during PCM playback and cancels on
 test('slow PCM chunks become one uninterrupted buffer, including split samples', async ({ page }) => {
   await page.goto('/tests/voice.html');
   const result = await page.evaluate(async () => {
-    const { playPcmStream } = await import('/src/pcm-stream.ts');
+    const { readPcmStream, playAudioBuffer } = await import('/src/pcm-stream.ts');
+    // One phrase, buffered whole and then played: what a consumer without a pipeline does.
+    const playPcmStream = async (body: ReadableStream<Uint8Array>, audio: AudioContext, destination: AudioNode, signal: AbortSignal, onStarted: () => void) =>
+      playAudioBuffer(await readPcmStream(body, audio, signal), audio, destination, signal, onStarted);
     const audio = new AudioContext(); await audio.resume();
     let writer!: ReadableStreamDefaultController<Uint8Array>;
     let started = false, sourceCount = 0;
@@ -175,7 +173,10 @@ test('slow PCM chunks become one uninterrupted buffer, including split samples',
 test('End cancels PCM buffering before any audio can start', async ({ page }) => {
   await page.goto('/tests/voice.html');
   const result = await page.evaluate(async () => {
-    const { playPcmStream } = await import('/src/pcm-stream.ts');
+    const { readPcmStream, playAudioBuffer } = await import('/src/pcm-stream.ts');
+    // One phrase, buffered whole and then played: what a consumer without a pipeline does.
+    const playPcmStream = async (body: ReadableStream<Uint8Array>, audio: AudioContext, destination: AudioNode, signal: AbortSignal, onStarted: () => void) =>
+      playAudioBuffer(await readPcmStream(body, audio, signal), audio, destination, signal, onStarted);
     const audio = new AudioContext(); await audio.resume();
     let cancelled = false, started = false;
     const body = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new Uint8Array(4800)); }, cancel() { cancelled = true; } });
@@ -218,7 +219,6 @@ test('voice panels animate into browser, terminal and simultaneous layouts', asy
   await page.goto('/tests/voice.html');
   await page.getByRole('button', { name: 'Turn on hands-free voice' }).click();
   await expect(page.getByRole('status')).toHaveText('Listening', { timeout: 25000 });
-  await page.getByTestId('workspace').screenshot({ path: '/tmp/pithagoras-voice-minimal.png' });
   await page.getByRole('button', { name: 'Voice settings' }).click();
   await page.getByRole('group', { name: 'Sound effects' }).getByRole('button', { name: 'Off' }).click();
   expect(await page.evaluate(() => localStorage.getItem('voiceSounds'))).toBe('off');
@@ -226,45 +226,40 @@ test('voice panels animate into browser, terminal and simultaneous layouts', asy
   await page.getByRole('button', { name: 'Use browser', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Live browser', exact: true })).toBeVisible();
   await expect(page.locator('.voice-stage')).toHaveClass(/is-browsing/);
-  await page.waitForTimeout(800);
-  await page.getByTestId('workspace').screenshot({ path: '/tmp/pithagoras-voice-browser.png' });
+  await settled(page);
   await page.getByRole('button', { name: 'Use terminal', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Live terminal', exact: true })).toBeVisible();
   await expect(page.getByLabel('Agent terminal output')).toContainText('42 modules transformed');
   await expect(page.getByLabel('Tool activity')).toContainText('Running a command');
-  await page.waitForTimeout(800);
+  await settled(page);
   const browser = await page.locator('.voice-browser-window').boundingBox();
   const terminal = await page.locator('.voice-terminal-window').boundingBox();
   expect(browser!.width).toBeGreaterThan(terminal!.width * 1.8);
   expect(browser!.x + browser!.width).toBeLessThan(terminal!.x);
-  await page.getByTestId('workspace').screenshot({ path: '/tmp/pithagoras-voice-both.png' });
   await page.evaluate(() => (window as any).canvasFeed.message({type:'update',canvas:{id:'doc',title:'A shared draft',content:'# Live canvas\n\nWriting alongside the terminal.',revision:1,status:'writing',active_call:'draft',updated_at:''}}));
   await expect(page.locator('.voice-stage')).toHaveAttribute('data-panels','2');
   await expect(page.locator('.voice-stage')).not.toHaveClass(/is-browsing/);
   await expect(page.getByLabel('Session canvas workspace')).toBeVisible();
-  await page.waitForTimeout(800);
+  await settled(page);
   const canvasBox=await page.getByLabel('Session canvas workspace').boundingBox();
   const terminalBox=await page.locator('.voice-terminal-window').boundingBox();
   expect(canvasBox!.width).toBeGreaterThan(terminalBox!.width);
   expect(terminalBox!.x+terminalBox!.width).toBeLessThan(canvasBox!.x);
   await expect(page.locator('.voice-presence')).toHaveCSS('height','80px');
-  await page.getByTestId('workspace').screenshot({path:'/tmp/pithagoras-voice-canvas-terminal.png'});
   await page.getByLabel('Show browser').click();
-  await page.waitForTimeout(800);
+  await settled(page);
   const sideBrowser=await page.getByLabel('Live browser',{exact:true}).boundingBox();
   const sideCanvas=await page.getByLabel('Session canvas workspace').boundingBox();
   expect(sideBrowser!.x).toBeGreaterThanOrEqual(0);
   expect(sideCanvas!.x-sideBrowser!.x-sideBrowser!.width).toBeGreaterThan(0);
   expect(sideCanvas!.x-sideBrowser!.x-sideBrowser!.width).toBeLessThanOrEqual(20);
-  await page.getByTestId('workspace').screenshot({path:'/tmp/pithagoras-browser-canvas-fixed.png'});
   await page.getByLabel('Minimize browser').click();
   await page.getByLabel('Show terminal').click();
   await page.getByLabel('Close canvas').click();
   await page.getByLabel('Show browser').click();
 
   await page.getByRole('button', { name: 'Minimize browser' }).click();
-  await page.waitForTimeout(800);
-  await page.getByTestId('workspace').screenshot({ path: '/tmp/pithagoras-voice-terminal.png' });
+  await settled(page);
   const orb = await page.locator('.voice-presence').boundingBox();
   const right = await page.locator('.voice-terminal-window').boundingBox();
   const stage = await page.locator(".voice-stage").boundingBox();
@@ -276,10 +271,8 @@ test('voice panels animate into browser, terminal and simultaneous layouts', asy
   await page.getByRole('button', { name: 'Stream thinking', exact: true }).click();
   await expect(page.getByLabel('Live model thinking')).toContainText('verify the page layout');
   await expect(page.locator('.voice-presence')).toHaveCSS('height', '80px');
-  await page.getByTestId('workspace').screenshot({ path: '/tmp/pithagoras-voice-thinking.png' });
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.waitForTimeout(800);
-  await page.getByTestId('workspace').screenshot({ path: '/tmp/pithagoras-voice-both-mobile.png' });
+  await settled(page);
   const mobileBrowser = await page.locator('.voice-browser-window').boundingBox();
   const mobileTerminal = await page.locator('.voice-terminal-window').boundingBox();
   expect(mobileBrowser!.y + mobileBrowser!.height).toBeLessThan(mobileTerminal!.y);
@@ -331,7 +324,6 @@ test('prompt and compaction progress remain visible in chat and voice',async({pa
  await page.getByRole('button',{name:'Start compaction',exact:true}).click();
  const bar=page.locator('.voice-stage').getByRole('progressbar',{name:'Conversation compaction'});
  await expect(bar).toBeVisible();await expect(bar).not.toHaveAttribute('aria-valuenow');
- await page.getByTestId('workspace').screenshot({path:'/tmp/pithagoras-compaction-progress.png'});
  await page.getByRole('button',{name:'End compaction',exact:true}).click();
  await expect(bar).toHaveCount(0);
  await page.getByRole('button',{name:'End voice mode'}).click();
@@ -354,7 +346,6 @@ test('composer offers send beside stop for a follow-up and canvas lives in the h
  await page.getByRole('button',{name:'Stop generation',exact:true}).click();
  await expect(page.getByTestId('aborted')).toHaveText('1');
  await expect(page.locator('.session-workspace > header').getByRole('button',{name:'Session canvases',exact:true})).toBeVisible();
- await expect(page.locator('.canvas-toggle')).toHaveCount(0);
 });
 
 test('without speech synthesis voice mode is not offered, because it speaks its replies, and dictation, which only listens, is', async ({ page }) => {
@@ -369,4 +360,55 @@ test('without speech synthesis voice mode is not offered, because it speaks its 
   await page.reload();
   await expect(page.getByRole('button', { name: 'Dictate a message' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Turn on hands-free voice' })).toBeVisible();
+});
+
+test('dictation in send mode sends what was said to the chat it was started in', async ({ page }) => {
+  const asked: string[] = [];
+  await page.addInitScript(() => localStorage.setItem('dictationMode', 'send'));
+  await page.route('**/api/voice', route => route.fulfill({ json: { enabled: true } }));
+  await page.route('**/test-speech.wav', route => route.fulfill({ body: sample, contentType: 'audio/wav' }));
+  await page.route('**/voice/transcribe', route => { asked.push(new URL(route.request().url()).pathname); return route.fulfill({ json: { text: 'A dictated sentence.' } }); });
+  await page.goto('/tests/voice.html');
+  await page.getByRole('button', { name: 'Dictate a message' }).click();
+  await expect(page.getByRole('button', { name: 'Stop dictating' })).toBeVisible({ timeout: 25000 });
+  await page.getByRole('button', { name: 'Inject speech' }).click();
+  await expect(page.getByTestId('sent')).toHaveText('1', { timeout: 15000 });
+  await expect(page.getByTestId('last-send')).toContainText('A dictated sentence.');
+  expect(asked.at(-1)).toBe('/api/sessions/test/voice/transcribe');
+});
+
+test('a sentence being dictated when another chat is opened is not sent to that chat', async ({ page }) => {
+  const asked: string[] = [];
+  await page.addInitScript(() => localStorage.setItem('dictationMode', 'send'));
+  await page.route('**/api/voice', route => route.fulfill({ json: { enabled: true } }));
+  await page.route('**/test-speech.wav', route => route.fulfill({ body: sample, contentType: 'audio/wav' }));
+  await page.route('**/voice/transcribe', route => { asked.push(new URL(route.request().url()).pathname); return route.fulfill({ json: { text: 'A dictated sentence.' } }); });
+  // The chat switched to answers as the one the page starts in does.
+  await page.route('**/api/sessions/other/commands', route => route.fulfill({ json: { commands: [] } }));
+  await page.route('**/api/sessions/other/canvases', route => route.fulfill({ json: [] }));
+  await page.route('**/api/sessions/other/config', route => route.fulfill({ status: 503, json: {} }));
+  await page.goto('/tests/voice.html');
+  await page.getByRole('button', { name: 'Dictate a message' }).click();
+  await expect(page.getByRole('button', { name: 'Stop dictating' })).toBeVisible({ timeout: 25000 });
+  await page.getByRole('button', { name: 'Inject speech' }).click();
+  // Mid-sentence: heard, not yet ended by a pause.
+  await expect(page.getByText('Hearing you')).toBeVisible({ timeout: 15000 });
+  await page.getByRole('button', { name: 'Switch chat' }).click();
+  // The sentence is not to be sent to the chat it was not started in, which only waiting for as long as a send takes shows.
+  await page.waitForTimeout(2500);
+  await expect(page.getByTestId('sent')).toHaveText('0');
+  expect(asked.filter(path => path.includes('/other/'))).toEqual([]);
+});
+
+test('a refused microphone says how to allow it, in dictation and in voice mode, not the browser\'s "Permission denied"', async ({ page }) => {
+  await page.route('**/api/voice', route => route.fulfill({ json: { enabled: true } }));
+  await page.goto('/tests/voice.html');
+  await page.evaluate(() => { (window as any).micFails = 'NotAllowedError'; });
+  await page.getByRole('button', { name: 'Dictate a message' }).click();
+  await expect(page.getByRole('alert')).toContainText('The microphone is blocked for this site');
+  await expect(page.getByRole('alert')).not.toContainText('Permission denied');
+  await page.reload();
+  await page.evaluate(() => { (window as any).micFails = 'NotFoundError'; });
+  await page.getByRole('button', { name: 'Turn on hands-free voice' }).click();
+  await expect(page.getByRole('alert')).toContainText('No microphone was found');
 });

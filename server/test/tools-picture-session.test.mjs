@@ -1,8 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
+import { inProcessHome } from "./server-harness.mjs";
 
 /**
  * What a chat's own tool list says of the picture tools, for the page to group
@@ -10,11 +9,7 @@ import path from "node:path";
  * registered, one that has not lists what was remembered. Either way the
  * portal's own are marked `inline` and an extension's of the same name is not.
  */
-const home = mkdtempSync(path.join(tmpdir(), "pithagoras-tools-picture-session-"));
-process.env.DATA_DIR = home;
-process.env.WORKSPACE_ROOT = path.join(home, "ws");
-process.env.PI_CODING_AGENT_DIR = path.join(home, "agent");
-mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
+const home = inProcessHome("pithagoras-tools-picture-session-");
 
 const db = await import("../dist/db.js");
 const { sessions } = await import("../dist/session-manager.js");

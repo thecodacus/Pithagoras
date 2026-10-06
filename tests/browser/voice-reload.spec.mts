@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './portal-mock';
 
 // As an ordinary browser does it: no audio before the page has been touched.
 // Headless Chromium lets it start without, which would skip the part tested here.
@@ -29,7 +29,6 @@ test('without any click on the page yet, it waits for one before audio', async (
   await waiting;
   const status = page.getByRole('status');
   await expect(status).toContainText('Click or press a key to continue voice mode');
-  await page.getByTestId('workspace').screenshot({ path: '/tmp/pithagoras-voice-reload.png' });
   await page.keyboard.press('Shift');
   await expect(status).toContainText('Listening', { timeout: 25000 });
 });

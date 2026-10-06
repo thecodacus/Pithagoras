@@ -1,15 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import path from "node:path";
+import { inProcessHome } from "./server-harness.mjs";
 
 // A browser wired under another name, as an older portal or a hand-written
 // mcp.json would have it. What makes it the browser is where it connects.
-const home = mkdtempSync(path.join(tmpdir(), "pithagoras-name-"));
-process.env.DATA_DIR = home;
-process.env.PI_CODING_AGENT_DIR = path.join(home, "agent");
-mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
+const home = inProcessHome("pithagoras-name-");
 const mcp = path.join(process.env.PI_CODING_AGENT_DIR, "mcp.json");
 const CDP = "http://127.0.0.1:9222";
 writeFileSync(

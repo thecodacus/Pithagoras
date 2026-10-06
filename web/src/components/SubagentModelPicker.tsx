@@ -4,7 +4,7 @@ import { load, peek, useCached } from "../settings-cache";
 import { Select } from "./Select";
 import { t } from "../i18n";
 
-export interface SubagentChoice {
+interface SubagentChoice {
   /** The subagent tool is on: there is something to decide. */
   on: boolean;
   /** This chat's own choice (null follows `default`), once known. */
@@ -34,7 +34,6 @@ export function useSubagentChoice(sessionId: string, onError?: (e: string) => vo
       current = false;
     };
   }, [key, on]);
-  const stored = { value, reload: reloadStored };
   // What was just chosen here, until the server has said it back.
   const [picked, setPicked] = useState<{ model: string | null } | null>(null);
   useEffect(() => setPicked(null), [sessionId]);
@@ -48,7 +47,7 @@ export function useSubagentChoice(sessionId: string, onError?: (e: string) => vo
   }, [reloadFeatures]);
 
   // Only an answer that is one: a server that says something else leaves the menu as it was.
-  const known = typeof stored.value?.default === "string" ? stored.value : undefined;
+  const known = typeof value?.default === "string" ? value : undefined;
   const choice = known && (picked ? { ...known, ...picked } : known);
   return {
     on,
@@ -56,7 +55,7 @@ export function useSubagentChoice(sessionId: string, onError?: (e: string) => vo
     set: (model) => {
       setPicked({ model });
       api.setSubagentModel(sessionId, model).then(
-        () => stored.reload().then(() => setPicked(null)),
+        () => reloadStored().then(() => setPicked(null)),
         (e: Error) => {
           setPicked(null);
           onError?.(e.message);

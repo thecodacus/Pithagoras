@@ -1,15 +1,19 @@
 import { defineConfig } from "vitepress";
 
+// Project pages serve from /<repo>/, so every asset and link needs the
+// prefix, spelled as the repository is: the paths are case-sensitive. The
+// docs workflow sets it from the repository's name; this is the upstream's for
+// a build by hand. Overridable for a custom domain, where the site is at the root.
+const base = (process.env.DOCS_BASE ?? "/pithagoras/").replace(/\/?$/, "/");
+
 export default defineConfig({
   title: "Pithagoras",
-  // Project pages serve from /<repo>/, so every asset and link needs the
-  // prefix. Overridable for a custom domain, where the site is at the root.
-  base: process.env.DOCS_BASE ?? "/pithagoras/",
+  base,
   description: "A hosted web portal for the pi coding agent",
   lastUpdated: true,
   cleanUrls: true,
 
-  head: [["link", { rel: "icon", type: "image/png", href: "/pithagoras/favicon.png" }]],
+  head: [["link", { rel: "icon", type: "image/png", href: `${base}favicon.png` }]],
 
   themeConfig: {
     logo: "/logo.png",

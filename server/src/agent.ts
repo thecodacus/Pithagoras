@@ -1,9 +1,6 @@
 import { nanoid } from "nanoid";
 import { createSession, findChannelSession, getDb, type SessionRow } from "./db.js";
 import { DEFAULT_AGENT, channelAgentHome } from "./agents.js";
-import { agentHome } from "./agent-home.js";
-
-export { agentHome };
 
 /** Keys come from outside, so they are bounded before touching the database. */
 const MAX_KEY = 200;

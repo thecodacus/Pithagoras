@@ -1,19 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { inProcessHome } from "./server-harness.mjs";
 
 // Tool settings per project: a layer between the portal-wide default and a
 // chat's own exceptions, resolved from where the chat works.
-const home = mkdtempSync(path.join(tmpdir(), "pithagoras-project-tools-"));
-const ws = path.join(home, "ws");
-process.env.DATA_DIR = home;
-process.env.WORKSPACE_ROOT = ws;
-process.env.AGENT_HOME = path.join(home, "agent-home");
-process.env.PI_CODING_AGENT_DIR = path.join(home, "agent");
-mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
-mkdirSync(process.env.AGENT_HOME, { recursive: true });
+const home = inProcessHome("pithagoras-project-tools-");
+const ws = process.env.WORKSPACE_ROOT;
 // A server called `browser`, so its tools are the browser's.
 writeFileSync(path.join(process.env.PI_CODING_AGENT_DIR, "mcp.json"), JSON.stringify({ mcpServers: { browser: {} } }));
 for (const dir of ["alpha/sub", "alpha-old", "beta", ".hidden"]) mkdirSync(path.join(ws, dir), { recursive: true });

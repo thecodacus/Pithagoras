@@ -34,3 +34,18 @@ test('a language without a pack keeps its text unchanged', () => {
   assert.equal(spokenNumbers('Tokeni 4070 hapa.', 'sw'), 'Tokeni 4070 hapa.');
   assert.equal(spokenNumbers('Tokens 4070 here.', 'auto'), 'Tokens 4070 here.');
 });
+
+test('an identifier is kept whole: what follows its separators is not read as a number of its own', () => {
+  assert.equal(spokenNumbers('Node v20.11 und Qwen3.5 laufen.', 'de'), 'Node v20.11 und Qwen3.5 laufen.');
+  assert.equal(spokenNumbers('Node v20.11 and Qwen3.5 run, v2.5.1 too.', 'en'), 'Node v20.11 and Qwen3.5 run, v2.5.1 too.');
+  // A number after a separator that follows a space or a number is a number still.
+  assert.equal(spokenNumbers('Nach 2 Stunden, 3 Minuten.', 'de'), 'Nach zwei Stunden, drei Minuten.');
+  assert.equal(spokenNumbers('Sind es 3,5 Sekunden?', 'de'), 'Sind es drei Komma fünf Sekunden?');
+});
+
+test('German thousands end like the number they count: ein, not eins', () => {
+  assert.equal(spokenNumbers('Es sind 101.000 Euro.', 'de'), 'Es sind einhunderteintausend Euro.');
+  assert.equal(spokenNumbers('Es sind 901.001 Euro.', 'de'), 'Es sind neunhunderteintausendeins Euro.');
+  assert.equal(spokenNumbers('Es sind 1.000 und 21.000 Euro.', 'de'), 'Es sind eintausend und einundzwanzigtausend Euro.');
+  assert.equal(spokenNumbers('It is 101,000 euros.', 'en'), 'It is one hundred one thousand euros.');
+});

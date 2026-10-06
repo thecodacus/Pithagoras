@@ -1,22 +1,15 @@
-import { test, after } from "node:test";
+import { test, after, mock } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
+import { inProcessHome } from "./helpers.mts";
 
 // The gallery lists the pictures that lie in the folders the agent's tools write into, recorded or not. A database from before it did, with its rows, is what these run on.
-const temp = realpathSync(mkdtempSync(path.join(tmpdir(), "pitha-folders-")));
-after(() => rmSync(temp, { recursive: true, force: true }));
-process.env.DATA_DIR = temp;
-process.env.SESSION_DIR = path.join(temp, "sessions");
-process.env.PI_CODING_AGENT_DIR = path.join(temp, "agent");
-process.env.AGENT_HOME = path.join(temp, "agent-home");
-process.env.WORKSPACE_ROOT = path.join(temp, "workspaces");
+const temp = realpathSync(inProcessHome("pitha-folders-"));
 const root = process.env.WORKSPACE_ROOT;
 const home = process.env.AGENT_HOME;
 mkdirSync(root, { recursive: true });
-mkdirSync(home, { recursive: true });
 
 // The first bytes of each kind a browser draws, padded: that is all the check reads. `tag` tells two apart.
 const pad = (head: number[] | Buffer, tag = "", to = 64) => Buffer.concat([Buffer.from(head), Buffer.from(tag), Buffer.alloc(to)]);
@@ -512,4 +505,95 @@ test("the home of an agent other than the first is a folder of the gallery like 
     [made, "a lake", { name: "Research Bot", home: false }],
     [older, "", { name: "Research Bot", home: false }],
   ].sort());
+});
+
+test("a picture kept with what it was asked for stays while its folder is away, and is the same picture with its words when the folder is back", async () => {
+  const omega = project("omega");
+  const file = "image-20260102-190000-999991.png";
+  chatIn("chat-omega", omega, "Omega");
+  put(omega, file, png("omega"), T);
+  gallery.recordChatPicture({ sessionId: "chat-omega", path: `${GENERATED_DIR}/${file}`, kind: "generated", prompt: "a kite over a hill", params: { seed: 7 }, bytes: 70 });
+  deleteSession("chat-omega");
+  const kept = (await listed("?origin=folder")).pictures.find((p: any) => p.fileName === file);
+  assert.deepEqual([kept.prompt, kept.params], ["a kite over a hill", { seed: 7 }]);
+  // A morning with the drive not mounted: the page is opened.
+  const away = path.join(temp, "away-omega");
+  renameSync(omega, away);
+  assert.equal(gallery.pruneMissing(), 0, "nothing is said to be gone");
+  await listed();
+  renameSync(away, omega);
+  const back = (await listed()).pictures.filter((p: any) => p.fileName === file);
+  assert.deepEqual(back.map((p: any) => [p.id, p.prompt, p.params]), [[kept.id, "a kite over a hill", { seed: 7 }]], "the same picture, with its words");
+  // Its file gone from a folder that is there is a picture that is gone.
+  rmSync(path.join(omega, GENERATED_DIR, file));
+  assert.equal(gallery.pruneMissing(), 1);
+});
+
+test("the pictures of a folder the portal removed go with it, those of another folder do not, and an edit's link to them goes", async () => {
+  const kappa = project("kappa");
+  const other = project("kappa-other");
+  const rows = getDb().prepare("INSERT INTO images (id, origin, folder, path, kind, prompt, source_id, created_at) VALUES (?, 'folder', ?, ?, 'generated', 'kept', ?, ?)");
+  rows.run("kappa-1", kappa, `${GENERATED_DIR}/a.png`, null, 1);
+  rows.run("kappa-2", kappa, `${GENERATED_DIR}/b.png`, "kappa-1", 2);
+  rows.run("other-1", other, `${GENERATED_DIR}/a.png`, null, 3);
+  rows.run("other-2", other, `${GENERATED_DIR}/b.png`, "kappa-1", 4);
+  // The way the folder is spoken of is not always the way it really leads.
+  const link = path.join(temp, "root-link");
+  symlinkSync(root, link);
+  rmSync(kappa, { recursive: true, force: true });
+  assert.equal(gallery.forgetPicturesIn(path.join(link, "kappa")), 2);
+  const left = getDb().prepare("SELECT id, source_id FROM images WHERE id LIKE 'kappa-%' OR id LIKE 'other-%' ORDER BY id").all();
+  assert.deepEqual(left, [{ id: "other-1", source_id: null }, { id: "other-2", source_id: null }]);
+});
+
+test("forgetting pictures finds what was made of each by an index, with each statement made once", async () => {
+  const d = getDb();
+  const plan = (d.prepare("EXPLAIN QUERY PLAN UPDATE images SET source_id = NULL WHERE source_id = ?").all("x") as { detail: string }[]).map((r) => r.detail).join(" ");
+  assert.match(plan, /idx_images_source/, plan);
+  const lambda = project("lambda");
+  const add = d.prepare("INSERT INTO images (id, origin, folder, path, kind, source_id, created_at) VALUES (?, 'folder', ?, ?, 'generated', ?, ?)");
+  d.transaction(() => {
+    for (let i = 0; i < 300; i++) add.run(`lambda-${i}`, lambda, `${GENERATED_DIR}/${i}.png`, i ? `lambda-${i - 1}` : null, i);
+  })();
+  const real = d.prepare.bind(d);
+  let unlinks = 0;
+  (d as any).prepare = (sql: string) => {
+    if (/UPDATE images SET source_id = NULL WHERE source_id = \?/.test(sql)) unlinks++;
+    return real(sql);
+  };
+  try {
+    rmSync(lambda, { recursive: true, force: true });
+    assert.equal(gallery.forgetPicturesIn(lambda), 300);
+  } finally {
+    delete (d as any).prepare;
+  }
+  assert.ok(unlinks <= 1, `${unlinks} statements made for 300 pictures`);
+  assert.equal(d.prepare("SELECT COUNT(*) AS n FROM images WHERE id LIKE 'lambda-%'").get().n, 0);
+});
+
+test("a page that asks again for the top of its list does not make the portal look through every folder each time", async () => {
+  const folder = project("again");
+  put(folder, "first.png", png("first"));
+  assert.ok(names(await listed()).includes("first.png"), "opening the page looks");
+  // Put there by hand, so that nothing recorded it: only a look finds it.
+  put(folder, "second.png", png("second"));
+  const again = async () => (await call("GET", "/images?again=1&limit=100")).body;
+  assert.ok(!names(await again()).includes("second.png"), "a page asking again, a moment after a look, is told what that look found");
+  assert.ok(names(await listed()).includes("second.png"), "the Refresh button looks at once");
+  // A file that went is dropped by a look as well.
+  rmSync(path.join(folder, GENERATED_DIR, "first.png"));
+  assert.ok(names(await again()).includes("first.png"));
+  assert.ok(!names(await listed()).includes("first.png"));
+
+  // Asking again after the minute looks.
+  put(folder, "third.png", png("third"));
+  mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  try {
+    mock.timers.tick(gallery.LOOK_AGAIN_MS - 1000);
+    assert.ok(!gallery.listPictures({ again: true, limit: 100 }).pictures.some((p) => p.fileName === "third.png"));
+    mock.timers.tick(2000);
+    assert.ok(gallery.listPictures({ again: true, limit: 100 }).pictures.some((p) => p.fileName === "third.png"), "found after a minute");
+  } finally {
+    mock.timers.reset();
+  }
 });
