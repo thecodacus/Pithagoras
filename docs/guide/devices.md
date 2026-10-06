@@ -190,8 +190,12 @@ as a card above the message box (the call itself says "Waiting for approval on
 *device*…"), and shown under the device on the **Devices** page, with what it
 wants to do and why the device asks. A chat that you open or reload while the
 question waits shows the card again, and it goes as soon as the question is
-answered anywhere, runs out, or its call ends. On a phone the card takes the
-width of the chat and its buttons wrap:
+answered anywhere, runs out, or its call ends. When several calls wait at once
+(commands running in parallel, say), the chat shows only the oldest as a card,
+with "Approval 1 of 3" above it and the others in a short list under it, which
+opens with **Waiting next**. Each call is decided on its own, and the next one
+moves up when the one in front is answered. On a phone the card takes the width
+of the chat and its buttons wrap:
 
 - **Allow once**: this call.
 - **Allow for this chat**: this call and more of its kind from the same chat,

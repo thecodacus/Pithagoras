@@ -193,3 +193,93 @@ test('the card fits a phone, with every choice reachable', async ({ page }) => {
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });
+
+/** Three questions, listed newest first as a portal need not list them: what the chat shows is decided by when each was asked. */
+function threeAsked(approval: (id: number, over?: Record<string, unknown>) => any) {
+  return [
+    approval(9, { created_ms: 3000, tool: 'write', target: 'third-target' }),
+    approval(7, { created_ms: 1000, tool: 'bash', target: 'first-target' }),
+    approval(8, { created_ms: 2000, tool: 'edit', target: 'second-target' }),
+  ];
+}
+
+test('several questions show one card, the oldest, with the others counted', async ({ page }) => {
+  const { state, approval } = await asking(page);
+  state.pending = threeAsked(approval);
+  await page.goto('/tests/chat.html?phase=devices');
+  const card = page.getByTestId('device-approval');
+  await expect(card).toHaveCount(1);
+  await expect(card.getByText('laptop asks: bash')).toBeVisible();
+  await expect(card.getByText('first-target')).toBeVisible();
+  const count = page.getByTestId('device-approval-count');
+  await expect(count).toHaveText('Approval 1 of 3');
+  await expect(count).toHaveAttribute('aria-live', 'polite');
+  // The others are a short list, collapsed, and never a second card or an allow-all.
+  const next = page.getByTestId('device-approval-next');
+  await expect(next.getByText('second-target')).toBeHidden();
+  await next.getByText('Waiting next').click();
+  await expect(next.getByRole('listitem')).toHaveText(['laptop: edit · second-target', 'laptop: write · third-target']);
+  await expect(page.getByRole('button', { name: 'Allow once' })).toHaveCount(1);
+  await expect(page.getByRole('button', { name: /\ball\b|every/i })).toHaveCount(0);
+});
+
+test('answering a question moves the next one up, each decided on its own', async ({ page }) => {
+  const { state, approval } = await asking(page);
+  state.pending = threeAsked(approval);
+  await page.goto('/tests/chat.html?phase=devices');
+  const card = page.getByTestId('device-approval');
+  await expect(card.getByText('first-target')).toBeVisible();
+  await card.getByRole('button', { name: 'Deny' }).click();
+  await expect(card.getByText('second-target')).toBeVisible();
+  await expect(page.getByTestId('device-approval-count')).toHaveText('Approval 1 of 2');
+  await card.getByRole('button', { name: 'Allow once' }).click();
+  await expect(card.getByText('third-target')).toBeVisible();
+  // The last one stands alone: no counter, no list.
+  await expect(page.getByTestId('device-approval-count')).toBeHidden();
+  await expect(page.getByTestId('device-approval-next')).toHaveCount(0);
+  await card.getByRole('button', { name: 'Allow for this chat' }).click();
+  await expect(card).toHaveCount(0);
+  expect(state.answers).toEqual([
+    { path: '/api/devices/d1/approvals/7', body: { answer: 'deny' } },
+    { path: '/api/devices/d1/approvals/8', body: { answer: 'once' } },
+    { path: '/api/devices/d1/approvals/9', body: { answer: 'chat' } },
+  ]);
+});
+
+test('the order is by when each was asked and does not move across polls; one answered elsewhere moves the next up', async ({ page }) => {
+  const { state, approval } = await asking(page);
+  state.pending = threeAsked(approval);
+  await page.goto('/tests/chat.html?phase=devices');
+  const card = page.getByTestId('device-approval');
+  await expect(card.getByText('first-target')).toBeVisible();
+  // Two more turns of the poll, the list coming in another order each time: the same card stays in front.
+  const asked = state.asked;
+  state.pending = [state.pending[1], state.pending[2], state.pending[0]];
+  await expect.poll(() => state.asked, { timeout: 10000 }).toBeGreaterThanOrEqual(asked + 2);
+  await expect(card.getByText('first-target')).toBeVisible();
+  await expect(page.getByTestId('device-approval-count')).toHaveText('Approval 1 of 3');
+  // A newer one joining does not take the place of the one in front.
+  state.pending = [...state.pending, approval(10, { created_ms: 4000, target: 'fourth-target' })];
+  await expect(page.getByTestId('device-approval-count')).toHaveText('Approval 1 of 4', { timeout: 8000 });
+  await expect(card.getByText('first-target')).toBeVisible();
+  // The one in front answered on the device: the next moves up.
+  state.pending = state.pending.filter((a) => a.approval.id !== 7);
+  await expect(card.getByText('second-target')).toBeVisible({ timeout: 8000 });
+  await expect(page.getByTestId('device-approval-count')).toHaveText('Approval 1 of 3');
+});
+
+test('with several questions the card and its list fit a phone', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 800 });
+  const { state, approval } = await asking(page);
+  state.pending = threeAsked(approval);
+  await page.goto('/tests/chat.html?phase=devices');
+  const card = page.getByTestId('device-approval');
+  await expect(card).toHaveCount(1);
+  await page.getByTestId('device-approval-next').getByText('Waiting next').click();
+  for (const el of [card, page.getByTestId('device-approval-count'), page.getByTestId('device-approval-next')]) {
+    const box = (await el.boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(390);
+  }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});

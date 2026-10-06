@@ -2451,6 +2451,8 @@ const de: Locale = {
     "This is the portal's own machine and user: a chat reaches nothing here that the portal's own tools do not, so it is not offered to chats.": "Das ist der eigene Rechner und Benutzer des Portals: Ein Chat erreicht hier nichts, was die eigenen Werkzeuge des Portals nicht auch erreichen, daher wird es Chats nicht angeboten.",
     "The device does not share its settings with the portal (portal_policy = off).": "Das Gerät teilt seine Einstellungen nicht mit dem Portal (portal_policy = off).",
     "{device} asks: {tool}": "{device} fragt: {tool}",
+    "Approval {n} of {total}": "Freigabe {n} von {total}",
+    "Waiting next": "Wartet danach",
     "from this chat": "aus diesem Chat",
     "Allow once": "Einmal erlauben",
     "Allow for this chat": "Für diesen Chat erlauben",

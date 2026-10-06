@@ -60,8 +60,10 @@ const waitsForApproval = (e: PortalEvent | undefined): boolean => {
 };
 
 /**
- * The questions the devices of this chat hold for it, as cards above the
- * composer: the owner answers where the chat is, instead of on the Devices page.
+ * The questions the devices of this chat hold for it, one card at a time above
+ * the composer, the oldest first, with the others as a count and a short list:
+ * the owner answers where the chat is, instead of on the Devices page, and
+ * decides each call on its own.
  * A question exists only while a call waits for it, so the chat asks only
  * while it runs, and anew when a call says that it waits. What the server
  * lists is what is shown: a question answered elsewhere, or whose call ended,
@@ -108,21 +110,34 @@ export function ChatDeviceApprovals({ sessionId, running, events }: { sessionId:
   }, [waiting, last?.seq, load]);
 
   if (!list.length) return null;
+  // Oldest first, by when the device asked, so the card in front stays the same one across polls and the next moves up as it is answered.
+  const queue = [...list].sort((a, b) => a.approval.created_ms - b.approval.created_ms || a.device.id.localeCompare(b.device.id) || a.approval.id - b.approval.id);
+  const [{ device, approval }, ...rest] = queue;
   return (
     <section className="mx-auto mb-2 max-h-[45dvh] w-full max-w-3xl space-y-2 overflow-y-auto overscroll-contain" aria-label={t("Waiting for your answer")}>
-      {list.map(({ device, approval }) => (
-        <DeviceApprovalCard
-          key={`${device.id}:${approval.id}`}
-          device={device}
-          approval={approval}
-          here
-          onAnswered={() => {
-            setError("");
-            return load();
-          }}
-          onError={setError}
-        />
-      ))}
+      {/* Present before there is a second question, so a screen reader announces the count when it appears or changes. */}
+      <p className="px-1 text-xs text-fg-muted" aria-live="polite" data-testid="device-approval-count" hidden={!rest.length}>
+        {rest.length > 0 && t("Approval {n} of {total}", { n: 1, total: queue.length })}
+      </p>
+      <DeviceApprovalCard
+        key={`${device.id}:${approval.id}`}
+        device={device}
+        approval={approval}
+        here
+        onAnswered={() => {
+          setError("");
+          return load();
+        }}
+        onError={setError}
+      />
+      {rest.length > 0 && (
+        <details className="px-1 text-xs text-fg-subtle" data-testid="device-approval-next">
+          <summary className="cursor-pointer">{t("Waiting next")}</summary>
+          <ul className="mt-1 space-y-0.5">
+            {rest.map((r) => <li key={`${r.device.id}:${r.approval.id}`} className="truncate" title={r.approval.target}>{r.device.name}: {r.approval.tool} · <span className="font-mono">{r.approval.target}</span></li>)}
+          </ul>
+        </details>
+      )}
       {error && <p role="alert" className="break-words rounded-lg bg-danger/10 px-3 py-2 text-xs text-danger">{error}</p>}
     </section>
   );
