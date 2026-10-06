@@ -91,6 +91,8 @@ export function ImagesPage() {
 
   const [features, setFeatures] = useState<ImagesFeature | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The gallery's own, apart: a page of it that loads ends a page that could not, and nothing else that went wrong.
+  const [galleryError, setGalleryError] = useState<string | null>(null);
   useEffect(() => {
     api.imagesFeature().then((r) => setFeatures(r.images), (e: Error) => setError(e.message));
   }, []);
@@ -120,11 +122,11 @@ export function ImagesPage() {
         setList({ pictures: page.pictures, next: page.next, total: page.total, pageBytes: page.pageBytes });
         setLoading(false);
         // A gallery that has loaded is the end of one that could not.
-        setError(null);
+        setGalleryError(null);
       },
       (e: Error) => {
         if (asked.current !== mine) return;
-        setError(e.message);
+        setGalleryError(e.message);
         setLoading(false);
       },
     );
@@ -175,7 +177,7 @@ export function ImagesPage() {
           if (asked.current !== mine) return;
           setList((cur) => ({ pictures: appendPage(cur.pictures, page.pictures), next: page.next, total: page.total, pageBytes: page.pageBytes }));
         },
-        (e: Error) => asked.current === mine && setError(e.message),
+        (e: Error) => asked.current === mine && setGalleryError(e.message),
       )
       .finally(() => {
         loadingMoreRef.current = false;
@@ -489,6 +491,7 @@ export function ImagesPage() {
         </PageHeader>
 
         {error && <ErrorBanner onClose={() => setError(null)}>{error}</ErrorBanner>}
+        {galleryError && <ErrorBanner onClose={() => setGalleryError(null)}>{galleryError}</ErrorBanner>}
 
         {features && (
           <ImageMaker
