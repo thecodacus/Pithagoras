@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, utimesSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { agentSkillsDir, listAgentSkills, readAgentSkill, skillFrontmatter, skillsLine } from '../server/src/agent-skills.js';
@@ -22,6 +22,9 @@ const skill = (id: string, text: string, extra: Record<string, string> = {}, at?
 test('an agent with no skills folder has none, and is told where they go', () => {
   assert.deepEqual(listAgentSkills({ home: path.join(home, 'nobody') }), []);
   assert.match(skillsLine(agent), new RegExp(`${agentSkillsDir(agent)}.*SKILL\\.md`));
+  // The words the skill-creator skill tells the agent to look for.
+  assert.ok(skillsLine(agent).startsWith('Your own skills are in '));
+  assert.match(readFileSync(path.join(import.meta.dirname, '../skills/skill-creator/SKILL.md'), 'utf8'), /"Your own skills are in"/);
 });
 
 test("an agent's skills are listed from their SKILL.md, newest first, with the files beside them", () => {
