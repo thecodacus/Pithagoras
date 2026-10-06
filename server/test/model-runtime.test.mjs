@@ -1,13 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { inProcessHome, scratch } from "./server-harness.mjs";
 
 // pi itself, against an agent directory of its own.
-const dir = mkdtempSync(path.join(tmpdir(), "pi-agent-"));
-process.env.PI_CODING_AGENT_DIR = dir;
-delete process.env.OPENROUTER_API_KEY;
+inProcessHome("pi-agent-");
+const dir = process.env.PI_CODING_AGENT_DIR;
 const pi = await import("@earendil-works/pi-coding-agent");
 const { SdkPiClient } = await import("../dist/pi/sdk-client.js");
 const { modelRuntime } = await import("../dist/api/providers.js");
@@ -22,7 +21,7 @@ test("a key saved in Settings reaches the model menu of a chat already open", as
 });
 
 test("the models Settings offers include those an installed package brings", async () => {
-  const home = mkdtempSync(path.join(tmpdir(), "agent-home-"));
+  const home = scratch("agent-home-");
   assert.equal((await providersOf(await modelRuntime(home))).has("fake-gateway"), false);
 
   // Installed: pi's settings name it, as `pi install` would.
@@ -45,7 +44,7 @@ test("the models Settings offers include those an installed package brings", asy
 });
 
 test("a key saved is read into the runtime Settings keeps, without making it again", async () => {
-  const home = mkdtempSync(path.join(tmpdir(), "agent-home-"));
+  const home = scratch("agent-home-");
   writeFileSync(path.join(dir, "auth.json"), "{}");
   const before = await modelRuntime(home);
   assert.equal((await providersOf(before)).has("openrouter"), false);

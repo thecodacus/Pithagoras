@@ -1,15 +1,29 @@
 import express, { type Router } from "express";
 import {
-  browserAllowed,
   browserAllowlist,
   browserByDefault,
+  browserConfigured,
+  browserCursorOn,
   browserExceptions,
   getDb,
+  getSession,
+  knownTools,
+  mcpServersRemoved,
+  portalBrowserOn,
+  portalBrowserState,
+  projectTools,
+  sessionTools,
   setBrowserAllowlist,
-  type SessionRow,
+  setBrowserCursor,
+  setPortalBrowser,
+  setProjectTools,
+  setSessionTools,
+  setToolDefaultsOff,
+  toolDefaultsOff,
 } from "../db.js";
-import { BROWSER_MCP } from "../tool-policy.js";
-import { BROWSER_CDP, browserServers, findConnection, readMcpFile, writeMcpFile } from "./mcp.js";
+import { EXECUTOR_KIND } from "../executor-kind.js";
+import { PORTAL_BROWSER_TOOLS, browserTool } from "../tool-policy.js";
+import { BROWSER_CDP, browserServers, findConnection, mcpServerNames, readMcpFile, writeMcpFile } from "./mcp.js";
 import * as service from "../extensions/browser-service.js";
 
 /**
@@ -21,13 +35,6 @@ import * as service from "../extensions/browser-service.js";
  */
 
 const CDP = BROWSER_CDP;
-
-/**
- * How the agent reaches the browser: an MCP server attached over the debugging
- * protocol. `--cdp-endpoint` is the whole point — without it the Playwright
- * server launches its own throwaway Chromium, signed into nothing.
- */
-const MCP_NAME = BROWSER_MCP;
 
 /**
  * Pointer tools by screen position, which `--caps vision` adds.
@@ -44,37 +51,6 @@ const VISION_TOOLS = [
 ];
 
 /**
- * The tools worth putting in the prompt, and the one worth hiding.
- *
- * Behind the adapter's proxy a tool's schema is not in context, so the agent
- * has to guess its arguments — it called navigate twice with no url before
- * working out that it needed one. These carry their signatures instead, at
- * roughly 200 tokens each; the remaining dozen stay behind the proxy, where
- * they are discoverable but cost nothing until asked for.
- */
-const DIRECT_TOOLS = [
-  "browser_navigate",
-  "browser_navigate_back",
-  "browser_snapshot",
-  "browser_find",
-  "browser_click",
-  "browser_type",
-  "browser_fill_form",
-  "browser_select_option",
-  "browser_press_key",
-  "browser_wait_for",
-  "browser_take_screenshot",
-  ...VISION_TOOLS,
-];
-
-/**
- * Arbitrary JavaScript in a browser signed into the agent's accounts is a
- * different thing from arbitrary JavaScript in a blank one. Hidden rather than
- * merely unregistered, so the proxy cannot reach it either.
- */
-const EXCLUDE_TOOLS = ["browser_run_code_unsafe"];
-
-/**
  * Pinned, not `@latest`.
  *
  * The tool signatures changed underneath a working setup: click and type took
@@ -83,14 +59,6 @@ const EXCLUDE_TOOLS = ["browser_run_code_unsafe"];
  * agent depends on is not the place for a silent upgrade.
  */
 const MCP_VERSION = "0.0.79";
-
-const mcpEntry = () => ({
-  command: "npx",
-  args: ["-y", `@playwright/mcp@${MCP_VERSION}`, "--cdp-endpoint", CDP, "--snapshot-mode", "none", "--caps", "vision"],
-  lifecycle: "lazy",
-  directTools: DIRECT_TOOLS,
-  excludeTools: EXCLUDE_TOOLS,
-});
 
 /**
  * Pin existing connections, enable on-demand snapshots and add vision.
@@ -142,6 +110,64 @@ export function pinConnection(): void {
   }
 }
 
+/** The MCP entry this portal wrote for the browser, if there still is one: @playwright/mcp at our debugging port. */
+function managedEntry(servers: Record<string, unknown>): string | undefined {
+  return Object.entries(servers).find(([, entry]) => {
+    const args = (entry as { args?: unknown }).args;
+    return Array.isArray(args) && args.includes(CDP) && args.some((a) => typeof a === "string" && a.startsWith("@playwright/mcp@"));
+  })?.[0];
+}
+
+/**
+ * Moves an install from the Playwright MCP to the portal's own browser tools,
+ * once: the first start after the update, while nobody has said either way.
+ *
+ * Who may drive the browser is kept as switches on its tools — the default,
+ * each project's, each chat's — and those name the MCP's tools. Each is
+ * carried to the portal's tools as it stood, so a chat that had the browser
+ * still has it and one that did not still does not. Then the MCP entry goes, or
+ * the agent would hold two sets of browser tools.
+ *
+ * Someone who adds a Playwright MCP back by hand keeps it: this never runs again.
+ */
+export function adoptPortalBrowser(): void {
+  if (portalBrowserState() !== "unset") return;
+  const { config, error } = readMcpFile();
+  if (error) return;
+  const name = managedEntry(config.mcpServers);
+  if (!name) return;
+  const servers = mcpServerNames();
+  const browsers = browserServers();
+  const old = new Set(
+    knownTools()
+      .map((t) => t.name)
+      .filter((n) => browserTool(n, servers, browsers) && !(PORTAL_BROWSER_TOOLS as readonly string[]).includes(n)),
+  );
+  const carry = (names: string[]) => (names.some((n) => old.has(n)) ? [...names, ...PORTAL_BROWSER_TOOLS] : names);
+  if (old.size) {
+    getDb().transaction(() => {
+      setToolDefaultsOff(carry(toolDefaultsOff()));
+      const chats = getDb()
+        .prepare("SELECT id FROM sessions WHERE COALESCE(tools_off, '') != '' OR COALESCE(tools_on, '') != ''")
+        .all() as { id: string }[];
+      for (const { id } of chats) {
+        const tools = sessionTools(id);
+        setSessionTools(id, { off: carry(tools.off), on: carry(tools.on) });
+      }
+      for (const { project } of getDb().prepare("SELECT project FROM project_tools").all() as { project: string }[]) {
+        const tools = projectTools(project);
+        setProjectTools(project, { off: carry(tools.off), on: carry(tools.on) });
+      }
+    })();
+  }
+  delete config.mcpServers[name];
+  writeMcpFile(config);
+  // The old server's tools, and the adapter's cache of them: the portal's own are listed by their own names.
+  mcpServersRemoved(servers, servers.filter((s) => s !== name));
+  setPortalBrowser(true);
+  console.log(`[portal] the browser now uses the portal's own tools; the "${name}" Playwright MCP entry was replaced, with its settings carried over`);
+}
+
 /**
  * The HTTPS port, not the HTTP one.
  *
@@ -173,6 +199,7 @@ export function browserRouter(): Router {
     // may drive it: the browser is on unless switched off, so "all of them"
     // is the answer almost always and it tells nobody anything.
     const sessions = browserExceptions();
+    const byDefault = browserByDefault();
     const routines = getDb()
       .prepare("SELECT slug, name FROM routines WHERE browser = 1")
       .all() as { slug: string; name: string }[];
@@ -186,21 +213,24 @@ export function browserRouter(): Router {
       pages,
       uiPort: uiPort(),
       allowlist: browserAllowlist().join("\n"),
+      // Whether the tools glide a cursor to what they act on, for whoever watches.
+      cursor: browserCursorOn(),
       // Two separate things that each look fine alone: a browser nobody can
       // drive, and tools pointed at a browser that is gone.
-      connectedAs: findConnection(),
+      connectedAs: portalBrowserOn() ? "built-in" : findConnection(),
       // The container itself, which the portal installs rather than compose.
       install: await service.status(),
       config: { user: service.config().user, hasPassword: Boolean(service.config().password) },
       // Whether a conversation that has never said anything about it has it,
       // and the ones that said otherwise.
-      byDefault: browserByDefault(),
-      configured: browserServers().length > 0,
+      byDefault,
+      configured: browserConfigured(),
       sessions: sessions.map((s) => ({
         id: s.id,
         title: s.title,
         kind: s.kind,
-        allowed: browserAllowed(s),
+        // They are the ones that differ from the default, so this is the other answer: not worked out again for each.
+        allowed: !byDefault,
       })),
       routines,
     });
@@ -215,30 +245,29 @@ export function browserRouter(): Router {
    * removed.
    */
   router.post("/browser/connect", (_req, res) => {
-    const { config, error } = readMcpFile();
-    if (error) return res.status(409).json({ error: `Fix mcp.json first: ${error}` });
-    // Already wired, under whatever name: a second entry would attach the same
-    // browser twice, and rewriting somebody's own would lose what they put in it.
-    const existing = findConnection();
-    if (existing) return res.json({ connectedAs: existing });
-    config.mcpServers[MCP_NAME] = mcpEntry();
-    writeMcpFile(config);
-    res.json({ connectedAs: MCP_NAME });
+    // The portal's own tools; a Playwright MCP somebody attached by hand stays theirs.
+    setPortalBrowser(true);
+    res.json({ connectedAs: "built-in" });
   });
 
   router.delete("/browser/connect", (_req, res) => {
-    const { config, error } = readMcpFile();
-    if (error) return res.status(409).json({ error: `Fix mcp.json first: ${error}` });
-    const name = findConnection();
-    if (name) delete config.mcpServers[name];
-    writeMcpFile(config);
-    res.json({ connectedAs: null });
+    setPortalBrowser(false);
+    res.json({ connectedAs: findConnection() });
   });
 
-  /** Installing, and the lifecycle after it. */
+  /**
+   * Installing, and the lifecycle after it.
+   *
+   * The agent is wired to the browser once it is there, here and not by whichever
+   * page asked: the Browser page and Settings → Add-ons each decided that for
+   * themselves, and a browser installed from the one was left unreachable for the agent.
+   */
   router.post("/browser/install", async (_req, res) => {
+    // Answered before it starts, so that a second click does not even queue behind the first.
+    if (service.installInFlight()) return res.status(409).json({ error: service.ALREADY_INSTALLING });
     try {
       await service.install();
+      setPortalBrowser(true);
       res.json({ ok: true });
     } catch (e) {
       res.status(400).json({ error: (e as Error).message });
@@ -261,6 +290,8 @@ export function browserRouter(): Router {
     try {
       if (req.query.profile === "forget") await service.forgetProfile();
       else await service.remove();
+      // Unwired once it is gone: tools for a browser that does not exist are the worse of the two.
+      setPortalBrowser(false);
       res.json({ ok: true });
     } catch (e) {
       res.status(400).json({ error: (e as Error).message });
@@ -277,6 +308,14 @@ export function browserRouter(): Router {
     res.json({ password: service.suggestPassword() });
   });
 
+  /** Whether the browser tools show their cursor. It applies from the next action. */
+  router.put("/browser/cursor", (req, res) => {
+    const on = req.body?.on;
+    if (typeof on !== "boolean") return res.status(400).json({ error: "on must be a boolean" });
+    setBrowserCursor(on);
+    res.json({ cursor: browserCursorOn() });
+  });
+
   /** Domains the browser may be pointed at. Empty means no restriction. */
   router.put("/browser/allowlist", (req, res) => {
     const domains = req.body?.domains;
@@ -285,10 +324,6 @@ export function browserRouter(): Router {
     res.json({ allowlist: browserAllowlist().join("\n") });
   });
 
-  /**
-   * Turn the browser on or off for one session. Takes effect on its next
-   * launch: the tool list is fixed when pi starts.
-   */
   /**
    * Grant the browser to one conversation, where the tool switches cannot.
    *
@@ -299,15 +334,14 @@ export function browserRouter(): Router {
    * quietly writing a column nothing reads.
    */
   router.put("/sessions/:id/browser", (req, res) => {
-    if ((process.env.EXECUTOR || "host") !== "container") {
+    if (EXECUTOR_KIND !== "container") {
       return res.status(400).json({
         error:
           "The browser is switched with its tools — open the tools list beside the composer, or Settings → Tools for every conversation",
       });
     }
     const on = Boolean(req.body?.enabled);
-    const row = getDb().prepare("SELECT id FROM sessions WHERE id = ?").get(req.params.id);
-    if (!row) return res.status(404).json({ error: "Not found" });
+    if (!getSession(req.params.id)) return res.status(404).json({ error: "Not found" });
     getDb().prepare("UPDATE sessions SET browser = ? WHERE id = ?").run(on ? 1 : 0, req.params.id);
     res.json({ enabled: on });
   });

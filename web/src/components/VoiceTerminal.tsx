@@ -112,7 +112,7 @@ export function VoiceTerminal({ events, limit, maxOutput, ended, focus, onFocuse
     // up to show the command read as leaving the end.
     release.current = window.setTimeout(() => { focused.current = null; settle(); }, 1200);
   }, [focus?.id, focus?.at]);
-  return <div ref={attach} onScroll={onScroll} className="voice-terminal-output" aria-label={t("Agent terminal output")}>
+  return <div ref={attach} onScroll={onScroll} className="voice-terminal-output" role="region" aria-label={t("Agent terminal output")}>
     {!runs.length && <p className="voice-terminal-empty">{t("No commands yet. What the agent runs shows up here as it runs.")}</p>}
     {runs.map(run => <TerminalRun key={run.id} {...run} />)}
   </div>;
@@ -124,7 +124,7 @@ const TerminalRun = memo(function TerminalRun({ id, command, output, running, er
   // Memoized, so not drawn again from above when the language changes: it asks itself.
   useLanguage();
   return <div data-run={id} className="voice-terminal-run">
-    <div className="voice-terminal-command"><span aria-hidden>$</span><code>{command}</code>{running && <i aria-label={t("Command running")} />}{interrupted && <small>{t("interrupted")}</small>}</div>
+    <div className="voice-terminal-command"><span aria-hidden>$</span><code>{command}</code>{running && <i role="img" aria-label={t("Command running")} />}{interrupted && <small>{t("interrupted")}</small>}</div>
     {shown && <pre className={error ? 'is-error' : ''}>{shown}</pre>}
   </div>;
 });

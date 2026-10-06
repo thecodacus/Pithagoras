@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { LuChevronDown, LuChevronRight } from "react-icons/lu";
-import { api, type PortalTool } from "../api";
-import { displayName, groupSummary, groupTools, nextOff, sourceName } from "../tool-groups";
-import { useOpenGroups } from "../use-open-groups";
+import { api, ApiError, type PortalTool } from "../api";
+import { LoadFailed } from "./SettingsUi";
+import { ToolGroupList } from "./ToolGroupList";
+import { nextOff } from "../tool-groups";
 import { t, tp } from "../i18n";
 
 /**
@@ -41,8 +41,12 @@ export function ToolSwitches(props: { sessionId: string } | { project: string } 
   const [live, setLive] = useState(true);
   const [busy, setBusy] = useState(false);
   const [refusal, setRefusal] = useState("");
+  // Any other failure of the first read, which is no statement about the deployment: it is tried again, by the button or by a change of chat.
+  const [failed, setFailed] = useState<string | null>(null);
+  const [tries, setTries] = useState(0);
+  // Why the last switch did not take, which the page put back.
+  const [flipError, setFlipError] = useState("");
   const [names, setNames] = useState<Record<string, string>>({});
-  const groups = useOpenGroups();
 
   useEffect(() => {
     let cancelled = false;
@@ -58,6 +62,7 @@ export function ToolSwitches(props: { sessionId: string } | { project: string } 
     )
       .then((r) => {
         if (cancelled) return;
+        setFailed(null);
         setTools(r.tools);
         setOff(r.off);
         setLive(r.live);
@@ -66,14 +71,17 @@ export function ToolSwitches(props: { sessionId: string } | { project: string } 
       .catch((e) => {
         if (cancelled) return;
         // A deployment where this cannot work says so — a switch that silently
-        // does nothing is worse than one that is not there.
-        setRefusal(String(e).replace(/^Error:\s*/, ""));
-        setTools([]);
+        // does nothing is worse than one that is not there. Only that answer:
+        // a portal that could not be reached is not a deployment without switches.
+        if (e instanceof ApiError && e.body.code === "tools-unsupported") {
+          setRefusal(e.message);
+          setTools([]);
+        } else setFailed((e as Error).message);
       });
     return () => {
       cancelled = true;
     };
-  }, [project, sessionId, drafting]);
+  }, [project, sessionId, drafting, tries]);
 
   const flip = async (names: string[], enabled: boolean) => {
     const wanted = nextOff(off, names, enabled);
@@ -85,18 +93,33 @@ export function ToolSwitches(props: { sessionId: string } | { project: string } 
     // Nothing to save yet: the dialog keeps it until the project is made.
     if (onDraft) return onDraft(wanted);
     setBusy(true);
+    setFlipError("");
     try {
       const r = await (project !== undefined ? api.setProjectTools(project, wanted) : api.setTools(sessionId, wanted));
       setOff(r.off);
-    } catch {
-      // Put it back rather than showing a switch that did not take.
+    } catch (e) {
+      // Put it back rather than showing a switch that did not take, and say why.
       setOff(before.off);
       setTools(before.tools);
+      setFlipError((e as Error).message);
     } finally {
       setBusy(false);
     }
   };
 
+  if (!tools && failed) {
+    return (
+      <div className="p-2">
+        <LoadFailed
+          error={failed}
+          onRetry={() => {
+            setFailed(null);
+            setTries((n) => n + 1);
+          }}
+        />
+      </div>
+    );
+  }
   if (!tools) return <p className="px-3 py-2 text-xs text-fg-subtle">{t("Loading…")}</p>;
 
   if (refusal) {
@@ -117,6 +140,11 @@ export function ToolSwitches(props: { sessionId: string } | { project: string } 
 
   return (
     <div className="max-h-80 overflow-y-auto">
+      {flipError && (
+        <p role="alert" className="px-3 pt-2 text-[11px] text-danger">
+          {t("That switch was not saved: {error}", { error: flipError })}
+        </p>
+      )}
       {/* Before the first message pi has no registry to ask: the list is what
           earlier chats registered, and what is switched here is this chat's
           from its start — the default is not touched. */}
@@ -127,74 +155,7 @@ export function ToolSwitches(props: { sessionId: string } | { project: string } 
             : t("Not started yet — these are the tools earlier chats had. What you switch here holds for this chat from its first message; the defaults stay as they are.")}
         </p>
       )}
-      {groupTools(tools).map((group) => {
-        const open = groups.isOpen(group.source);
-        return (
-        <div key={group.source} className="border-b border-line/60 last:border-0">
-          <div className="flex items-center gap-1 px-1.5 py-1.5">
-            <button
-              type="button"
-              aria-expanded={open}
-              onClick={() => groups.toggle(group.source)}
-              className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-1.5 py-0.5 text-left transition hover:bg-fg/5"
-            >
-              {open ? (
-                <LuChevronDown className="h-3 w-3 shrink-0 text-fg-faint" />
-              ) : (
-                <LuChevronRight className="h-3 w-3 shrink-0 text-fg-faint" />
-              )}
-              <span
-                title={sourceName(group.source)}
-                className="min-w-0 flex-1 truncate text-[11px] font-medium text-fg-muted"
-              >
-                {displayName(group.source, names)}
-              </span>
-              <span className="shrink-0 text-[10px] text-fg-faint">{groupSummary(group)}</span>
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => flip(group.tools.map((t) => t.name), group.allOff)}
-              className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-fg-subtle transition hover:bg-fg/5 hover:text-fg disabled:opacity-50"
-            >
-              {group.allOff ? t("all on") : t("all off")}
-            </button>
-          </div>
-          <ul className={open ? "pb-1" : "hidden"}>
-            {group.tools.map((tool) => (
-              <li key={tool.name}>
-                <label
-                  title={tool.description}
-                  className="flex cursor-pointer items-center gap-2 px-3 py-1 text-xs transition hover:bg-fg/5"
-                >
-                  <input
-                    type="checkbox"
-                    checked={tool.enabled}
-                    disabled={busy}
-                    onChange={(e) => flip([tool.name], e.target.checked)}
-                    className="h-3 w-3 shrink-0 accent-accent"
-                  />
-                  <span
-                    className={`min-w-0 flex-1 truncate font-mono ${
-                      tool.enabled ? "text-fg" : "text-fg-faint line-through"
-                    }`}
-                  >
-                    {tool.name}
-                  </span>
-                  {/* Only where this chat disagrees with the default, so the
-                      setting is findable from the place it is being overruled. */}
-                  {tool.defaultOn !== undefined && tool.defaultOn !== tool.enabled && (
-                    <span className="shrink-0 text-[10px] text-fg-faint">
-                      {tool.defaultOn ? t("default on") : t("default off")}
-                    </span>
-                  )}
-                </label>
-              </li>
-            ))}
-          </ul>
-        </div>
-        );
-      })}
+      <ToolGroupList tools={tools} names={names} busy={busy} onFlip={flip} />
       {live && (
         <p className="px-3 py-1.5 text-[10px] text-fg-faint">
           {t("Applies from the next message, for this conversation. Settings → Tools sets what every conversation starts with.")}

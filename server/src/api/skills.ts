@@ -6,12 +6,11 @@ import {
   readdirSync,
   renameSync,
   rmSync,
-  writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { writeFileAtomic } from "../atomic-write.js";
 import { piAgentDir } from "../pi-settings.js";
-import { agentHome } from "../agent.js";
+import { agentHome } from "../agent-home.js";
 import { builtinSkillsDir } from "../pi/sdk-client.js";
 import { isValidSlug, slugify } from "../slug.js";
 import { importFromGit, previewFromGit, readSource, type SkillSource } from "../skills/github.js";
@@ -67,6 +66,11 @@ async function loadFromPi(): Promise<{ skills: LoadedSkill[]; diagnostics: any[]
   const loader = new pi.DefaultResourceLoader({
     cwd: agentHome(),
     agentDir: pi.getAgentDir(),
+    // Only the skills are wanted. Without this, every extension is imported
+    // and its factory run in the portal's own process on each look at this
+    // page, which also drops what pi keeps of them for the sessions that
+    // are open.
+    noExtensions: true,
     // Same list a session gets, builtins included — this page disagreeing with
     // what the model is offered is the failure it exists to prevent.
     ...(builtin ? { additionalSkillPaths: [builtin] } : {}),
@@ -90,8 +94,20 @@ const underRoot = () => {
   };
 };
 
-/** The directory that owns a skill, which is what delete removes. */
+/** The directory a skill is in. */
 const skillDir = (filePath: string) => path.dirname(path.resolve(filePath));
+
+/**
+ * The directory that owns a skill, which is what delete removes. None for a
+ * single `.md` file in the skills folder itself: pi loads those as skills too,
+ * but the folder they are in is every other skill, so they own nothing beside
+ * themselves.
+ */
+const ownedDir = (filePath: string): string | null => {
+  const dir = skillDir(filePath);
+  const real = realPath(dir);
+  return real === null || real === realPath(skillsRoot()) ? null : dir;
+};
 
 function readBody(filePath: string): string {
   try {
@@ -153,6 +169,8 @@ function brokenSkills(loaded: LoadedSkill[]) {
   }
 
   for (const name of entries) {
+    // pi does not look in these, and an import's copy in the making is one.
+    if (name.startsWith(".")) continue;
     const file = path.join(skillsRoot(), name, "SKILL.md");
     // A disabled skill has no SKILL.md by design; it is listed separately.
     if (existsSync(path.join(skillsRoot(), name, DISABLED))) continue;
@@ -184,6 +202,7 @@ function disabledSkills() {
   }
 
   for (const name of entries) {
+    if (name.startsWith(".")) continue;
     const file = path.join(skillsRoot(), name, DISABLED);
     if (!existsSync(file)) continue;
     const content = readBody(file);
@@ -266,11 +285,7 @@ export function skillsRouter(): Router {
 
     try {
       mkdirSync(dir, { recursive: true });
-      writeFileSync(
-        path.join(dir, "SKILL.md"),
-        template(slug, description.trim(), typeof body === "string" ? body : ""),
-        "utf8"
-      );
+      writeFileAtomic(path.join(dir, "SKILL.md"), template(slug, description.trim(), typeof body === "string" ? body : ""));
       res.json({ ok: true, name: slug, path: path.join(dir, "SKILL.md") });
     } catch (e) {
       res.status(500).json({ error: (e as Error).message });
@@ -292,6 +307,16 @@ export function skillsRouter(): Router {
     const off = path.join(dir, DISABLED);
 
     if (!existsSync(live) && !existsSync(off)) {
+      try {
+        const single = await locate(req.params.name);
+        if (single?.editable && ownedDir(single.file) === null) {
+          return res.status(400).json({
+            error: "A skill that is a single file in the skills folder cannot be switched off here — delete it, or move it into a folder of its own as SKILL.md",
+          });
+        }
+      } catch {
+        // Not the single file this is about; the answer below stands.
+      }
       return res.status(404).json({
         error: "Not found here — a skill from a package is switched off by removing the package",
       });
@@ -312,7 +337,7 @@ export function skillsRouter(): Router {
       return res.status(400).json({ error: "spec required" });
     }
     try {
-      res.json({ spec: spec.trim(), found: await previewFromGit(spec.trim(), skillsRoot()) });
+      res.json({ spec: spec.trim(), ...(await previewFromGit(spec.trim(), skillsRoot())) });
     } catch (e) {
       res.status(400).json({ error: (e as Error).message });
     }
@@ -329,10 +354,16 @@ export function skillsRouter(): Router {
     if (typeof spec !== "string" || !spec.trim()) {
       return res.status(400).json({ error: "spec required" });
     }
+    // The commit that was looked at, so that what is installed is what was shown.
+    const sha = req.body?.sha;
+    if (sha !== undefined && !(typeof sha === "string" && /^[0-9a-f]{40,64}$/.test(sha))) {
+      return res.status(400).json({ error: "sha must be a commit id" });
+    }
     try {
       const result = await importFromGit(spec.trim(), skillsRoot(), {
         overwrite: Boolean(req.body?.overwrite),
         only: Array.isArray(req.body?.only) ? req.body.only.map(String) : undefined,
+        sha,
       });
       res.json({ ok: true, ...result });
     } catch (e) {
@@ -354,6 +385,11 @@ export function skillsRouter(): Router {
         overwrite: true,
         only: [req.params.name],
       });
+      // Said, not answered with ok: the copy here is then not the latest, and nothing changed.
+      if (!result.imported.length) {
+        const why = result.skipped.find((s) => s.name === req.params.name)?.reason ?? "Nothing was updated";
+        return res.status(why === "not in the repository any more" ? 404 : 400).json({ error: `Not updated: ${why}`, ...result });
+      }
       res.json({ ok: true, ...result });
     } catch (e) {
       res.status(400).json({ error: (e as Error).message });
@@ -371,7 +407,7 @@ export function skillsRouter(): Router {
           error: "That skill came from a package — editing it here would be lost on its next update",
         });
       }
-      writeFileSync(found.file, content.endsWith("\n") ? content : `${content}\n`, "utf8");
+      writeFileAtomic(found.file, content.endsWith("\n") ? content : `${content}\n`);
       res.json({ ok: true });
     } catch (e) {
       res.status(500).json({ error: (e as Error).message });
@@ -385,7 +421,9 @@ export function skillsRouter(): Router {
       if (!found.editable) {
         return res.status(400).json({ error: "That skill belongs to a package; remove the package" });
       }
-      rmSync(skillDir(found.file), { recursive: true, force: true });
+      const dir = ownedDir(found.file);
+      if (dir) rmSync(dir, { recursive: true, force: true });
+      else rmSync(found.file, { force: true });
       res.json({ ok: true });
     } catch (e) {
       res.status(500).json({ error: (e as Error).message });

@@ -67,8 +67,8 @@ test('a choice with nothing on the GPU asks for none and runs in the small image
  const env=Object.fromEntries(containerSpec('','host',{tts:'none',asr:'qwen3-asr',asrModel:'1.7b'},{threads:6}).Env.map(e=>[e.slice(0,e.indexOf('=')),e.slice(e.indexOf('=')+1)]));
  assert.deepEqual([env.VOICE_TTS,env.VOICE_ASR_DEVICE,env.VOICE_THREADS],['none','cpu','6']);
  assert.equal('VOICE_SERVER_CONFIG' in env,false);
- assert.deepEqual([JSON.parse(env.VOICE_ASR_CPU_CONFIG).backend,JSON.parse(env.VOICE_ASR_CPU_CONFIG).threads],['cpu',6]);
+ assert.deepEqual([JSON.parse(env.VOICE_CPU_CONFIG).backend,JSON.parse(env.VOICE_CPU_CONFIG).threads],['cpu',6]);
  // The original combination's environment has no threads and no CPU server, as before.
  const original=Object.fromEntries(containerSpec('','host').Env.map(e=>[e.slice(0,e.indexOf('=')),e.slice(e.indexOf('=')+1)]));
- assert.deepEqual([original.VOICE_ASR_DEVICE,'VOICE_THREADS' in original,'VOICE_ASR_CPU_CONFIG' in original],['cpu',false,false]);
+ assert.deepEqual([original.VOICE_ASR_DEVICE,'VOICE_THREADS' in original,'VOICE_CPU_CONFIG' in original],['cpu',false,false]);
 });

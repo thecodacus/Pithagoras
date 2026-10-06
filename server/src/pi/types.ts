@@ -41,13 +41,6 @@ export interface PiTool {
   enabled: boolean;
   /** Whether it is on by default, so the page can say where a chat disagrees. */
   defaultOn?: boolean;
-  /**
-   * Something other than the tool policy decides this one.
-   *
-   * "browser" for the tools the agent's browser brings: they follow the grant
-   * the globe beside the composer sets, not the switches here.
-   */
-  owner?: "browser";
 }
 
 /**
@@ -86,6 +79,8 @@ export interface PiClient extends EventEmitter {
   subagentStop?(id: string): boolean;
   /** How many subagents it announced are still running: a background one outlives the turn that started it. */
   subagentsRunning?(): number;
+  /** How many dialogs an extension has open, waiting on a person: its pi is not one to stop. */
+  dialogsOpen?(): number;
   /** Says each subagent still running has stopped: its pi is about to go. */
   endSubagents?(why: string): void;
   /**
@@ -124,6 +119,13 @@ export interface PiClient extends EventEmitter {
    * dropped, as pi had queued them.
    */
   clearQueue?(): string[];
+  /**
+   * Tells the extensions their pi is being let go, as pi's own runtime does
+   * before it disposes one: that is where they stop their timers and the
+   * processes they started. Settles when they have, or have said they cannot.
+   * Optional: a pi in a process of its own does this as it exits.
+   */
+  shutdown?(): Promise<void>;
   dispose(): void;
 
   getState(): Promise<PiState>;

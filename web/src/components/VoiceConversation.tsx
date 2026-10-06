@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef } from "react";
-import { Streamdown } from "streamdown";
+import { Markdown } from "./Markdown";
 import { api } from "../api";
 import type { Item } from "../transcript";
 import { t } from "../i18n";
@@ -38,10 +38,10 @@ export function VoiceConversation({ sessionId, items }: { sessionId: string; ite
           </div>
         : item.kind === "assistant"
           ? <div key={item.id} className="voice-said is-agent md">
-              {/* Streamdown, as in the chat: a reply is shown while it is
+              {/* Markdown, as in the chat: a reply is shown while it is
                   written, so its unclosed fence or half-written link has to
                   render as what it is about to be, not flicker. */}
-              <Streamdown parseIncompleteMarkdown isAnimating={!item.done} shikiTheme={["github-light", "github-dark"]}>{assistantText(item)}</Streamdown>
+              <Markdown parseIncompleteMarkdown isAnimating={!item.done}>{assistantText(item)}</Markdown>
             </div>
           : null)}
   </div>;

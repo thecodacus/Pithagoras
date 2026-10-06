@@ -1,4 +1,5 @@
-import { test, expect, type Page } from '@playwright/test';
+import { type Page } from '@playwright/test';
+import { test, expect } from './portal-mock';
 
 const box = (page: Page) => page.getByTestId('box');
 const left = (page: Page) => box(page).evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight);

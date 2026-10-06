@@ -1,35 +1,18 @@
 import { useMemo, useState } from "react";
 import { LuArrowRight, LuPlus, LuRefreshCw, LuRocket } from "react-icons/lu";
 import { api, type AvailableModel } from "../api";
-import { forget, useCached } from "../settings-cache";
-import { formatTokens } from "../transcript";
+import { forget, refreshFailed, useCached } from "../settings-cache";
 import { Modal } from "./Modal";
 import { PackageCatalog } from "./PackageCatalog";
-import { KindIcon, ProviderEditor, StatusBadge, useInstalledPackages, useProviderStatus } from "./ProvidersPanel";
+import { KindIcon, ProviderEditor, StatusBadge, takenProviderIds, useInstalledPackages, useProviderStatus } from "./ProvidersPanel";
 import { Select } from "./Select";
 import { SetupNav, SetupSteps } from "./SetupSteps";
-import { EffortPicker, ghostCls, primaryCls } from "./SettingsUi";
+import { EffortPicker, LoadFailed, ghostCls, primaryCls } from "./SettingsUi";
 import { msg, t, tp } from "../i18n";
+import { SkeletonGroup } from "./Skeleton";
 
 import { modelTraits } from "../model-traits";
-const DONE_KEY = "pithagoras.setup";
-
-/** Whether this browser has been through the assistant, or waved it away. */
-export function setupDismissed(): boolean {
-  try {
-    return localStorage.getItem(DONE_KEY) !== null;
-  } catch {
-    return false;
-  }
-}
-
-function dismiss(how: "done" | "skipped") {
-  try {
-    localStorage.setItem(DONE_KEY, how);
-  } catch {
-    // Asked again next time, which is no harm.
-  }
-}
+import { dismissSetup as dismiss } from "../setup-state";
 
 const STEPS = [
   { title: msg("Provider"), lead: msg("Where the models come from") },
@@ -48,7 +31,7 @@ export function SetupAssistant({ onClose, onStartChat }: { onClose: () => void; 
   const [step, setStep] = useState(0);
   const [back, setBack] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const providers = useCached("providers", api.providers, { onError: (e) => setError(e.message) });
+  const providers = useCached("providers", api.providers, { onError: refreshFailed("providers", setError) });
   const models = useCached("models", api.allModels, { freshMs: 0 });
   const settings = useCached("settings", api.settings);
   const status = useProviderStatus();
@@ -69,6 +52,9 @@ export function SetupAssistant({ onClose, onStartChat }: { onClose: () => void; 
   const current = choice ?? (!settings.value ? "" : list.some((m) => keyOf(m) === stored) ? stored : list[0] ? keyOf(list[0]) : "");
   const picked = list.find((m) => keyOf(m) === current);
   const level = effort ?? settings.value?.stored.thinkingLevel ?? "";
+
+  // What this step is drawn from. Without it the menu is empty and Next is off, and nothing says why.
+  const stepOneFailed = (!models.value && models.failed) || (!settings.value && settings.failed) || null;
 
   const go = (to: number) => {
     setBack(to < step);
@@ -173,8 +159,10 @@ export function SetupAssistant({ onClose, onStartChat }: { onClose: () => void; 
             <p className="mb-4 text-sm text-fg-subtle">
               {t("A server on your network — llama.cpp, llama-swap, Ollama — or a hosted service with a key. Its models are looked up as soon as it answers.")}
             </p>
-            {!providers.value ? (
-              <div className="skeleton-group space-y-2"><div className="skeleton h-10 w-full" /><div className="skeleton h-24 w-full" /></div>
+            {!providers.value && providers.failed ? (
+              <LoadFailed error={providers.failed} onRetry={providers.reload} />
+            ) : !providers.value ? (
+              <SkeletonGroup className="space-y-2" label={t("Loading…")}><div className="skeleton h-10 w-full" /><div className="skeleton h-24 w-full" /></SkeletonGroup>
             ) : configured.length > 0 && !adding ? (
               <>
                 <ul className="stagger-in space-y-1.5">
@@ -199,7 +187,7 @@ export function SetupAssistant({ onClose, onStartChat }: { onClose: () => void; 
                 <ProviderEditor
                   embedded
                   view={providers.value}
-                  taken={new Set(configured.filter((p) => p.key.source !== "environment").map((p) => p.id))}
+                  taken={takenProviderIds(configured)}
                   onCancel={() => setAdding(false)}
                   onSaved={() => void providerSaved()}
                   onInstalled={() => void Promise.all([providers.reload(), models.reload()])}
@@ -214,7 +202,12 @@ export function SetupAssistant({ onClose, onStartChat }: { onClose: () => void; 
         )}
 
         {/* Nothing changes while the model saves: a change would miss what is sent. */}
-        {step === 1 && (
+        {step === 1 && stepOneFailed && (
+          <div className="mt-3">
+            <LoadFailed error={stepOneFailed} onRetry={() => Promise.all([models.reload(), settings.reload()])} />
+          </div>
+        )}
+        {step === 1 && !stepOneFailed && (
           <fieldset disabled={saving} className="mt-1 min-w-0 space-y-4">
             <p className="text-sm text-fg-subtle">{t("Each chat can switch under its chat box; this is only where they start.")}</p>
             <Select className="w-full" aria-label={t("Model for new chats")} value={current} options={modelOptions} onChange={setChoice} placeholder={t("Choose a model…")} />

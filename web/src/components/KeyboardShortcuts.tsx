@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { LuRotateCcw } from "react-icons/lu";
-import { ACTIONS, FIXED, bindingOf, describe, resetAll, resetBinding, setBinding, useKeyLabels, useKeybindings, type ActionId } from "../keybindings";
+import { ACTIONS, FIXED, bindingOf, describe, movesFocus, resetAll, resetBinding, setBinding, useKeyLabels, useKeybindings, type ActionId } from "../keybindings";
 import { t } from "../i18n";
 import { useCommandTrigger } from "../command-trigger";
 
@@ -12,7 +12,7 @@ const kbdCls = "inline-flex min-w-[2rem] justify-center rounded-md border border
  *
  * Changing one listens for the next key pressed, with whatever modifiers are
  * held — Escape included, since Escape is a fine shortcut, so it is Cancel
- * that takes it back. A key another action already has moves to this one, and
+ * that takes it back; Tab is none, and ends the listening. A key another action already has moves to this one, and
  * the list says which lost it. Kept in this browser.
  */
 export function KeyboardShortcuts() {
@@ -26,6 +26,13 @@ export function KeyboardShortcuts() {
   useEffect(() => {
     if (!recording) return;
     const take = (e: KeyboardEvent) => {
+      // Tab is not a shortcut but the way on to the next button, and the keyboard is how this was reached:
+      // it ends the listening and goes on its way.
+      if (movesFocus({ code: e.code, ctrl: e.ctrlKey, alt: e.altKey, meta: e.metaKey })) {
+        setNote(() => () => t("Tab moves between buttons, so it cannot be a shortcut."));
+        setRecording(null);
+        return;
+      }
       // Before anything else on the page sees it: Escape would close the dialog.
       e.preventDefault(); e.stopPropagation();
       const binding = bindingOf(e);

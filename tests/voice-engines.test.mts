@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import os from 'node:os';
 import {
-  ASR_CPU_PORT, ASR_MODELS, DEFAULT_CHOICE, LEAN_CHOICE, TTS_ENGINES, asrDevice, asrDevices, choiceFromKey, choiceKey, choiceLabel, cpuRealtime, cpuServerConfig, cpuSlow, cpuThreads, endpoints, fitOn, fitRam, healthUrls, isManagedUrl, parseChoice, pickGpu,
+  CPU_PORT, ASR_MODELS, speechCpuSeconds, speechSlow, ttsDevices, DEFAULT_CHOICE, LEAN_CHOICE, TTS_ENGINES, asrDevice, asrDevices, choiceFromKey, choiceKey, choiceLabel, cpuRealtime, cpuServerConfig, cpuSlow, cpuThreads, endpoints, fitOn, fitRam, healthUrls, isManagedUrl, parseChoice, pickGpu,
   ramNeeded, sameChoice, serverConfig, suggestChoice, suggestCpuChoice, ttsModel, usesGpu, vramNeeded,
   type Gpu, type Host, type VoiceChoice,
 } from '../server/src/voice-engines.js';
@@ -103,12 +103,14 @@ test('the suggestion is the best combination that fits, and the original one whe
   assert.deepEqual(at(TTS_ENGINES.breeze.vramMiB), DEFAULT_CHOICE);
   // Breeze does not fit, Chatterbox does.
   assert.deepEqual(at(TTS_ENGINES.chatterbox.vramMiB), { tts: 'chatterbox', asr: 'whisper', asrModel: 'base' });
+  // Neither does, Kokoro does.
+  assert.deepEqual(at(TTS_ENGINES.kokoro.vramMiB), { tts: 'kokoro', asr: 'whisper', asrModel: 'base' });
   // Room is kept for a model that comes later.
   assert.deepEqual(at(24576, 24576 - vramNeeded(DEFAULT_CHOICE)), DEFAULT_CHOICE);
   // Free memory is busy now but the card holds the original combination: do not change it for that.
   assert.deepEqual(suggestChoice(card(12288, 1000)), DEFAULT_CHOICE);
   // Not even the leanest fits: nothing better to name.
-  assert.deepEqual(at(1024), DEFAULT_CHOICE);
+  assert.deepEqual(at(512), DEFAULT_CHOICE);
   assert.deepEqual(suggestChoice(undefined), DEFAULT_CHOICE);
   assert.deepEqual(suggestChoice(card(null)), DEFAULT_CHOICE);
 });
@@ -132,13 +134,13 @@ test('a choice is checked and keyed so a container label names it exactly', () =
     assert.deepEqual(parseChoice(c), c);
     assert.deepEqual(choiceFromKey(choiceKey(c)), c);
   }
-  assert.equal(combos.length, 8);
+  assert.equal(combos.length, 12);
   assert.equal(choiceKey(DEFAULT_CHOICE), 'breeze+whisper:base');
   // A container from before engines could be chosen has no label.
   assert.deepEqual(choiceFromKey(undefined), DEFAULT_CHOICE);
   assert.deepEqual(choiceFromKey('nonsense'), DEFAULT_CHOICE);
   assert.deepEqual(choiceFromKey('breeze+whisper:gigantic'), DEFAULT_CHOICE);
-  assert.throws(() => parseChoice({ tts: 'kokoro', asr: 'whisper', asrModel: 'base' }), /speech synthesis engine/);
+  assert.throws(() => parseChoice({ tts: 'piper', asr: 'whisper', asrModel: 'base' }), /speech synthesis engine/);
   assert.throws(() => parseChoice({ tts: 'breeze', asr: 'whisper', asrModel: '1.7b' }), /speech recognition model/);
   assert.throws(() => parseChoice({ tts: 'breeze', asr: 'qwen3-asr' }), /speech recognition model/);
   assert.throws(() => parseChoice({ tts: 'toString', asr: 'whisper', asrModel: 'base' }), /speech synthesis engine/);
@@ -171,6 +173,54 @@ test('Chatterbox and Qwen3-ASR run in the one audio.cpp process, loaded together
   assert.deepEqual(ttsModel('chatterbox'), config.models[0]);
 });
 
+test('Kokoro is a speech model of its own, spoken to at its own runtime, and the leanest one there is', () => {
+  const config = serverConfig({ tts: 'kokoro', asr: 'qwen3-asr', asrModel: '0.6b' })!;
+  assert.deepEqual(config.models[0], { id: 'kokoro', family: 'kokoro_tts', path: '/voice/models/kokoro-82m-q8_0.gguf', task: 'tts', mode: 'offline' });
+  assert.deepEqual(ttsModel('kokoro'), config.models[0]);
+  assert.deepEqual(endpoints({ tts: 'kokoro', asr: 'whisper', asrModel: 'base' }), {
+    runtime: 'kokoro', breezeUrl: 'http://127.0.0.1:7862/v1/audio/speech', whisperUrl: 'http://127.0.0.1:8188/inference', sttModel: '',
+  });
+  assert.equal(choiceKey({ tts: 'kokoro', asr: 'whisper', asrModel: 'base' }), 'kokoro+whisper:base');
+  assert.deepEqual(LEAN_CHOICE, { tts: 'kokoro', asr: 'whisper', asrModel: 'base' });
+});
+
+test('Kokoro can be put on the CPU: it then shares the CPU process with recognition, and the GPU is not asked for', () => {
+  const cpu: VoiceChoice = { tts: 'kokoro', ttsDevice: 'cpu', asr: 'qwen3-asr', asrModel: '0.6b' };
+  assert.deepEqual(parseChoice(cpu), cpu);
+  assert.equal(choiceKey(cpu), 'kokoro@cpu+qwen3-asr:0.6b');
+  assert.deepEqual(choiceFromKey('kokoro@cpu+qwen3-asr:0.6b'), cpu);
+  assert.deepEqual(choiceFromKey('kokoro+whisper:base'), { tts: 'kokoro', asr: 'whisper', asrModel: 'base' }, 'on the GPU, as before');
+  // Nothing is on the GPU: recognition beside it is on the CPU too, and cannot be put on the GPU.
+  assert.equal(usesGpu(cpu), false);
+  assert.equal(asrDevice(cpu), 'cpu');
+  assert.deepEqual(asrDevices(cpu), ['cpu']);
+  assert.throws(() => parseChoice({ ...cpu, asrDevice: 'gpu' }), /without speech synthesis on the GPU runs on the CPU/);
+  assert.equal(serverConfig(cpu), undefined);
+  const config = cpuServerConfig(cpu, 8)!;
+  assert.deepEqual([config.port, config.backend, config.threads, config.max_loaded_models], [CPU_PORT, 'cpu', 8, 2]);
+  // The portal loads and unloads speech as voice sessions come and go: audio.cpp refuses that (403) without model management.
+  assert.equal(config.ui_management, true);
+  assert.equal('ui_management' in cpuServerConfig({ tts: 'none', asr: 'qwen3-asr', asrModel: '0.6b' })!, false, 'recognition alone is never loaded by the portal');
+  assert.deepEqual(config.models.map(m => m.id), ['kokoro', 'qwen3-asr']);
+  assert.deepEqual(cpuServerConfig({ tts: 'kokoro', ttsDevice: 'cpu', asr: 'whisper', asrModel: 'base' })!.models.map(m => m.id), ['kokoro']);
+  assert.deepEqual(endpoints(cpu), { runtime: 'kokoro', breezeUrl: 'http://127.0.0.1:7863/v1/audio/speech', whisperUrl: 'http://127.0.0.1:7863/v1/audio/transcriptions', sttModel: 'qwen3-asr' });
+  assert.deepEqual(healthUrls({ tts: 'kokoro', ttsDevice: 'cpu', asr: 'whisper', asrModel: 'base' }), ['http://127.0.0.1:8188/health', 'http://127.0.0.1:7863/health']);
+  // Its memory is the host's, not the card's.
+  assert.deepEqual([vramNeeded(cpu), ramNeeded(cpu)], [0, TTS_ENGINES.kokoro.ramMiB! + 1600]);
+  assert.equal(choiceLabel(cpu), 'Kokoro speech on the CPU with Qwen3-ASR 0.6B');
+  // Only Kokoro runs there; a device written for the GPU says nothing.
+  assert.deepEqual(ttsDevices('kokoro'), ['cpu', 'gpu']);
+  assert.deepEqual(ttsDevices('breeze'), ['gpu']);
+  assert.throws(() => parseChoice({ tts: 'breeze', ttsDevice: 'cpu', asr: 'whisper', asrModel: 'base' }), /Breeze runs on the GPU/);
+  assert.throws(() => parseChoice({ tts: 'kokoro', ttsDevice: 'tpu', asr: 'whisper', asrModel: 'base' }), /CPU or the GPU for speech synthesis/);
+  assert.deepEqual(parseChoice({ tts: 'kokoro', ttsDevice: 'gpu', asr: 'whisper', asrModel: 'base' }), { tts: 'kokoro', asr: 'whisper', asrModel: 'base' });
+  // Its speed, scaled by the threads.
+  assert.equal(speechCpuSeconds(cpu, 8), TTS_ENGINES.kokoro.cpuSecondsPerSecond);
+  assert.equal(speechCpuSeconds({ tts: 'kokoro', asr: 'whisper', asrModel: 'base' }, 8), undefined, 'not on the CPU');
+  assert.equal(speechSlow(cpu, 1), true);
+  assert.equal(speechSlow(cpu, 4), false);
+});
+
 test('what the install decides tells the person what fits and what does not', () => {
   const twelve = [card(12288, 11000)];
   const auto = decide(undefined, twelve);
@@ -182,9 +232,9 @@ test('what the install decides tells the person what fits and what does not', ()
   assert.throws(() => decide({ tts: 'breeze', asr: 'qwen3-asr', asrModel: '1.7b' }, [card(6144)]),
     /Breeze speech with Qwen3-ASR 1\.7B needs about 7\.0 GiB of GPU memory, but Test GPU 0 \(6\.0 GiB, 6\.0 GiB free\) has less\. Breeze speech with Qwen3-ASR 0\.6B would fit\./);
   // The smallest is named as what it is, not as the original combination.
-  assert.throws(() => decide(undefined, [{ index: 0, name: 'Small GPU', totalMiB: 2048, freeMiB: 2000 }]),
-    /^Error: Even the smallest voice setup \(Chatterbox speech with Whisper base\) needs about 2\.9 GiB of GPU memory, but Small GPU \(2\.0 GiB, 2\.0 GiB free\) has less\.$/);
-  assert.throws(() => decide(undefined, [card(2048)], { reserveMiB: 1000 }), /smallest voice setup \(Chatterbox speech with Whisper base\) needs about 2\.9 GiB of GPU memory, plus 1\.0 GiB kept free/);
+  assert.throws(() => decide(undefined, [{ index: 0, name: 'Small GPU', totalMiB: 512, freeMiB: 500 }]),
+    /^Error: Even the smallest voice setup \(Kokoro speech with Whisper base\) needs about 1\.0 GiB of GPU memory, but Small GPU \(0\.5 GiB, 0\.5 GiB free\) has less\.$/);
+  assert.throws(() => decide(undefined, [card(1536)], { reserveMiB: 1000 }), /smallest voice setup \(Kokoro speech with Whisper base\) needs about 1\.0 GiB of GPU memory, plus 1\.0 GiB kept free/);
   assert.throws(() => decide(DEFAULT_CHOICE, [card(20000)], { reserveMiB: 16000 }), /plus 15\.6 GiB kept free/);
   // No GPU read at all: the choice is kept, unchecked, and Docker has the last word.
   const blind = decide({ tts: 'chatterbox', asr: 'whisper', asrModel: 'base' }, []);
@@ -231,7 +281,7 @@ test('a choice names where recognition runs, and a label written before there wa
   assert.equal(sameChoice(onCpu, { tts: 'breeze', asr: 'qwen3-asr', asrModel: '0.6b' }), false);
   // What cannot be is said so.
   assert.throws(() => parseChoice({ tts: 'breeze', asr: 'whisper', asrModel: 'base', asrDevice: 'gpu' }), /Whisper runs on the CPU/);
-  assert.throws(() => parseChoice({ tts: 'none', asr: 'qwen3-asr', asrModel: '0.6b', asrDevice: 'gpu' }), /without speech synthesis runs on the CPU/);
+  assert.throws(() => parseChoice({ tts: 'none', asr: 'qwen3-asr', asrModel: '0.6b', asrDevice: 'gpu' }), /without speech synthesis on the GPU runs on the CPU/);
   assert.throws(() => parseChoice({ tts: 'breeze', asr: 'qwen3-asr', asrModel: '0.6b', asrDevice: 'tpu' }), /CPU or the GPU/);
   assert.equal(choiceLabel(onCpu), 'Breeze speech with Qwen3-ASR 0.6B on the CPU');
   assert.equal(choiceLabel(NONE('whisper', 'small')), 'Whisper small (speech recognition only)');
@@ -267,9 +317,12 @@ test('recognition on the CPU takes memory of the host, not of the card, and is j
   assert.deepEqual([cpuThreads(1), cpuThreads(2), cpuThreads(6), cpuThreads(32), cpuThreads(NaN)], [2, 2, 6, 8, 2]);
 });
 
-test('on a host without a GPU the suggestion is recognition alone, the largest that fits and keeps well ahead of the speaker', () => {
-  assert.deepEqual(suggestCpuChoice(machine(16384, 12000, 8)), NONE('qwen3-asr', '0.6b'), 'the larger model is only 2.6 times faster than the audio');
-  assert.deepEqual(suggestCpuChoice(machine(16384, 12000, 2)), NONE('whisper', 'base'), 'two threads are too few for either');
+test('on a host without a GPU the suggestion is Kokoro on the CPU with the largest recognition that fits beside it and keeps well ahead of the speaker, else recognition alone', () => {
+  const KOKORO = (asr: VoiceChoice['asr'], asrModel: string): VoiceChoice => ({ tts: 'kokoro', ttsDevice: 'cpu', asr, asrModel });
+  assert.deepEqual(suggestCpuChoice(machine(16384, 12000, 8)), KOKORO('qwen3-asr', '0.6b'), 'the larger model is only 2.6 times faster than the audio');
+  assert.deepEqual(suggestCpuChoice(machine(16384, 12000, 2)), KOKORO('whisper', 'base'), 'two threads are too few for either Qwen3-ASR, and enough for Kokoro');
+  assert.deepEqual(suggestCpuChoice(machine(16384, 12000, 1)), NONE('whisper', 'base'), 'one thread is too few for Kokoro');
+  assert.deepEqual(suggestCpuChoice(machine(16384, 2500, 8)), KOKORO('whisper', 'base'), 'Qwen3-ASR does not fit beside Kokoro, Whisper does');
   assert.deepEqual(suggestCpuChoice(machine(16384, 1000, 8)), NONE('whisper', 'base'), 'the memory is busy');
   assert.deepEqual(suggestCpuChoice(machine(512, 512, 8)), NONE('whisper', 'base'));
   assert.deepEqual(suggestCpuChoice(undefined), NONE('whisper', 'base'), 'nothing known of the memory: the one that asks for the least');
@@ -283,7 +336,7 @@ test('the processes of a choice: a GPU server for the speech engine, a CPU one f
   assert.deepEqual(serverConfig(onCpu)!.models.map(m => m.id), ['breeze']);
   assert.equal(serverConfig(onCpu)!.max_loaded_models, 1);
   const cpu = cpuServerConfig(onCpu, 6)!;
-  assert.deepEqual([cpu.backend, cpu.port, cpu.threads, cpu.max_loaded_models, cpu.host], ['cpu', ASR_CPU_PORT, 6, 1, '127.0.0.1']);
+  assert.deepEqual([cpu.backend, cpu.port, cpu.threads, cpu.max_loaded_models, cpu.host], ['cpu', CPU_PORT, 6, 1, '127.0.0.1']);
   assert.deepEqual(cpu.models, [{ id: 'qwen3-asr', family: 'qwen3_asr', path: '/voice/models/qwen3-asr-0.6b-q8_0.gguf', task: 'asr', mode: 'offline' }]);
   assert.equal(cpuServerConfig(onCpu)!.threads, 4, 'four, as the GPU server has');
   // Without a speech engine there is no GPU server, and no GPU.
@@ -308,16 +361,24 @@ test('the processes of a choice: a GPU server for the speech engine, a CPU one f
 test('on a host that was found to have no GPU, recognition alone is chosen, speech is refused, and the memory is judged', () => {
   const host = machine(16384, 12000, 8);
   const auto = decide(undefined, [], { noGpu: true, host });
-  assert.deepEqual([auto.choice, auto.gpu], [NONE('qwen3-asr', '0.6b'), undefined]);
-  assert.equal(auto.summary, 'No GPU detected: installing Qwen3-ASR 0.6B (speech recognition only) needing about 1.6 GiB of memory on the CPU, which fits. Replies are not spoken: speech synthesis needs a GPU.');
+  assert.deepEqual([auto.choice, auto.gpu], [{ tts: 'kokoro', ttsDevice: 'cpu', asr: 'qwen3-asr', asrModel: '0.6b' }, undefined]);
+  assert.equal(auto.summary, 'No GPU detected: installing Kokoro speech on the CPU with Qwen3-ASR 0.6B needing about 2.8 GiB of memory on the CPU, which fits.');
+  const listening = decide(NONE('qwen3-asr', '0.6b'), [], { noGpu: true, host });
+  assert.equal(listening.summary, 'No GPU detected: installing Qwen3-ASR 0.6B (speech recognition only) needing about 1.6 GiB of memory on the CPU, which fits. Replies are not spoken: choose Kokoro on the CPU to hear them.');
   assert.deepEqual(decide(NONE('whisper', 'small'), [], { noGpu: true, host }).choice, NONE('whisper', 'small'));
   assert.throws(() => decide(DEFAULT_CHOICE, [], { noGpu: true, host }), (e: Error) => e.message === NO_GPU_FOR_SPEECH);
-  assert.throws(() => decide({ tts: 'breeze', asr: 'qwen3-asr', asrModel: '0.6b', asrDevice: 'cpu' }, [], { noGpu: true, host }), /Speech synthesis needs a GPU/);
+  assert.throws(() => decide({ tts: 'kokoro', asr: 'whisper', asrModel: 'base' }, [], { noGpu: true, host }), (e: Error) => e.message === NO_GPU_FOR_SPEECH, 'Kokoro on the GPU needs one too');
+  assert.match(NO_GPU_FOR_SPEECH, /put Kokoro on the CPU/);
+  assert.throws(() => decide({ tts: 'breeze', asr: 'qwen3-asr', asrModel: '0.6b', asrDevice: 'cpu' }, [], { noGpu: true, host }), /This choice needs a GPU/);
+  // On a GPU host, everything put on the CPU asks for no GPU, and says so.
+  assert.equal(decide({ tts: 'kokoro', ttsDevice: 'cpu', asr: 'whisper', asrModel: 'base' }, [card(12288)], { host }).summary, 'Kokoro speech on the CPU with Whisper base needs no GPU, and about 1.7 GiB of memory on the CPU, which fits.');
+  // Kokoro on a host with few threads is said to be slow, and still installs.
+  assert.match(decide({ tts: 'kokoro', ttsDevice: 'cpu', asr: 'whisper', asrModel: 'base' }, [], { noGpu: true, host: machine(8192, 8000, 1) }).summary, /which fits, and on this host's 1 CPU threads speech may take longer to make than to say/);
   // A card the host lists that Docker cannot hand on is not "none was found": it is the toolkit that is asked for, in the log as well.
   const unusable = { noGpu: true, host, unusable: ['Test GPU'] };
   assert.throws(() => decide(DEFAULT_CHOICE, [], unusable), (e: Error) => e.message === NO_GPU_FOR_SPEECH_UNUSABLE);
   assert.doesNotMatch(NO_GPU_FOR_SPEECH_UNUSABLE, /none was found/);
-  assert.equal(decide(undefined, [], unusable).summary, 'GPU detected: Test GPU, but Docker cannot use it: installing Qwen3-ASR 0.6B (speech recognition only) needing about 1.6 GiB of memory on the CPU, which fits. Replies are not spoken: speech synthesis needs a GPU that Docker can use.');
+  assert.equal(decide(NONE('qwen3-asr', '0.6b'), [], unusable).summary, 'GPU detected: Test GPU, but Docker cannot use it: installing Qwen3-ASR 0.6B (speech recognition only) needing about 1.6 GiB of memory on the CPU, which fits. Replies are not spoken: choose Kokoro on the CPU to hear them, or make the GPU usable by Docker.');
   // Too little memory is refused with what would fit; little free right now is said and goes on; slow threads are said.
   assert.throws(() => decide(NONE('qwen3-asr', '1.7b'), [], { noGpu: true, host: machine(2048, 1800, 8) }),
     /^Error: Qwen3-ASR 1\.7B \(speech recognition only\) needs about 2\.9 GiB of memory on the CPU, but this host has 2\.0 GiB\. Qwen3-ASR 0\.6B \(speech recognition only\) would fit\.$/);
@@ -346,8 +407,9 @@ test('the host is read as it is: the memory and the CPUs of the machine, not the
 
 test('an address is the managed service\'s when it leads to a port the managed container listens on, however it is written', () => {
   // Every address the managed choices save.
-  for (const c of combos) for (const url of [endpoints(c).whisperUrl, endpoints(c).breezeUrl].filter(Boolean)) assert.equal(isManagedUrl(url), true, url);
-  for (const url of ['http://localhost:8188/inference', 'http://127.0.0.1:8188/inference/', ' http://127.0.0.1:7862/v1/audio/speech ', 'http://localhost:7863/v1/audio/transcriptions']) assert.equal(isManagedUrl(url), true, url);
+  const onCpu: VoiceChoice[] = ASR_MODELS.map(o => ({ tts: 'kokoro', ttsDevice: 'cpu', asr: o.asr, asrModel: o.model }));
+  for (const c of [...combos, ...onCpu]) for (const url of [endpoints(c).whisperUrl, endpoints(c).breezeUrl].filter(Boolean)) assert.equal(isManagedUrl(url), true, url);
+  for (const url of ['http://localhost:8188/inference', 'http://127.0.0.1:8188/inference/', ' http://127.0.0.1:7862/v1/audio/speech ', 'http://localhost:7863/v1/audio/transcriptions', 'http://127.0.0.1:7863/v1/audio/speech']) assert.equal(isManagedUrl(url), true, url);
   // The Compose overlay's services, another host on the same port, another path and nothing at all are not.
   for (const url of ['http://127.0.0.1:8178/inference', 'http://127.0.0.1:7860/v1/audio/speech', 'http://stt.example.test:8188/inference', 'http://127.0.0.1:8188/other', 'https://127.0.0.1:8188/inference', 'http://127.0.0.1/inference', 'not a url', '']) assert.equal(isManagedUrl(url), false, url);
   assert.equal(isManagedUrl(undefined), false);

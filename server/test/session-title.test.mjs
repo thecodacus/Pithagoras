@@ -1,14 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import Database from 'better-sqlite3';
+import { inProcessHome } from './server-harness.mjs';
 
 // A database from before chats could wait for a name: the column has to appear
 // without giving those chats one to be overwritten.
-const dataDir = mkdtempSync(join(tmpdir(), 'pithagoras-title-'));
-process.env.DATA_DIR = dataDir;
+const dataDir = inProcessHome('pithagoras-title-');
 const old = new Database(join(dataDir, 'portal.db'));
 old.exec(`CREATE TABLE sessions (
   id TEXT PRIMARY KEY, title TEXT NOT NULL, workspace TEXT NOT NULL,
@@ -20,7 +18,7 @@ old.exec(`CREATE TABLE sessions (
 old.close();
 
 const { createSession, getSession, updateSession, getDb } = await import('../dist/db.js');
-test.after(() => { getDb().close(); rmSync(dataDir, { recursive: true, force: true }); });
+test.after(() => getDb().close());
 
 test('a chat from before is not waiting for a name, even one that is called New chat', () => {
   assert.equal(getSession('before').auto_title, 0);

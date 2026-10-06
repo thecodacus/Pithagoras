@@ -1,11 +1,35 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { LuChevronLeft, LuX } from "react-icons/lu";
 import { isEscape } from "../shortcuts";
 import { useLeaveRef } from "../motion";
+import { useDialogFocus } from "../dialog-focus";
+import { confirmDialog } from "./ConfirmDialog";
 import { t } from "../i18n";
 
+/** What is typed into the dialog and not saved, as its contents say so (see `useUnsavedDraft`). */
+const Drafts = createContext<Set<object> | null>(null);
+
 /**
- * Centered dialog with a dimmed backdrop. Escape and backdrop clicks close it.
+ * Says that this part of a dialog holds something typed in that nothing has
+ * saved: closing the dialog (Escape, a click beside it, its close button) then
+ * asks first. For what is not in the dialog's own component; that one passes
+ * `unsaved`.
+ */
+export function useUnsavedDraft(unsaved: boolean) {
+  const drafts = useContext(Drafts);
+  useEffect(() => {
+    if (!unsaved || !drafts) return;
+    const mine = {};
+    drafts.add(mine);
+    return () => {
+      drafts.delete(mine);
+    };
+  }, [unsaved, drafts]);
+}
+
+/**
+ * Centered dialog with a dimmed backdrop. Escape and backdrop clicks close it,
+ * after asking when there is something unsaved in it: a draft is in no other place.
  *
  * With a `rail` it becomes a two-pane settings dialog: navigation down the left
  * edge, content on the right. On a narrow screen the two take turns, like a
@@ -23,6 +47,7 @@ export function Modal({
   wide,
   startInRail = true,
   section,
+  unsaved = false,
 }: {
   title: ReactNode;
   subtitle?: ReactNode;
@@ -34,29 +59,67 @@ export function Modal({
   startInRail?: boolean;
   /** The rail's chosen section: the title on a phone, where the rail is out of sight. */
   section?: ReactNode;
+  /** Something typed in the dialog's own component that is not saved. */
+  unsaved?: boolean;
 }) {
   // Only read below `sm`; wider, both panes are always there.
   const [inRail, setInRail] = useState(startInRail);
   // Closed, it sinks away as a picture of itself (see motion.ts).
   const leaving = useLeaveRef<HTMLDivElement>("dialog");
+  const dialog = useDialogFocus<HTMLDivElement>();
   // Only for its first moment, so that what comes in with it (the rail's lines) does not come in again when it is drawn again.
   const [fresh, setFresh] = useState(true);
   useEffect(() => {
     const timer = window.setTimeout(() => setFresh(false), 1000);
     return () => window.clearTimeout(timer);
   }, []);
+  const drafts = useRef(new Set<object>());
+  const unsavedNow = useRef(unsaved);
+  unsavedNow.current = unsaved;
+  const asking = useRef(false);
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+  const close = async () => {
+    if (asking.current) return;
+    // A field that saves when it is left is left first, whichever way the dialog is closed: the
+    // close button and a click beside it move focus out of it, and Escape does not.
+    const at = document.activeElement;
+    const field = at instanceof HTMLElement && at !== dialog.current && dialog.current?.contains(at) ? at : null;
+    field?.blur();
+    if (unsavedNow.current || drafts.current.size) {
+      asking.current = true;
+      const discard = await confirmDialog({ title: t("Discard your changes?"), message: t("What you changed here has not been saved."), confirmLabel: t("Discard"), danger: true });
+      asking.current = false;
+      // Closed meanwhile by whoever drew it (a save that finished): there is nothing left to close.
+      if (!alive.current) return;
+      if (!discard) return field?.isConnected ? field.focus({ preventScroll: true }) : undefined;
+    }
+    onClose();
+  };
   useEffect(() => {
     // Not the Escape that takes back an input method's word in one of its fields.
-    const onKey = (e: KeyboardEvent) => isEscape(e) && onClose();
+    const onKey = (e: KeyboardEvent) => isEscape(e) && void close();
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  const body = <Drafts.Provider value={drafts.current}>{children}</Drafts.Provider>;
 
   return (
     <div
       ref={leaving}
       className="ui-backdrop fixed inset-0 z-50 flex items-center justify-center bg-canvas/80 p-2 backdrop-blur-sm sm:p-4"
-      onMouseDown={(e) => e.target === e.currentTarget && onClose()}
+      onMouseDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        // The press would otherwise clear focus once the question has taken it, or once it was given back.
+        e.preventDefault();
+        void close();
+      }}
     >
       {/* The rail layout gets a floor as well as a ceiling: its panels fetch
           before they render anything, so without one the dialog opened as a
@@ -65,10 +128,12 @@ export function Modal({
           and re-centred from one to the next, and the rail moved under the
           pointer that had just picked from it. */}
       <div
+        ref={dialog}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-label={typeof title === "string" ? title : undefined}
-        className={`ui-dialog${fresh ? " is-fresh" : ""} flex max-h-[94dvh] w-full sm:max-h-[88vh] flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-pop ${
+        className={`ui-dialog${fresh ? " is-fresh" : ""} outline-none flex max-h-[94dvh] w-full sm:max-h-[88vh] flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-pop ${
           // Grows with the viewport rather than to it: the rail plus a settings
           // form has a comfortable width, and a 34-inch screen should not
           // stretch a two-column form across all of it.
@@ -101,7 +166,7 @@ export function Modal({
             )}
           </div>
           <button
-            onClick={onClose}
+            onClick={() => void close()}
             className="rounded-lg p-1.5 text-fg-subtle transition hover:bg-fg/10 hover:text-fg"
             aria-label={t("Close")}
           >
@@ -119,10 +184,10 @@ export function Modal({
             >
               {rail}
             </nav>
-            <div className={`min-w-0 flex-1 overflow-y-auto px-5 py-4 sm:block ${inRail ? "hidden" : ""}`}>{children}</div>
+            <div className={`min-w-0 flex-1 overflow-y-auto px-5 py-4 sm:block ${inRail ? "hidden" : ""}`}>{body}</div>
           </div>
         ) : (
-          <div className="flex-1 overflow-y-auto px-5 py-4">{children}</div>
+          <div className="flex-1 overflow-y-auto px-5 py-4">{body}</div>
         )}
 
         {footer && <footer className="border-t border-line px-5 py-3">{footer}</footer>}

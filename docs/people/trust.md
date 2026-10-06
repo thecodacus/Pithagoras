@@ -11,7 +11,10 @@ What the roster is actually asserting, and where it stops.
 | Discord | `message.author.id` | Solid |
 | Webhook | whatever the caller sent | Only as good as the secret |
 
-Display names are never used. They are chosen by whoever is typing.
+Display names are never used to tell people apart. They are chosen by whoever is
+typing, so they are cleaned (one line, no angle brackets, at most 64
+characters) before they reach the agent or a request to you, and one you set
+yourself on the person's page is not replaced by a new one from the platform.
 
 ::: warning A webhook's sender is a claim, not a fact
 The secret authenticates the **caller**, not the person it says it is speaking
@@ -21,6 +24,14 @@ Set **Sender id** on the channel and every message is pinned to one person — t
 secret becomes that person's credential and the body cannot override it. Leave
 it blank only when a trusted service is relaying many people.
 :::
+
+A message that names **nobody** is not the owner's either. Once a primary user is
+named, a channel message without a sender id is turned away like a stranger's
+(and recorded in the audit log), and a conversation begun that way is read as a
+guest's. A channel package has to say who sent each message; see
+[writing a channel](/channels/writing-a-channel#identity). Conversations you
+start in the portal itself, on the Agent page or in a chat, are yours: nobody is
+named in them, because you are signed in.
 
 ## What the guard covers
 

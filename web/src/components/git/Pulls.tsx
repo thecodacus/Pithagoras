@@ -1,11 +1,15 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { LuCircleCheck, LuCircleDot, LuCircleX, LuExternalLink, LuGitCompareArrows, LuGitMerge, LuGitPullRequest, LuLoader } from "react-icons/lu";
-import { Streamdown } from "streamdown";
+import { Markdown } from "../Markdown";
+import { Select } from "../Select";
+import { webLink } from "../../package-names";
 import { gitApi, type Check, type Comparison, type PullDetail, type PullSummary } from "../../git-api";
 import { parseDiff, type DiffFile } from "../../git-diff";
 import { confirmDialog } from "../ConfirmDialog";
-import { Counts, ErrorNote, Letter, Quiet, SectionHead, splitPath, TextButton } from "./bits";
+import { Counts, ErrorNote, Quiet, SectionHead, TextButton } from "./bits";
+import { ChangeList } from "./History";
 import { useGit } from "./context";
+import { useGitDraft } from "./draft";
 import { when } from "../../time";
 import { labelOf, msg, t, tc, tp, tx } from "../../i18n";
 
@@ -28,12 +32,6 @@ function StateBadge({ pull }: { pull: Pick<PullSummary, "state" | "isDraft"> }) 
   return <span className={`shrink-0 rounded px-1 text-[10px] ring-1 ring-inset ${look[state] ?? "text-fg-subtle ring-line"}`}>{named[state] ?? state.toLowerCase()}</span>;
 }
 
-/**
- * Pull requests, through gh: the one for the branch checked out (or a way to
- * open it), and the repository's list. Without gh, or signed out, it says so —
- * and the branch can still be compared with its base, which is most of what a
- * pull request is for before anybody else looks at it.
- */
 /** What reviewers decided, as GitHub names it, in words. */
 const DECISION: Record<string, string> = {
   APPROVED: msg("approved"),
@@ -42,13 +40,23 @@ const DECISION: Record<string, string> = {
 };
 const decision = (d: string) => labelOf(DECISION, d, (other) => other.toLowerCase().replace(/_/g, " "));
 
+/**
+ * Pull requests, through gh: the one for the branch checked out (or a way to
+ * open it), and the repository's list. Without gh, or signed out, it says so —
+ * and the branch can still be compared with its base, which is most of what a
+ * pull request is for before anybody else looks at it.
+ */
 export function Pulls() {
   const { id, repo, show } = useGit();
   const gh = repo.gh;
   const [state, setState] = useState("open");
   const [list, setList] = useState<PullSummary[] | null>(null);
+  // undefined: not known yet, or GitHub could not say (`currentError`); null: the branch has no pull request.
   const [current, setCurrent] = useState<PullDetail | null | undefined>(undefined);
+  const [currentError, setCurrentError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Bumped to ask GitHub again after it failed to answer.
+  const [again, setAgain] = useState(0);
   // Bumped when a pull request is opened here: nothing on this disk moved, and
   // both lists would go on offering to open it.
   const [opened, setOpened] = useState(0);
@@ -65,19 +73,28 @@ export function Pulls() {
     return () => {
       gone = true;
     };
-  }, [id, gh?.repo, state, repo.head, opened]);
+  }, [id, gh?.repo, state, repo.head, opened, again]);
 
   useEffect(() => {
     if (!gh?.repo) return;
     let gone = false;
+    setCurrentError(null);
     gitApi.currentPull(id).then(
-      (r) => !gone && setCurrent(r.pull),
-      () => !gone && setCurrent(null),
+      (r) => {
+        if (gone) return;
+        setCurrent(r.pull);
+      },
+      // Not "no pull request": the branch may have one, and the form to open a second would fail on it.
+      (e) => {
+        if (gone) return;
+        setCurrent(undefined);
+        setCurrentError((e as Error).message);
+      },
     );
     return () => {
       gone = true;
     };
-  }, [id, gh?.repo, repo.branch, repo.head, opened]);
+  }, [id, gh?.repo, repo.branch, repo.head, opened, again]);
 
   const onDefault = !repo.branch || repo.branch === gh?.defaultBranch;
   const web = repo.remotes.find((r) => r.name === "origin")?.web ?? repo.remotes[0]?.web;
@@ -106,7 +123,9 @@ export function Pulls() {
       ) : (
         <>
           <SectionHead title={t("This branch")} />
-          {current === undefined ? (
+          {currentError ? (
+            <ErrorNote onRetry={() => setAgain((n) => n + 1)}>{t("Could not ask GitHub about this branch: {error}", { error: currentError })}</ErrorNote>
+          ) : current === undefined ? (
             <Quiet>{t("Loading…")}</Quiet>
           ) : current ? (
             <PullRow pull={current} />
@@ -121,14 +140,21 @@ export function Pulls() {
             />
           )}
           <SectionHead title={t("Pull requests")}>
-            <select value={state} onChange={(e) => setState(e.target.value)} aria-label={t("Which pull requests")} className="rounded border border-line bg-canvas px-1 py-0.5 text-[11px] text-fg">
-              <option value="open">{tc("Open", "pull request state")}</option>
-              <option value="merged">{t("Merged")}</option>
-              <option value="closed">{t("Closed")}</option>
-              <option value="all">{t("All")}</option>
-            </select>
+            <Select
+              size="sm"
+              value={state}
+              onChange={setState}
+              aria-label={t("Which pull requests")}
+              options={[
+                { value: "open", label: tc("Open", "pull request state") },
+                { value: "merged", label: t("Merged") },
+                { value: "closed", label: t("Closed") },
+                { value: "all", label: t("All") },
+              ]}
+            />
           </SectionHead>
-          {error && <ErrorNote onClose={() => setError(null)}>{error}</ErrorNote>}
+          {/* Not dismissable: dismissed, the list would be neither there nor failed, and read "Loading…" for good. */}
+          {error && <ErrorNote onRetry={() => setAgain((n) => n + 1)}>{error}</ErrorNote>}
           {!list && !error && <Quiet>{t("Loading…")}</Quiet>}
           {list && !list.length && <Quiet>{t("None.")}</Quiet>}
           {list?.map((p) => <PullRow key={p.number} pull={p} />)}
@@ -160,36 +186,75 @@ function PullRow({ pull: p }: { pull: PullSummary }) {
   );
 }
 
-/** Open a pull request for the branch checked out: pushed first if it is not on GitHub yet. */
-/** `onOpened` is told of every pull request opened, with its number where gh's answer gave one. */
+/** What is typed into the form that opens a pull request. */
+interface PullForm {
+  title: string;
+  body: string;
+  base: string;
+  draft: boolean;
+}
+
+/** The form as it was left, or null where there is none: kept as text, in the Git panel's drafts. */
+function readForm(text: string): PullForm | null {
+  try {
+    const f = JSON.parse(text) as Partial<PullForm> | null;
+    return f && typeof f === "object" ? { title: String(f.title ?? ""), body: String(f.body ?? ""), base: String(f.base ?? ""), draft: f.draft === true } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Open a pull request for the branch checked out: pushed first if it is not on GitHub yet.
+ * `onOpened` is told of every pull request opened, with its number where gh's answer gave one.
+ */
 function OpenPull({ onOpened }: { onOpened: (n?: number) => void }) {
   const { id, repo, act, busy } = useGit();
-  const [open, setOpen] = useState(false);
-  const [title, setTitle] = useState("");
-  const [body, setBody] = useState("");
   const defaultBranch = repo.gh?.defaultBranch ?? null;
   // Where the default branch is in this clone: on the remote that is the
   // repository — in a fork's clone not origin, which is the fork.
   const baseRef = repo.gh?.baseRef ?? null;
-  const [base, setBase] = useState(defaultBranch ?? "");
+  // The form is kept while a comparison or a pull request is looked at over it, and
+  // across a reload; it is open for as long as there is something kept of it.
+  const [kept, setKept] = useGitDraft(`${id}:pull-request:${repo.branch ?? ""}`);
+  const form = readForm(kept);
+  const open = form !== null;
+  const { title, body, base, draft } = form ?? { title: "", body: "", base: defaultBranch ?? "", draft: false };
+  // What is shown now, for a change made from an answer that comes later.
+  const current = useRef(form);
+  current.current = form;
+  const change = (patch: Partial<PullForm>) => {
+    const next = { title: "", body: "", base: defaultBranch ?? "", draft: false, ...current.current, ...patch };
+    current.current = next;
+    setKept(JSON.stringify(next));
+  };
   const [unfilled, setUnfilled] = useState<string | null>(null);
-  const [draft, setDraft] = useState(false);
   const [comparison, setComparison] = useState<Comparison | null>(null);
 
   // Filled in from what the branch adds: one commit is its own title; several are listed.
   useEffect(() => {
     if (!open) return;
+    let gone = false;
     setUnfilled(null);
     gitApi.compare(id, baseRef ?? undefined).then(
       (r) => {
+        if (gone) return;
         const c = r.comparison;
         setComparison(c);
         if (!c) return setUnfilled(t("Nothing to compare the branch with, so nothing is filled in."));
-        setTitle((t) => t || (c.commits.length === 1 ? c.commits[0].subject : (repo.branch ?? "").replace(/^[^/]+\//, "").replace(/[-_]/g, " ")));
-        setBody((b) => b || (c.commits.length > 1 ? c.commits.map((x) => `- ${x.subject}`).reverse().join("\n") : ""));
+        const was = current.current;
+        // What was typed is left as it is.
+        change({
+          title: was?.title || (c.commits.length === 1 ? c.commits[0].subject : (repo.branch ?? "").replace(/^[^/]+\//, "").replace(/[-_]/g, " ")),
+          body: was?.body || (c.commits.length > 1 ? c.commits.map((x) => `- ${x.subject}`).reverse().join("\n") : ""),
+        });
       },
-      (e) => setUnfilled(t("Not filled in: {error}", { error: (e as Error).message })),
+      (e) => !gone && setUnfilled(t("Not filled in: {error}", { error: (e as Error).message })),
     );
+    return () => {
+      gone = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, id, baseRef, repo.branch]);
 
   const submit = async (e: FormEvent) => {
@@ -199,13 +264,16 @@ function OpenPull({ onOpened }: { onOpened: (n?: number) => void }) {
       url = (await gitApi.createPull(id, { title, body, base: base || undefined, draft })).url;
     });
     const n = Number(/\/pull\/(\d+)/.exec(url)?.[1]);
-    if (ok) onOpened(n || undefined);
+    if (ok) {
+      setKept("");
+      onOpened(n || undefined);
+    }
   };
 
   if (!open) {
     return (
       <div className="px-3 py-2">
-        <TextButton primary onClick={() => setOpen(true)}>
+        <TextButton primary onClick={() => change({})}>
           <LuGitPullRequest aria-hidden className="h-3.5 w-3.5" /> {t("Open a pull request for {branch}", { branch: repo.branch ?? "" })}
         </TextButton>
       </div>
@@ -215,14 +283,14 @@ function OpenPull({ onOpened }: { onOpened: (n?: number) => void }) {
     <form onSubmit={submit} className="flex flex-col gap-1.5 border-b border-line px-3 py-2">
       <input
         value={title}
-        onChange={(e) => setTitle(e.target.value)}
+        onChange={(e) => change({ title: e.target.value })}
         placeholder={t("Title")}
         aria-label={t("Title of the pull request")}
         className="rounded border border-line bg-canvas px-2 py-1 text-xs text-fg outline-none focus:border-accent/60"
       />
       <textarea
         value={body}
-        onChange={(e) => setBody(e.target.value)}
+        onChange={(e) => change({ body: e.target.value })}
         rows={5}
         placeholder={t("What it does, and why (Markdown)")}
         aria-label={t("Description of the pull request")}
@@ -231,10 +299,10 @@ function OpenPull({ onOpened }: { onOpened: (n?: number) => void }) {
       <div className="flex flex-wrap items-center gap-2 text-[11px] text-fg-subtle">
         <label className="flex items-center gap-1">
           {t("into")}
-          <input value={base} onChange={(e) => setBase(e.target.value)} aria-label={t("Base branch")} spellCheck={false} className="w-28 rounded border border-line bg-canvas px-1 py-0.5 font-mono text-[11px] text-fg" />
+          <input value={base} onChange={(e) => change({ base: e.target.value })} aria-label={t("Base branch")} spellCheck={false} className="w-28 rounded border border-line bg-canvas px-1 py-0.5 font-mono text-[11px] text-fg" />
         </label>
         <label className="flex cursor-pointer items-center gap-1">
-          <input type="checkbox" checked={draft} onChange={(e) => setDraft(e.target.checked)} className="h-3 w-3 accent-accent" />
+          <input type="checkbox" checked={draft} onChange={(e) => change({ draft: e.target.checked })} className="h-3 w-3 accent-accent" />
           {t("Draft")}
         </label>
         {comparison && (
@@ -243,7 +311,7 @@ function OpenPull({ onOpened }: { onOpened: (n?: number) => void }) {
           </span>
         )}
         <span className="ml-auto" />
-        <TextButton onClick={() => setOpen(false)}>{t("Cancel")}</TextButton>
+        <TextButton onClick={() => setKept("")}>{t("Cancel")}</TextButton>
         <TextButton type="submit" primary disabled={!title.trim() || !!busy}>
           {repo.upstream ? t("Open") : t("Push and open")}
         </TextButton>
@@ -262,32 +330,39 @@ function CheckIcon({ check }: { check: Check }) {
   return <LuCircleDot aria-label={result.toLowerCase()} className="h-3.5 w-3.5 shrink-0 text-fg-faint" />;
 }
 
-const Markdown = ({ children }: { children: string }) => (
+const PullMarkdown = ({ children }: { children: string }) => (
   <div className="md text-xs leading-relaxed text-fg [&_h1]:text-sm [&_h2]:text-sm [&_h3]:text-xs [&_h1]:font-semibold [&_h2]:font-semibold">
-    <Streamdown shikiTheme={["github-light", "github-dark"]}>{children}</Streamdown>
+    <Markdown>{children}</Markdown>
   </div>
 );
+
+/** The letter a changed file is listed under, as the commit's and a comparison's lists write it. */
+const STATUS_LETTER = { added: "A", deleted: "D", renamed: "R", modified: "M" } as const;
 
 /** One pull request: what it is, its checks, its files, what was said — and what can be done with it. */
 export function PullView({ n }: { n: number }) {
   const { id, repo, act, busy, show } = useGit();
   const [pull, setPull] = useState<PullDetail | null>(null);
   const [files, setFiles] = useState<{ files: DiffFile[]; truncated: boolean } | null>(null);
+  // The diff failing is not "no files": the pull request has some, and the list said none.
+  const [filesError, setFilesError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [method, setMethod] = useState<"merge" | "squash" | "rebase">("squash");
   const [deleteBranch, setDeleteBranch] = useState(true);
-  const [reply, setReply] = useState("");
+  // Kept while one of its files is looked at over it, and across a reload.
+  const [reply, setReply] = useGitDraft(`${id}:pull-reply:${n}`);
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
     let gone = false;
+    setFilesError(null);
     gitApi.pullDetail(id, n).then(
       (r) => !gone && setPull(r.pull),
       (e) => !gone && setError((e as Error).message),
     );
     gitApi.pullDiff(id, n).then(
       (r) => !gone && setFiles({ files: parseDiff(r.diff), truncated: r.truncated }),
-      () => !gone && setFiles({ files: [], truncated: false }),
+      (e) => !gone && setFilesError((e as Error).message),
     );
     return () => {
       gone = true;
@@ -303,11 +378,12 @@ export function PullView({ n }: { n: number }) {
     return said.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
   }, [pull]);
 
-  if (error) return <ErrorNote>{error}</ErrorNote>;
+  if (error) return <ErrorNote onRetry={() => (setError(null), setTick((k) => k + 1))}>{error}</ErrorNote>;
   if (!pull) return <Quiet>{t("Loading…")}</Quiet>;
   const open = pull.state === "OPEN";
   const checks = pull.statusCheckRollup ?? [];
-  const here = repo.branch === pull.headRefName;
+  // A fork's branch of the same name is not this one: only a branch of this repository is.
+  const here = !pull.isCrossRepository && repo.branch === pull.headRefName;
   const after = () => setTick((t) => t + 1);
 
   const merge = async () => {
@@ -335,9 +411,11 @@ export function PullView({ n }: { n: number }) {
             {pull.title} <span className="font-normal text-fg-faint">#{pull.number}</span>
           </p>
           <StateBadge pull={pull} />
-          <a href={pull.url} target="_blank" rel="noreferrer" title={t("Open on GitHub")} aria-label={t("Open on GitHub")} className="shrink-0 rounded p-0.5 text-fg-faint hover:text-fg">
-            <LuExternalLink className="h-3.5 w-3.5" />
-          </a>
+          {webLink(pull.url) && (
+            <a href={webLink(pull.url)} target="_blank" rel="noreferrer" title={t("Open on GitHub")} aria-label={t("Open on GitHub")} className="shrink-0 rounded p-0.5 text-fg-faint hover:text-fg">
+              <LuExternalLink className="h-3.5 w-3.5" />
+            </a>
+          )}
         </div>
         <p className="mt-1 text-[10.5px] text-fg-faint">
           {tx("{author} wants {head} in {base}", { author: pull.author?.login ?? "", head: <span className="font-mono">{pull.headRefName}</span>, base: <span className="font-mono">{pull.baseRefName}</span> })}
@@ -358,11 +436,17 @@ export function PullView({ n }: { n: number }) {
           )}
           {open && (
             <>
-              <select value={method} onChange={(e) => setMethod(e.target.value as typeof method)} aria-label={t("How to merge")} className="rounded border border-line bg-canvas px-1 py-0.5 text-[11px] text-fg">
-                <option value="squash">{t("Squash")}</option>
-                <option value="merge">{t("Merge commit")}</option>
-                <option value="rebase">{t("Rebase")}</option>
-              </select>
+              <Select
+                size="sm"
+                value={method}
+                onChange={setMethod}
+                aria-label={t("How to merge")}
+                options={[
+                  { value: "squash", label: t("Squash") },
+                  { value: "merge", label: t("Merge commit") },
+                  { value: "rebase", label: t("Rebase") },
+                ]}
+              />
               <label className="flex cursor-pointer items-center gap-1 text-[11px] text-fg-subtle">
                 <input type="checkbox" checked={deleteBranch} onChange={(e) => setDeleteBranch(e.target.checked)} className="h-3 w-3 accent-accent" />
                 {t("delete branch")}
@@ -383,8 +467,8 @@ export function PullView({ n }: { n: number }) {
               <li key={i} className="flex items-center gap-1.5 px-3 py-0.5 text-xs">
                 <CheckIcon check={c} />
                 <span className="min-w-0 flex-1 truncate text-fg-muted">{c.name ?? c.context}</span>
-                {(c.detailsUrl || c.targetUrl) && (
-                  <a href={c.detailsUrl || c.targetUrl} target="_blank" rel="noreferrer" className="shrink-0 text-[10.5px] text-fg-faint hover:text-fg hover:underline">
+                {webLink(c.detailsUrl || c.targetUrl) && (
+                  <a href={webLink(c.detailsUrl || c.targetUrl)} target="_blank" rel="noreferrer" className="shrink-0 text-[10.5px] text-fg-faint hover:text-fg hover:underline">
                     {t("details")}
                   </a>
                 )}
@@ -396,31 +480,26 @@ export function PullView({ n }: { n: number }) {
 
       {pull.body?.trim() && (
         <div className="border-b border-line px-3 py-2">
-          <Markdown>{pull.body}</Markdown>
+          <PullMarkdown>{pull.body}</PullMarkdown>
         </div>
       )}
 
       <SectionHead title={t("Files")} count={files?.files.length ?? pull.changedFiles} />
-      {!files ? (
+      {filesError ? (
+        <ErrorNote onRetry={() => setTick((k) => k + 1)}>{filesError}</ErrorNote>
+      ) : !files ? (
         <Quiet>{t("Loading…")}</Quiet>
       ) : (
-        <ul>
-          {files.files.map((f) => {
-            const { dir, name } = splitPath(f.path);
-            const letter = f.status === "added" ? "A" : f.status === "deleted" ? "D" : f.status === "renamed" ? "R" : "M";
-            return (
-              <li key={f.path}>
-                <button type="button" onClick={() => show({ kind: "parsed", title: f.path, file: f, truncated: files.truncated })} className="flex w-full items-center gap-1.5 px-2 py-1 text-left transition hover:bg-fg/5">
-                  <Letter letter={letter} />
-                  <span className="min-w-0 truncate text-xs text-fg">{name}</span>
-                  <span className="min-w-0 flex-1 truncate text-[10.5px] text-fg-faint">{dir}</span>
-                  <Counts added={f.added} removed={f.removed} binary={f.binary} />
-                </button>
-              </li>
-            );
-          })}
+        <>
+          <ChangeList
+            files={files.files.map(({ path, from, status, added, removed, binary }) => ({ path, from, status: STATUS_LETTER[status], added, removed, binary }))}
+            open={(f) => {
+              const file = files.files.find((d) => d.path === f.path)!;
+              show({ kind: "parsed", title: file.path, file, truncated: files.truncated && file === files.files[files.files.length - 1] });
+            }}
+          />
           {files.truncated && <Quiet>{t("Too large to show whole — the last files are missing.")}</Quiet>}
-        </ul>
+        </>
       )}
 
       {(pull.commits?.length ?? 0) > 0 && (
@@ -447,7 +526,7 @@ export function PullView({ n }: { n: number }) {
             {" · "}
             {when(c.at)}
           </p>
-          {c.body && <Markdown>{c.body}</Markdown>}
+          {c.body && <PullMarkdown>{c.body}</PullMarkdown>}
         </div>
       ))}
       <div className="px-3 py-2">

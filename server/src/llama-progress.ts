@@ -31,6 +31,26 @@ export interface Prefill {
 type OnProgress = (sessionId: string, prefill: Prefill) => void;
 
 /**
+ * What llama-server measured for one answer, from the `timings` on the last
+ * chunk of its stream: how many prompt tokens it processed and how fast, how
+ * many it took from the cache, how many it wrote and how fast. `draft*` only
+ * with speculative decoding.
+ */
+export interface Timings {
+  promptTokens: number;
+  cachedTokens: number;
+  promptMs: number;
+  promptPerSecond: number;
+  outputTokens: number;
+  outputMs: number;
+  outputPerSecond: number;
+  draftTokens?: number;
+  draftAccepted?: number;
+}
+
+type OnTimings = (sessionId: string, timings: Timings) => void;
+
+/**
  * Whether a session's model is being loaded before it can answer.
  *
  * Behind llama-server's router or llama-swap, the first request for a model
@@ -52,6 +72,7 @@ let server: http.Server | undefined;
 let port = 0;
 let notify: OnProgress = () => {};
 let notifyModel: OnModel = () => {};
+let notifyTimings: OnTimings = () => {};
 
 const PREFIX = "/s/";
 const diskCache = new LlamaSessionCache();
@@ -63,9 +84,11 @@ function readProgress(text: string, sessionId: string): void {
     if (!line.startsWith("data:")) continue;
     const body = line.slice(5).trim();
     if (!body || body === "[DONE]") continue;
-    if (!body.includes("prompt_progress")) continue;
+    if (!body.includes("prompt_progress") && !body.includes("timings")) continue;
     try {
-      const chunk = JSON.parse(body) as { prompt_progress?: Record<string, number> };
+      const chunk = JSON.parse(body) as { prompt_progress?: Record<string, number>; timings?: Record<string, number> };
+      const timings = readTimings(chunk.timings);
+      if (timings) notifyTimings(sessionId, timings);
       const p = chunk.prompt_progress;
       if (!p || typeof p.total !== "number") continue;
       notify(sessionId, {
@@ -81,16 +104,47 @@ function readProgress(text: string, sessionId: string): void {
   }
 }
 
-/** Add `return_progress` to a streaming completion, leaving anything else alone. */
-function withProgress(body: Buffer): Buffer {
+/** llama-server's `timings`, when they are there and say how fast the answer was written. */
+export function readTimings(t: Record<string, number> | undefined): Timings | undefined {
+  if (!t || typeof t.predicted_n !== "number" || typeof t.predicted_per_second !== "number") return undefined;
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  return {
+    promptTokens: num(t.prompt_n),
+    cachedTokens: num(t.cache_n),
+    promptMs: num(t.prompt_ms),
+    promptPerSecond: num(t.prompt_per_second),
+    outputTokens: num(t.predicted_n),
+    outputMs: num(t.predicted_ms),
+    outputPerSecond: num(t.predicted_per_second),
+    ...(typeof t.draft_n === "number" ? { draftTokens: t.draft_n, draftAccepted: num(t.draft_n_accepted) } : {}),
+  };
+}
+
+/**
+ * A completion request, read once: the model it names, and the body to send on,
+ * with `return_progress` added to a streaming one and anything else left alone.
+ * The body is the whole conversation, pictures included, and every step of the
+ * agent sends it again, so it is parsed no more than this.
+ */
+function withProgress(raw: Buffer): { body: Buffer; model: string } {
   try {
-    const parsed = JSON.parse(body.toString("utf8"));
-    if (!parsed || typeof parsed !== "object" || parsed.stream !== true) return body;
+    const parsed = JSON.parse(raw.toString("utf8"));
+    if (!parsed || typeof parsed !== "object") return { body: raw, model: "" };
+    const model = typeof parsed.model === "string" ? parsed.model : "";
+    if (parsed.stream !== true) return { body: raw, model };
     parsed.return_progress = true;
-    return Buffer.from(JSON.stringify(parsed));
+    return { body: Buffer.from(JSON.stringify(parsed)), model };
   } catch {
-    return body;
+    return { body: raw, model: "" };
   }
+}
+
+/** The models whose chats keep their prompt cache on disk, as `LLAMA_DISK_CACHE_MODELS` names them; read again only when the variable has changed. */
+let diskCached = { raw: "", models: new Set<string>() };
+function diskCacheModels(): Set<string> {
+  const raw = process.env.LLAMA_DISK_CACHE_MODELS ?? "";
+  if (raw !== diskCached.raw) diskCached = { raw, models: new Set(raw.split(",").map((m) => m.trim()).filter(Boolean)) };
+  return diskCached.models;
 }
 
 /** What `url` answers, or undefined; `denied` when it wanted a key it was not given. */
@@ -208,14 +262,13 @@ function handle(req: http.IncomingMessage, res: http.ServerResponse): void {
   req.on("data", (c: Buffer) => chunks.push(c));
   req.on("end", () => {
     const raw = Buffer.concat(chunks);
-    const body = req.method === "POST" && raw.length ? withProgress(raw) : raw;
+    // Only a chat completion is looked into: the other routes are passed on as they came.
+    const { body, model } = req.method === "POST" && raw.length && target.pathname.endsWith("/chat/completions") ? withProgress(raw) : { body: raw, model: "" };
     const client = target.protocol === "https:" ? https : http;
     const headers = { ...req.headers, host: target.host };
     if (body.length) headers["content-length"] = String(body.length);
 
-    let model = "";
-    try { model = JSON.parse(body.toString()).model ?? ""; } catch { /* Non-completion route. */ }
-    const completion = !!model && target.pathname.endsWith("/chat/completions");
+    const completion = !!model;
 
     // Asked alongside the request rather than before it: a loaded model must
     // not wait on the question, and the request is what starts the load.
@@ -263,7 +316,7 @@ function handle(req: http.IncomingMessage, res: http.ServerResponse): void {
       out.on("error", reject);
       out.end(body);
     });
-    const enabled = (process.env.LLAMA_DISK_CACHE_MODELS ?? "").split(",").includes(model) && completion;
+    const enabled = completion && diskCacheModels().has(model);
     void (enabled ? diskCache.run(upstream, model, sessionId, controller.signal, forward) : forward())
       .finally(() => answering())
       .then(() => res.end())
@@ -276,9 +329,10 @@ function handle(req: http.IncomingMessage, res: http.ServerResponse): void {
 }
 
 /** Loopback only: this exists for the pi process in front of it, nobody else. */
-export function startLlamaProxy(onProgress: OnProgress, onModel?: OnModel): void {
+export function startLlamaProxy(onProgress: OnProgress, onModel?: OnModel, onTimings?: OnTimings): void {
   notify = onProgress;
   if (onModel) notifyModel = onModel;
+  if (onTimings) notifyTimings = onTimings;
   if (server) return;
   server = http.createServer(handle);
   server.listen(0, "127.0.0.1", () => {

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { AudioRule, VoiceFirstTurn, AUDIO_SYSTEM_RULE, DEFAULT_VOICE_INSTRUCTIONS, audioSystemRule, voiceInstructions, voiceRulesOn, audioMessage, spokenIn } from '../server/src/pi/voice-first.js';
+import { AudioRule, VoiceFirstTurn, DEFAULT_SKIP_THINKING_PROVIDERS, listsProvider, AUDIO_SYSTEM_RULE, DEFAULT_VOICE_INSTRUCTIONS, audioSystemRule, voiceInstructions, voiceRulesOn, audioMessage, spokenIn } from '../server/src/pi/voice-first.js';
 function setup() {
  const turn = new VoiceFirstTurn(), handlers = new Map<string, (...args: any[]) => any>();
  turn.extension({ on: (name: string, fn: any) => handlers.set(name, fn) });
@@ -14,8 +14,12 @@ test('audio requests carry a persistent marker and a stable conditional system r
  assert.match(AUDIO_SYSTEM_RULE, /typed requests/);
  assert.match(AUDIO_SYSTEM_RULE, /normal chat formatting/);
  assert.match(AUDIO_SYSTEM_RULE, /plain conversational text/);
- assert.match(AUDIO_SYSTEM_RULE, /Before every tool call or group of tool calls/);
- assert.match(AUDIO_SYSTEM_RULE, /including subsequent actions after earlier tool results/);
+ assert.match(AUDIO_SYSTEM_RULE, /what you are going to do/);
+ // Short lines of its thinking while it works, not silence and not a line per tool call.
+ assert.match(AUDIO_SYSTEM_RULE, /think aloud now and then/);
+ assert.match(AUDIO_SYSTEM_RULE, /not one per tool call/);
+ assert.doesNotMatch(AUDIO_SYSTEM_RULE, /stay quiet until you have the result/);
+ assert.doesNotMatch(AUDIO_SYSTEM_RULE, /Before every tool call/);
  // Not to be read as saying the message in hand has the marker: issue #26.
  assert.match(AUDIO_SYSTEM_RULE, /does not mean any request has it/);
 });
@@ -45,6 +49,34 @@ test('a prompt built elsewhere is made to say what the rule says now', () => {
  assert.equal(rule.into(said, 'Appended'), said, 'there already');
  rule.set(false);
  assert.equal(rule.into(`${said}\n\nPolicy`, 'Appended'), 'Base\n\nAppended\n\nPolicy', 'out again');
+});
+test('while voice can speak the rule is in every conversation, spoken in or not, and goes when voice is switched off', () => {
+ let speaks = true;
+ const rule = new AudioRule(undefined, undefined, () => speaks);
+ // A conversation nobody has spoken in has it from the start, and its first spoken message changes nothing.
+ assert.equal(rule.set(false), true);
+ assert.deepEqual(rule.lines(), [AUDIO_SYSTEM_RULE]);
+ assert.equal(rule.set(true), false, 'the prompt is not built again for the first spoken message');
+ // Its spoken message edited away: still there, as voice can still speak.
+ assert.equal(rule.set(false), false);
+ // Voice switched off, or left with recognition alone: as before, only where there was a spoken message.
+ speaks = false;
+ assert.equal(rule.set(false), true);
+ assert.deepEqual(rule.lines(), []);
+ assert.equal(rule.set(true), true);
+ assert.deepEqual(rule.lines(), [AUDIO_SYSTEM_RULE]);
+ // VOICE_RESPONSE_INSTRUCTIONS=false sends no rule at all, whatever voice can do.
+ const previous = process.env.VOICE_RESPONSE_INSTRUCTIONS;
+ try {
+  process.env.VOICE_RESPONSE_INSTRUCTIONS = 'false';
+  speaks = true;
+  const off = new AudioRule(undefined, undefined, () => speaks);
+  off.set(true);
+  assert.deepEqual(off.lines(), []);
+ } finally {
+  if (previous === undefined) delete process.env.VOICE_RESPONSE_INSTRUCTIONS;
+  else process.env.VOICE_RESPONSE_INSTRUCTIONS = previous;
+ }
 });
 test('the rule says whether it changed, so the prompt is built again only then', () => {
  const rule = new AudioRule();
@@ -78,6 +110,27 @@ test('comparison instance preserves model thinking on the first voice request', 
   if(previous === undefined)delete process.env.VOICE_SKIP_FIRST_THINKING;
   else process.env.VOICE_SKIP_FIRST_THINKING=previous;
  }
+});
+
+test('the first call skips thinking for the providers listed: by default every way a llama.cpp server shows up, llama-swap included', () => {
+ const call = (turn: VoiceFirstTurn, provider: string) => {
+  const handlers = new Map<string, (...args: any[]) => any>();
+  turn.extension({ on: (name: string, fn: any) => handlers.set(name, fn) }); turn.arm();
+  return handlers.get('before_provider_request')!({ payload: { messages: [], chat_template_kwargs: {} } }, { model: { provider } })?.chat_template_kwargs?.enable_thinking;
+ };
+ for (const provider of ['llama.cpp', 'llama-server=http://127.0.0.1:8080', 'llama-swap']) assert.equal(call(new VoiceFirstTurn(), provider), false, provider);
+ assert.equal(call(new VoiceFirstTurn(), 'anthropic'), undefined, 'not listed');
+ assert.equal(call(new VoiceFirstTurn(() => ['llama-swap']), 'llama-swapper'), undefined, 'a listed name is matched whole, not as a prefix');
+ // A saved list replaces the default one, read at the call.
+ let saved: string[] | undefined = ['my-gateway'];
+ const turn = () => new VoiceFirstTurn(() => saved);
+ assert.equal(call(turn(), 'my-gateway'), false);
+ assert.equal(call(turn(), 'my-gateway=http://10.0.0.2:8080'), false);
+ assert.equal(call(turn(), 'llama-swap'), undefined);
+ saved = [];
+ assert.equal(call(turn(), 'llama-swap'), undefined, 'an empty list keeps thinking on everywhere');
+ assert.deepEqual([...DEFAULT_SKIP_THINKING_PROVIDERS], ['llama.cpp', 'llama-server', 'llama-swap']);
+ assert.equal(listsProvider(['a'], undefined), false);
 });
 
 test('unoptimized voice baseline omits voice instructions and the audio marker', () => {

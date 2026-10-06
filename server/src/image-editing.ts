@@ -1,4 +1,5 @@
 import { ImageGenerationError, requestPicture, type GenerateOptions, type ImageEditingTarget } from "./image-generation.js";
+import { MAX_EDIT_PICTURES, MAX_EDIT_TOTAL_BYTES, promptWith, type NativeSettings, type OutputFormat } from "./image-settings.js";
 import { pictureSize } from "./picture-size.js";
 import { pictureExt, pictureType } from "./prompt-images.js";
 import { MAX_PICTURE_BYTES } from "./workspace-files.js";
@@ -8,10 +9,10 @@ import { MAX_PICTURE_BYTES } from "./workspace-files.js";
  * as generation (see image-generation.ts), asked for `images/edits` instead.
  *
  * The request is the OpenAI-style one — a multipart form with the picture, a
- * prompt and optionally a mask, and the model when there is one — and the
- * answer is read as a generation's is, as `b64_json` or `url`, with the same
- * rules for where an address may lead, the same check of the bytes and the same
- * limits. Other request shapes are not translated.
+ * prompt and optionally a mask, and the model, size and output format when
+ * there are some — and the answer is read as a generation's is, as `b64_json`
+ * or `url`, with the same rules for where an address may lead, the same check
+ * of the bytes and the same limits. Other request shapes are not translated.
  *
  * Several pictures are sent as `image[]`, once each in the order given, only to
  * an endpoint the person said takes them (see ImageEditingTarget.multiple); one
@@ -34,14 +35,8 @@ export function editEndpointUrl(baseUrl: string): URL {
   return url;
 }
 
-/**
- * How many pictures one edit takes, and how much they weigh together. Endpoints
- * take fewer or more and say so in their answer, which is passed on; these keep
- * what the portal reads and sends within reason, since all of it is held in
- * memory and goes up within the time limit of the request.
- */
-export const MAX_EDIT_PICTURES = 8;
-export const MAX_EDIT_TOTAL_BYTES = 50 * 1024 * 1024;
+/** How many pictures one edit takes, and how much they weigh together: set in image-settings.ts, which the page reads too. */
+export { MAX_EDIT_PICTURES, MAX_EDIT_TOTAL_BYTES };
 
 export interface EditRequest {
   /** What should change, or what a new picture should be made of the pictures. */
@@ -54,6 +49,15 @@ export interface EditRequest {
   image: Buffer | Buffer[];
   /** Marks the area to change, where the endpoint takes one. Checked as a picture; its size must match the picture's, which the endpoint tells. */
   mask?: Buffer;
+  /** Instead of the model set for editing, for the Images page: the agent's tool has the saved one only. */
+  model?: string;
+  /** What the result comes out as, `1024x1024`; not sent without it, since the endpoint's own is usually the picture's. */
+  size?: string;
+  /** Sent as `output_format`, and `output_compression` with it. */
+  outputFormat?: OutputFormat;
+  outputCompression?: number;
+  /** Not in the OpenAI format: put in the prompt as stable-diffusion.cpp's server reads them, and only where one is set. */
+  native?: NativeSettings;
 }
 
 export interface EditOptions extends GenerateOptions {
@@ -73,7 +77,7 @@ export function checkPictureSize(bytes: Buffer, maxSize: string, who: string): v
   if (!maxWidth || !maxHeight) return;
   const size = pictureSize(bytes);
   const limit = `${maxWidth}x${maxHeight}`;
-  const advice = "Nothing was sent. Use a smaller picture (it is not scaled or cut), or tell the person; the limit is set in Settings → Images.";
+  const advice = "Nothing was sent. Use a smaller picture (it is not scaled or cut), or tell the person; the limit is set in Settings → Agent → Images.";
   if (!size) throw new ImageGenerationError(`${who} has a size that cannot be read, so it cannot be shown to be within the maximum of ${limit} pixels for an edit. ${advice}`);
   const fits = (size.width <= maxWidth && size.height <= maxHeight) || (size.width <= maxHeight && size.height <= maxWidth);
   if (!fits) throw new ImageGenerationError(`${who} is ${size.width}x${size.height} pixels, which is over the maximum of ${limit} for an edit. ${advice}`);
@@ -93,7 +97,9 @@ function toSend(bytes: Buffer, who: string, name: string, max: number, maxSize: 
 export function checkCount(count: number, multiple: boolean): void {
   if (count < 1) throw new ImageGenerationError("There is no picture to change");
   if (count > 1 && !multiple) {
-    throw new ImageGenerationError("The editing endpoint is not set up to take several pictures, so none was sent. Use one, or tell the person that several can be switched on in Settings → Images.");
+    throw new ImageGenerationError(
+      `The editing endpoint is not set up to take several pictures, so none was sent (${count} were given). Use one, or tell the person that "Several pictures per edit" can be switched on in Settings → Agent → Images if the endpoint takes them.`,
+    );
   }
   if (count > MAX_EDIT_PICTURES) throw new ImageGenerationError(`An edit takes at most ${MAX_EDIT_PICTURES} pictures, and ${count} were given`);
 }
@@ -112,9 +118,10 @@ export function checkTotal(bytes: number, max = MAX_EDIT_TOTAL_BYTES): void {
  * A picture that is no picture, or is over the limit or beyond the maximum size
  * of the editing settings, is refused before anything is sent, so that nothing leaves the portal that should not. With several, one
  * that is refused refuses them all: the prompt refers to them by their place in
- * the list, which a result made of the others would not match. `size` is not
- * sent: what an edit comes out as is the endpoint's to say, usually the
- * picture's own, and the size set for generation need not be one an edit takes.
+ * the list, which a result made of the others would not match. A size is sent
+ * only when the request has one: what an edit comes out as is the endpoint's to
+ * say, usually the picture's own, and the size set for generation need not be
+ * one an edit takes.
  */
 export async function editImage(
   target: ImageEditingTarget,
@@ -131,9 +138,14 @@ export async function editImage(
   // One picture as the first OpenAI-style endpoints took it; several as the list form, once each, in order.
   for (const image of images) form.append(images.length > 1 ? "image[]" : "image", image.blob, image.name);
   if (mask) form.append("mask", mask.blob, mask.name);
-  form.append("prompt", request.prompt);
-  if (target.model) form.append("model", target.model);
+  // As for generation: nothing that only stable-diffusion.cpp reads goes while the switch for it is off.
+  form.append("prompt", promptWith(request.prompt, target.sdExtras ? (request.native ?? {}) : {}));
+  const model = request.model || target.model;
+  if (model) form.append("model", model);
   form.append("n", "1");
+  if (request.size) form.append("size", request.size);
+  if (request.outputFormat) form.append("output_format", request.outputFormat);
+  if (request.outputCompression !== undefined) form.append("output_compression", String(request.outputCompression));
   // The time limit is the one of generation: the picture goes up first, and then the endpoint makes the new one.
   return requestPicture(editEndpointUrl(target.baseUrl), target.apiKey, form, { timeoutMs: target.timeoutSeconds * 1000, ...options });
 }

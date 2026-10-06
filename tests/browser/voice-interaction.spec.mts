@@ -1,4 +1,5 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './portal-mock';
+import { settled } from './settled';
 import { readFileSync } from 'node:fs';
 const sample = readFileSync(new URL('../fixtures/jfk.wav', import.meta.url));
 // A 2×2 PNG, as a picture from the phone or the folder would be.
@@ -30,7 +31,6 @@ test('a picture goes with what is said next, and the agent can show one back', a
   await page.locator('.voice-stage input[type=file]').setInputFiles({ name: 'photo.png', mimeType: 'image/png', buffer: png });
   await expect(page.getByLabel('Pictures for your next message').getByRole('img', { name: 'photo.png' })).toHaveCount(1);
   await expect(page.getByRole('button', { name: 'Add a picture' })).toContainText('1');
-  await page.getByTestId('workspace').screenshot({ path: '/tmp/pithagoras-voice-attached.png' });
   await page.getByRole('button', { name: 'Inject speech' }).click();
   await expect(page.getByTestId('sent')).toHaveText('1', { timeout: 12000 });
   await expect(page.getByTestId('last-send')).toHaveText(JSON.stringify({ message: 'What is in this picture?', images: 1, steer: false }));
@@ -40,7 +40,6 @@ test('a picture goes with what is said next, and the agent can show one back', a
   const window = page.getByRole('region', { name: 'Pictures' });
   await expect(window.getByRole('img', { name: 'Sales by month' })).toBeVisible();
   await expect(window).toContainText('Sales by month');
-  await page.getByTestId('workspace').screenshot({ path: '/tmp/pithagoras-voice-picture.png' });
   await page.getByRole('button', { name: 'Show picture' }).click();
   await expect(window).toContainText('2 / 2');
   await window.getByRole('button', { name: 'Previous picture' }).click();
@@ -132,6 +131,7 @@ test('a file dropped on the voice stage is taken there once, not again by the ch
   await expect(page.getByLabel('Pictures for your next message').getByRole('img', { name: 'photo.png' })).toHaveCount(1);
   await drop([{ name: 'notes.pdf', type: 'application/pdf', base64: 'JVBE' }]);
   await expect(page.getByText('Only PNG, JPEG, GIF and WebP pictures can be sent in voice mode')).toBeVisible();
+  // The refused file is not to take the place of the picture there, which only waiting shows.
   await page.waitForTimeout(300);
   await expect(page.getByLabel('Pictures for your next message').getByRole('img', { name: 'photo.png' })).toHaveCount(1);
   await expect(page.getByRole('button', { name: 'Add a picture' })).toContainText('1');
@@ -153,10 +153,31 @@ test('tool cards say what came of a call, and open what they are about', async (
   await page.getByRole('button', { name: 'Edit file' }).click();
   const edit = page.getByRole('button', { name: /Editing app\.ts/ });
   await expect(edit).toContainText('+2 −1');
-  await page.getByTestId('workspace').screenshot({ path: '/tmp/pithagoras-voice-cards.png' });
   await edit.click();
   await expect(page.getByRole('region', { name: 'Files' })).toBeVisible();
   await expect(page.getByLabel('Contents of src/app.ts')).toHaveValue('abc');
+});
+
+test('the Files window of voice mode leaves the edit of the chat\'s own Files panel where it is', async ({ page }) => {
+  await page.goto('/tests/voice.html');
+  // An edit in the chat's Files panel that is not saved.
+  await page.getByRole('button', { name: 'Files', exact: true }).click();
+  await page.getByRole('button', { name: /^app\.ts/ }).click();
+  await page.getByLabel('Contents of app.ts').fill('edited by hand');
+  const kept = () => page.evaluate(() => sessionStorage.getItem('pithagoras.file-draft.test') ?? '');
+  await expect.poll(kept).toContain('edited by hand');
+  await page.getByRole('button', { name: 'Turn on hands-free voice' }).click();
+  await expect(page.getByRole('button', { name: 'End voice mode' })).toBeVisible({ timeout: 25000 });
+  // The voice stage's own window opens on the folder, ready to show what the agent does, not on a half-made edit of the other.
+  await page.getByRole('button', { name: 'Show files' }).click();
+  const window = page.locator('.voice-files-window', { has: page.getByRole('button', { name: 'Minimize files' }) });
+  await expect(window.getByRole('button', { name: /^app\.ts/ })).toBeVisible();
+  await expect(window.getByLabel('Contents of app.ts')).toHaveCount(0);
+  await expect(window.getByRole('button', { name: 'Following' })).toBeVisible();
+  // And it did not take the chat's edit with it when it came: that is still kept, for a reload.
+  expect(await kept()).toContain('edited by hand');
+  await page.getByRole('button', { name: 'End voice mode' }).click();
+  await expect(page.getByLabel('Contents of app.ts')).toHaveValue('edited by hand');
 });
 
 test('settings, push-to-talk, adding to a running task, the conversation and repeat', async ({ page }) => {
@@ -185,7 +206,6 @@ test('settings, push-to-talk, adding to a running task, the conversation and rep
   await settings.getByRole('group', { name: 'Talking while the agent works' }).getByRole('button', { name: 'Adds to the task' }).click();
   await settings.getByRole('group', { name: 'Push to talk' }).getByRole('button', { name: 'On' }).click();
   expect(await page.evaluate(() => [localStorage.getItem('voiceRate'), localStorage.getItem('voiceSteer'), localStorage.getItem('voicePtt')])).toEqual(['1.5', 'on', 'on']);
-  await page.getByTestId('workspace').screenshot({ path: '/tmp/pithagoras-voice-settings.png' });
   await page.keyboard.press('Escape');
   // With the canvas open beside the stage, the card is still on top of it.
   await page.getByRole('button', { name: 'Session canvases' }).click();
@@ -193,7 +213,6 @@ test('settings, push-to-talk, adding to a running task, the conversation and rep
   await page.getByRole('button', { name: 'Voice settings' }).click();
   const card = await settings.boundingBox();
   expect(await page.evaluate(([x, y]) => !!document.elementFromPoint(x, y)?.closest('.voice-settings'), [card!.x + card!.width / 2, card!.y + 20])).toBe(true);
-  await page.getByTestId('workspace').screenshot({ path: '/tmp/pithagoras-voice-settings-canvas.png' });
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'Close canvas' }).click();
   await expect(settings).toBeHidden();
@@ -214,6 +233,7 @@ test('settings, push-to-talk, adding to a running task, the conversation and rep
   await expect(page.getByTestId('aborted')).toHaveText('0');
   // A tap is not a turn.
   await page.getByRole('button', { name: 'Hold to talk' }).click();
+  // A tap is not to send anything, which only waiting for as long as a turn takes shows.
   await page.waitForTimeout(600);
   await expect(page.getByTestId('sent')).toHaveText('2');
 
@@ -222,14 +242,13 @@ test('settings, push-to-talk, adding to a running task, the conversation and rep
   await expect(conversation).toContainText('Also check the tests.');
   await expect(conversation).toContainText('Here is the spoken response.');
   // A window beside the orb, not over it or over another window.
-  await page.waitForTimeout(800);
+  await settled(page);
   const box = await conversation.boundingBox(), orb = await page.locator('.voice-presence').boundingBox();
   expect(orb!.x + orb!.width <= box!.x || box!.x + box!.width <= orb!.x).toBe(true);
   await page.getByRole('button', { name: 'Show picture' }).click();
-  await page.waitForTimeout(800);
+  await settled(page);
   const pictures = await page.getByRole('region', { name: 'Pictures', exact: true }).boundingBox(), beside = await conversation.boundingBox();
   expect(pictures!.x + pictures!.width <= beside!.x || beside!.x + beside!.width <= pictures!.x).toBe(true);
-  await page.getByTestId('workspace').screenshot({ path: '/tmp/pithagoras-voice-conversation.png' });
   await conversation.getByRole('button', { name: 'Close the conversation' }).click();
   // Esc while the agent works stops it, and voice mode stays on.
   await page.keyboard.press('Escape');
@@ -266,7 +285,6 @@ test('everything in voice mode has a key, and the keys can be changed', async ({
 
   // Changed in the settings: mute moves to K, and M is free.
   await page.getByRole('button', { name: 'Toggle shortcuts' }).click();
-  await page.getByRole('region', { name: 'Shortcut settings' }).screenshot({ path: '/tmp/pithagoras-shortcuts.png' });
   const row = page.getByRole('listitem', { name: 'Mute or unmute the microphone' });
   await expect(row).toContainText('M');
   await row.getByRole('button', { name: 'Change' }).click();
@@ -306,7 +324,7 @@ test('windows can be resized by their edges, until the windows are arranged anew
   await start(page);
   await page.getByRole('button', { name: 'Show terminal' }).click();
   const terminal = page.locator('.voice-terminal-window');
-  await page.waitForTimeout(900);
+  await settled(page);
   const before = (await terminal.boundingBox())!;
   const grip = (await terminal.locator('.resize-sw').boundingBox())!;
   await page.mouse.move(grip.x + 8, grip.y + 8);
@@ -318,10 +336,34 @@ test('windows can be resized by their edges, until the windows are arranged anew
   expect(after.height).toBeLessThan(before.height - 40);
   // The right edge stayed where it was.
   expect(Math.abs(after.x + after.width - (before.x + before.width))).toBeLessThan(2);
-  await page.getByTestId('workspace').screenshot({ path: '/tmp/pithagoras-voice-resized.png' });
   // Another window: the layout places both again.
   await page.getByRole('button', { name: 'Show the conversation' }).click();
-  await page.waitForTimeout(900);
+  await settled(page);
+  expect(await terminal.evaluate(el => el.style.width)).toBe('');
+});
+
+test('a window is sized from its corner with the arrow keys, and Home hands it back to the layout', async ({ page }) => {
+  await start(page);
+  await page.getByRole('button', { name: 'Show terminal' }).click();
+  const terminal = page.locator('.voice-terminal-window');
+  await settled(page);
+  const before = (await terminal.boundingBox())!;
+  // One grip of the five is reached with Tab: the corner.
+  const grip = terminal.getByRole('button', { name: 'Resize the window' });
+  await expect(grip).toHaveCount(1);
+  await grip.focus();
+  // Smaller, where it already fills the stage to the dock.
+  await page.keyboard.press('Shift+ArrowLeft');
+  await page.keyboard.press('ArrowUp');
+  await page.keyboard.press('ArrowUp');
+  await expect(terminal).toHaveAttribute('data-sized', 'pin');
+  const after = (await terminal.boundingBox())!;
+  expect(after.width).toBeCloseTo(before.width - 96, 0);
+  expect(after.height).toBeCloseTo(before.height - 48, 0);
+  // The corner moved, not the window: its left edge stayed.
+  expect(after.x).toBeCloseTo(before.x, 0);
+  await page.keyboard.press('Home');
+  await expect(terminal).not.toHaveAttribute('data-sized', /.+/);
   expect(await terminal.evaluate(el => el.style.width)).toBe('');
 });
 
@@ -354,7 +396,6 @@ test('the conversation window renders a reply as markdown, also while it is writ
     expect(said.background).not.toBe(asked.background);
     const [a, u] = [(await agent.boundingBox())!, (await user.boundingBox())!];
     expect(a.x).toBeLessThan(u.x);
-    await page.getByTestId('workspace').screenshot({ path: `/tmp/pithagoras-voice-bubbles-${scheme}.png` });
   }
 });
 

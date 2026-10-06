@@ -78,16 +78,25 @@ share pi's event bus with the tool.
 
 ## Image generation
 
-**Settings → Agent → Images.** The page for the image endpoint, generation, editing and
-the several-pictures switch. It was a tab of Settings → Add-ons before; nothing
-stored changed with the move. The tools themselves are switched in the tool lists,
-see below. A `generate_image` tool: the agent describes a
-picture, an image model you set up makes it, and it appears in the chat — and
-in voice mode's picture window — just like one the agent showed with
-`show_image`. It is off until you have saved an address and switched it on;
-until then the agent has no such tool at all, and the voice instructions say
-nothing of one. Changing a picture that already exists is a second tool with a
-switch of its own, [`edit_image`](#editing-a-picture).
+**Settings → Agent → Images.** The page for the image endpoint, and the switches for
+**Image generation**, **Image editing**, **Several pictures per edit** and **Stable Diffusion extra settings**. It was a tab of
+Settings → Add-ons before; nothing stored changed with the move.
+
+The two switches, **Image generation** and **Image editing**, are the general switches of the
+feature: they decide whether it exists. Switched on, with an address, the [Images page](/guide/images)
+can make or change pictures, and a chat's agent can have the tool for it: a `generate_image` tool, in
+which the agent describes a picture, an image model you set up makes it, and it appears in the
+chat — and in voice mode's picture window — just like one the agent showed with `show_image`.
+Changing a picture that already exists is a second tool with a switch of its own,
+[`edit_image`](#editing-a-picture). Switched off, or without an address, there is no such tool at all,
+the voice instructions say nothing of one, and the page says in its form that it is not set up, with a
+link here.
+
+Whether a chat's agent actually has a tool is a different question, and is answered only in the
+**tool lists**: Settings → Agent → Tools for every conversation, a project's Tools, and the tools control
+of a chat (see [Tools](/guide/interface#tools)). The switches here do not decide it, and the
+Images page does not look at those lists: a tool switched off there leaves the page as it is, as
+a feature switched off here removes the tool from the lists.
 
 The same endpoint also makes pictures **without the agent**: while it is on and has
 an address the sidebar has an [Images](/guide/images) page, with a form to make and
@@ -105,10 +114,12 @@ in.
 | **API address** | The API's base, such as `https://images.example.com/v1`. The portal adds `/images/generations` unless the address already ends with it. No login, query or `#` in it: the key has its own field. |
 | **API key** | Sent as `Authorization: Bearer …` to this address, and nowhere else. Left empty for a server that needs none. A saved key is never shown again — the page is only told that one is set — so leave the field empty to keep it, or choose **Remove the saved key**. Giving the address of another server without a key drops the saved one: a key belongs to the server it was given for. (A key saved before any address belongs to the first one.) |
 | **Model** | Sent as `model`. Empty sends none, for a server that has only one. |
-| **Picture size** | Sent as `size`, such as `1024x1024`. Empty sends none. The agent can ask for another size in a call. |
+| **Picture size** | Sent as `size`, such as `1024x1024`, each side a whole number from 64 to 8192 (or `auto`): the same sizes the [Images page](/guide/images) takes. Empty sends none. The agent can ask for another size in a call, within the same limits. A size saved before there were limits, outside them, counts as none. |
 | **Time limit** | How long the portal waits for one picture, in whole seconds: **300** (five minutes) unless you set another, from 30 to 3600. It is one limit for making and for [editing](#editing-a-picture), and counts the endpoint's answer and the picture's arrival together. A setup saved before there was a limit has the default. When it runs out, the error names the limit and this setting. A slow or local model, or an edit of several pictures, may need more. |
+| **Stable Diffusion extra settings** | A switch for the endpoint, for making and for editing, **off** by default. It says the endpoint is a **stable-diffusion.cpp** server, and lets the [Images page](/guide/images#stable-diffusion-settings) offer, under **Advanced**, and send, the settings only that server reads: a negative prompt, a seed, the sampler's steps and, for an edit, a strength and starting from noise. They go inside the prompt, in a `<sd_cpp_extra_args>` block, since the OpenAI image format has no fields for them. **Only stable-diffusion.cpp servers understand it:** any other endpoint takes the block as part of the description, so leave it off for those. Off, nothing of this kind is ever sent, however it came to be set. It is said of the endpoint, so it goes **off again when the generation address or the editing address moves to another server** (unless the same save switches it on), as **Several pictures per edit** does: the new server is not assumed to be stable-diffusion.cpp. Not for the agent's tools: they send none of these settings, on or off. Read at each request, so a change needs no reload. A setup saved without it has it off. While an address is typed and not saved, the switch waits for the save, as the other switches of the endpoint do. |
 
-The request is `{ model?, prompt, n: 1, size? }`. The answer's first picture is
+The request is `{ model?, prompt, n: 1, size?, output_format?, output_compression? }`, the fields
+the OpenAI image format has, and a field the page was not given is left out. The answer's first picture is
 taken from `data[0].b64_json`, or from `data[0].url` — an address, or a `data:`
 URL. Other request and answer shapes are not translated; an endpoint that
 speaks one needs a small adapter in front.
@@ -193,8 +204,8 @@ On the same page, under the generation settings:
 | **Editing key** | Sent as `Authorization: Bearer …` to the editing address, and nowhere else. **Empty:** the key above goes along when edits go to the same server as generation (an empty address, or the same scheme, name and port), and no key goes to another server: a key belongs to the server it was given for. A saved key is never shown again, and a new address of another server without a key drops it, as for the key above. |
 | **Editing model** | Sent as `model`. Empty sends none. It is never the model above, which may be one that only makes pictures. |
 | **Maximum picture size** | The most pixels a picture sent to be edited may have, as `WIDTHxHEIGHT` such as `2048x2048`: the box it must fit, whichever way up it is (a `1024x2048` picture fits a `2048x1024` limit). Empty is no limit, as an empty size sends none. It applies to the picture, to each of [several pictures](#several-pictures) and to a mask, and is what an endpoint with a limit on its input needs; an edit comes out about as large as the picture it is made from. A picture beyond it is not sent: see below. Read at each call, so a change needs no restart. A setup saved before there was one has none. |
-| **Image editing tool** | The switch. It needs an address, its own or generation's; like generation's it is decided when a chat loads, so a change reloads the idle open chats. |
-| **Several pictures per edit** | Off by default. Switch it on only if the editing endpoint takes more than one picture in a request. Then `edit_image` is given a list of pictures instead of one (see [several pictures](#several-pictures)). It is said of this endpoint: when edits move to another server (a new editing address, or a new generation address while editing has none of its own), it goes off again until you say the new one takes them. The tool's shape is decided when a chat loads, so a change reloads the idle open chats. |
+| **Image editing** | The switch of the feature, as **Image generation** is for making pictures: on the Images page, and for the `edit_image` tool being there at all (which chats get it is set in the tool lists). It needs an address, its own or generation's; like generation's it is decided when a chat loads, so a change reloads the idle open chats. |
+| **Several pictures per edit** | Off by default. Switch it on only if the editing endpoint takes more than one picture in a request. Then `edit_image` is given a list of pictures instead of one, and the [Images page](/guide/images#changing-a-picture) takes up to eight (see [several pictures](#several-pictures)). **While it is off, an edit uses exactly one picture** — if the agent or the Images page seems to use only one of several, this switch is the first thing to check — and both say so (below). It is said of this endpoint: when edits move to another server (a new editing address, or a new generation address while editing has none of its own), it goes off again until you say the new one takes them. The tool's shape is decided when a chat loads, so a change reloads the idle open chats. |
 
 The request is the OpenAI-style `images/edits` one: a `multipart/form-data` form
 with `image`, `prompt`, `n` (always 1), `model` when there is one, and `mask`
@@ -202,7 +213,7 @@ when a caller gives one. The picture is sent under a neutral name (`image.png`,
 with the type its bytes say), never under the name or the place it has in the
 chat's folder. With [several pictures](#several-pictures) switched on, a request
 of more than one picture has `image[]` once for each, in order (`image-1.png`,
-`image-2.jpg`, …); one picture is always sent as `image`, whatever the setting. No `size` is sent: what an edit comes out as is the endpoint's to
+`image-2.jpg`, …); one picture is always sent as `image`, whatever the setting. The tool sends no `size`, and the Images page only one that was set in its form: what an edit comes out as is the endpoint's to
 say, usually the picture's own, and the size set for generation need not be one
 an edit takes. The answer is read as a generation's is — the first picture from
 `data[0].b64_json` or `data[0].url`, with the same rules for where an address may
@@ -245,6 +256,14 @@ What was decided for it:
   cut:** the endpoint gets the picture that is in the folder or nothing, and
   where its own limit is lower it says so in its answer, which is passed on
   without the key.
+- **A picture attached to a message is not in the folder.** Pictures pasted,
+  dropped or picked in the message box go to the model with the message and are
+  kept beside the chat, not in its folder, so `edit_image` has no path for them.
+  The tool's description says so: the agent tells you and asks you to put the
+  picture in the chat's folder (the Files panel), or to change it on the
+  [Images page](/guide/images#changing-a-picture), rather than guess a path or
+  edit another picture. Taking attached pictures straight into an edit is not
+  built.
 - **A picture beyond the maximum size is refused, naming the limit.** With a
   **Maximum picture size** set, a picture (or mask) with more pixels than it is
   not sent: the portal reads its size from its header, makes no request, and
@@ -280,6 +299,15 @@ or fail on a list. So this is opt-in and off by default, with a switch of its ow
 under the editing settings (**Several pictures per edit**), and while it is off the
 tool is exactly what it was: `edit_image(path, prompt, title?)` with one picture.
 
+**While it is off** the agent is not left to guess: the tool's description says that the
+editing endpoint is set up to take one picture per edit, and tells it, when you want several
+pictures combined or used as references, to say so and to point you to this switch rather than
+make the edit with one of them as if it were all. A call that gives a list anyway (a chat that
+was loaded with several taken, a model that sends one) is refused before anything is sent, with
+the count and the name of the switch: `The editing endpoint is not set up to take several
+pictures, so none was sent (3 were given). …`. On the [Images page](/guide/images#changing-a-picture)
+the form works with one picture, says that this endpoint takes one, and links to this setting.
+
 Switched on, the tool is `edit_image(paths, prompt, title?)` instead: `paths` is a
 list of one to eight pictures of the chat's folder, and one path is a list of one.
 The agent is told how the pictures are known: **by their place in the list**. The
@@ -306,6 +334,11 @@ What was decided for it:
   it), at most 25 MB, sent under a neutral name, and never changed. The key stays
   in the portal and goes to the editing address only; the result is read, limited
   and written as for one picture.
+- **On the Images page, too.** The page's form sends the same request for the same pictures: up
+  to eight, in the order of the row, `image[]` once for each, with the same count, weight and
+  [maximum size](#editing-a-picture) checks per picture, and the same refusal for an endpoint that
+  takes one. It adds ways to put the pictures in: several files at once, a drop, a paste, and
+  ticking pictures of the gallery (see [Changing a picture](/guide/images#changing-a-picture)).
 - **A count and a weight.** At most **8 pictures**, and **50 MB together**: all of
   them are held in memory and go up within the time limit of the request. More
   is refused with the numbers, never scaled, cut or dropped to fit. The endpoint's
@@ -477,7 +510,7 @@ Understory **replaces** the agent's global memory, so the two do not both feed
 the agent: while the `understory` server is in `mcp.json` and not disabled,
 `MEMORY.md` in the agent's home is not handed to new chats, and the agent is
 told to use its memory tools instead. The file is not deleted, and it is marked
-as not read on the Agent page. Disabling the server in Settings → MCP counts as
+as not read on the Agents page. Disabling the server in Settings → MCP counts as
 off too.
 
 Only conversations with the primary user ever had `MEMORY.md`; a teammate's

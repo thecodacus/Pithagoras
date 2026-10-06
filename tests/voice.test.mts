@@ -1,18 +1,17 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, chmodSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import express from 'express';
-import { speechChunks, newSpeech } from '../web/src/voice.js';
-const dir = mkdtempSync(join(tmpdir(), 'pithagoras-voice-'));
-process.env.DATA_DIR = dir;
+import { speechChunks, samplesWav } from '../web/src/voice.js';
+import { inProcessHome } from "./helpers.mts";
+const dir = inProcessHome('pithagoras-voice-');
 // No Docker here, whatever this machine has: the managed service is tested on its own.
 process.env.DOCKER_SOCKET = join(dir, 'no-docker.sock');
 const { voiceRouter, pcmWav, wavPcm, validateConfig, connectManagedVoice } = await import('../server/src/api/voice.js');
 const { INPUT_LANGUAGES, CHATTERBOX_LANGUAGES } = await import('../server/src/voice-languages.js');
-const { getDb, getVoiceInstructions } = await import('../server/src/db.js');
-const { DEFAULT_VOICE_INSTRUCTIONS } = await import('../server/src/pi/voice-first.js');
+const { getDb, getSkipThinkingProviders, getVoiceInstructions } = await import('../server/src/db.js');
+const { DEFAULT_SKIP_THINKING_PROVIDERS, DEFAULT_VOICE_INSTRUCTIONS } = await import('../server/src/pi/voice-first.js');
 const upstream = express();
 let calls = 0;
 let busyAttempts = 0;
@@ -29,8 +28,8 @@ upstream.post('/inference', express.raw({ type: () => true }), (req, res) => {
 upstream.post('/v1/audio/speech', express.raw({ type: () => true }), (req, res) => {
   if (req.get('content-type') === 'application/json') {
     nativeRequest = JSON.parse(req.body.toString());
-    // Chatterbox has no streaming mode: it answers with one complete WAV.
-    if (nativeRequest.model === 'chatterbox')
+    // Chatterbox and Kokoro have no streaming mode: they answer with one complete WAV.
+    if (nativeRequest.model === 'chatterbox' || nativeRequest.model === 'kokoro')
       return res.set({ 'Content-Type': 'audio/wav' }).send(pcmWav(Buffer.from([0, 0, 255, 127])));
     return res.set({ 'Content-Type': 'audio/pcm', 'X-Sample-Rate': '24000' }).send(Buffer.from([0, 0, 255, 127]));
   }
@@ -54,9 +53,17 @@ const server = app.listen(0, '127.0.0.1'); await new Promise<void>(r => server.o
 const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/api`;
 after(async () => {
   await Promise.all([new Promise<void>(r => server.close(() => r())), new Promise<void>(r => backend.close(() => r()))]);
-  getDb().close(); rmSync(dir, { recursive: true, force: true });
+  getDb().close();
 });
 const settings = { enabled: true, whisperUrl: `http://127.0.0.1:${port}/inference`, breezeUrl: `http://127.0.0.1:${port}/v1/audio/speech`, instruction: 'A calm English voice.' };
+/** A reference clone in the voice library, made once, for the tests that need a voice with a recording. */
+let clone: string | undefined;
+const cloneVoice = async () => {
+  if (clone) return clone;
+  const { addVoice } = await import('../server/src/voice-presets.js');
+  const audio = Buffer.from(await samplesWav(new Float32Array(16000)).arrayBuffer()).toString('base64');
+  return (clone = addVoice({ name: 'Reference', kind: 'clone', instruction: 'A calm English voice.', transcript: 'Reference voice.', audio }).id);
+};
 test('voice is opt-in, checks session existence, and proxies actual multipart contracts', async () => {
   assert.equal((await (await fetch(`${base}/voice`)).json()).enabled, false);
   assert.equal((await fetch(`${base}/sessions/test/voice/speech`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"text":"hello"}' })).status, 409);
@@ -78,21 +85,8 @@ test('voice is opt-in, checks session existence, and proxies actual multipart co
   assert.equal(Buffer.from(await busy.arrayBuffer()).toString("ascii", 0, 4), "RIFF");
   assert.match(transcriptionBody, /name="language"\r\n\r\nauto\r\n/);
 });
-test('Aria sends the installed reference and transcript; missing references never fall back to a designed voice', async () => {
-  const save = await fetch(`${base}/voice`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...settings, voice: 'aria', cfgScale: 1 }) });
-  assert.equal(save.status, 200);
-  const speak = () => fetch(`${base}/sessions/test/voice/speech`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'Hello from Aria.' }) });
-  const before = calls;
-  assert.equal((await speak()).status, 502);
-  assert.equal(calls, before);
-  mkdirSync(join(dir, 'voices'));
-  writeFileSync(join(dir, 'voices/aria.wav'), pcmWav(Buffer.alloc(32)));
-  writeFileSync(join(dir, 'voices/aria.txt'), 'This is the exact reference transcript.');
-  assert.equal((await speak()).status, 200);
-  assert.match(speechBody, /name="ref_audio"; filename="aria.wav"/);
-  assert.match(speechBody, /name="ref_text"/);
-  assert.ok(speechBody.includes('name="cfg_scale"\r\n\r\n1\r\n'));
-  assert.match(speechBody, /This is the exact reference transcript\./);
+test('a voice that is not in the library is refused rather than spoken in another', () => {
+  assert.throws(() => validateConfig({ ...settings, voice: 'missing' }));
   assert.throws(() => validateConfig({ ...settings, voice: '../other' }));
 });
 test('selected input language is sent to Whisper and invalid languages are rejected', async () => {
@@ -119,15 +113,6 @@ test('spoken chunks omit code and preserve long prose without exceeding the API 
   assert.equal(speechChunks('a'.repeat(1600)).join(''), 'a'.repeat(1600));
 });
 
-test('history loading, partial replies and reconnect replay never repeat speech', () => {
-  const seen = new Set<string>();
-  const reply = (id: string, done: boolean) => ({ kind: 'assistant' as const, id, done, text: 'Hello.', thinking: 'Private reasoning' });
-  assert.deepEqual(newSpeech([reply('a1', true), reply('a30', false)], 20, seen), []);
-  assert.deepEqual(newSpeech([reply('a1', true), reply('a30', true)], 20, seen), ['Hello.']);
-  assert.deepEqual(newSpeech([reply('a5', true), reply('a30', true)], 20, seen), []);
-  assert.deepEqual(newSpeech([reply('a40', true)], 20, seen), ['Hello.']);
-});
-
 test('PCM reaches the client before synthesis completes, and cancelling disconnects upstream', async () => {
   const request = (signal?: AbortSignal) => fetch(`${base}/sessions/test/voice/speech`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'audio/pcm' }, body: JSON.stringify({ text: 'stream-test' }), signal });
   const response = await request();
@@ -147,11 +132,7 @@ test('PCM reaches the client before synthesis completes, and cancelling disconne
 });
 
 test('audio.cpp receives cloning context and exposes incremental playback', async () => {
-  await fetch(`${base}/voice`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...settings, runtime: 'audio-cpp', voice: 'aria', cfgScale: 1 }) });
-  // The earlier missing-reference test removes its fixture.
-  mkdirSync(join(dir, 'voices'), { recursive: true });
-  writeFileSync(join(dir, 'voices/aria.wav'), pcmWav(Buffer.alloc(32)));
-  writeFileSync(join(dir, 'voices/aria.txt'), 'Reference voice.');
+  await fetch(`${base}/voice`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...settings, runtime: 'audio-cpp', voice: await cloneVoice(), cfgScale: 1 }) });
   const response = await fetch(`${base}/sessions/test/voice/speech`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'audio/pcm' }, body: JSON.stringify({ text: 'Speak while generating.' }) });
   assert.equal(response.status, 200); assert.equal(response.headers.get('x-voice-streaming'), 'true');
   assert.equal(nativeRequest.reference_text, 'Reference voice.');
@@ -159,6 +140,35 @@ test('audio.cpp receives cloning context and exposes incremental playback', asyn
   assert.equal(nativeRequest.options.guidance_scale, '1'); await response.arrayBuffer();
 });
 
+
+test('voice mode speaks with the voice of the agent the chat is with', async () => {
+  const { createAgent, setVoice } = await import('../server/src/agents.js');
+  const { createSession } = await import('../server/src/db.js');
+  const saved = await fetch(`${base}/voice`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...settings, runtime: 'audio-cpp', voice: 'design' }) });
+  assert.equal(saved.status, 200);
+  const { addVoice } = await import('../server/src/voice-presets.js');
+  const { samplesWav } = await import('../web/src/voice.js');
+  const audio = Buffer.from(await samplesWav(new Float32Array(16000)).arrayBuffer()).toString('base64');
+  const clone = addVoice({ name: 'Herald voice', kind: 'clone', instruction: 'Warm.', transcript: 'Herald reference.', audio });
+  const agent = createAgent({ name: 'Herald' });
+  setVoice(agent.id, clone.id);
+  createSession({ id: 'herald-chat', title: 'Herald', workspace: agent.home, executor: 'host' });
+  nativeRequest = undefined;
+  const response = await fetch(`${base}/sessions/herald-chat/voice/speech`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'Hello.' }) });
+  assert.equal(response.status, 200);
+  await response.arrayBuffer();
+  assert.equal(nativeRequest.reference_text, 'Herald reference.', "the agent's clone, not the designed voice in the settings");
+
+  // A chat in a project speaks as the first agent, with its avatar and its voice.
+  setVoice('home', clone.id);
+  createSession({ id: 'project-chat', title: 'Project', workspace: join(dir, 'ws', 'site'), executor: 'host' });
+  nativeRequest = undefined;
+  const project = await fetch(`${base}/sessions/project-chat/voice/speech`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'Hello.' }) });
+  assert.equal(project.status, 200);
+  await project.arrayBuffer();
+  assert.equal(nativeRequest.reference_text, 'Herald reference.');
+  setVoice('home', '');
+});
 
 test('custom clone sends its saved recording, transcript and description to audio.cpp', async () => {
   const { addVoice } = await import('../server/src/voice-presets.js');
@@ -211,7 +221,7 @@ test('a changed voice description reaches the next phrase on both Breeze runtime
 });
 
 test('Chatterbox clones a reference, writes numbers out and returns one buffered phrase', async () => {
-  const chatterbox = { ...settings, runtime: 'chatterbox', voice: 'aria', language: 'de', exaggeration: 0.3, sttModel: 'qwen3-asr' };
+  const chatterbox = { ...settings, runtime: 'chatterbox', voice: await cloneVoice(), language: 'de', exaggeration: 0.3, sttModel: 'qwen3-asr' };
   assert.equal((await fetch(`${base}/voice`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(chatterbox) })).status, 200);
   const response = await fetch(`${base}/sessions/test/voice/speech`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'audio/pcm' }, body: JSON.stringify({ text: 'Der Build nutzt 4070 Megabyte.' }) });
   assert.equal(response.status, 200);
@@ -239,6 +249,41 @@ test('Chatterbox clones a reference, writes numbers out and returns one buffered
   assert.equal(validateConfig({ ...chatterbox, language: 'nl' }).language, 'nl');
   assert.throws(() => validateConfig({ ...settings, sttModel: 'a model' }));
   assert.throws(() => validateConfig({ ...settings, exaggeration: 5 }));
+});
+
+test('Kokoro speaks with a voice of its own, at the speed chosen, and an agent can have one of its voices', async () => {
+  const { createAgent, setVoice } = await import('../server/src/agents.js');
+  const { createSession } = await import('../server/src/db.js');
+  const kokoro = { ...settings, runtime: 'kokoro', voice: await cloneVoice(), kokoroVoice: 'bf_emma', speed: 1.15 };
+  assert.equal((await fetch(`${base}/voice`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(kokoro) })).status, 200);
+  const speak = (session: string) => fetch(`${base}/sessions/${session}/voice/speech`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'audio/pcm' }, body: JSON.stringify({ text: 'It costs 12 dollars.' }) });
+  const response = await speak('test');
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('x-sample-rate'), '24000');
+  assert.equal(response.headers.get('x-voice-streaming'), null);
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), new Uint8Array([0, 0, 255, 127]));
+  // The voice names the language, and the library voice saved for the other engines is not sent.
+  assert.deepEqual(nativeRequest, { model: 'kokoro', input: 'It costs 12 dollars.', voice: 'bf_emma', speed: 1.15, response_format: 'wav', options: { seed: '42' } });
+  // An agent with one of Kokoro's voices speaks with it; one with a library voice speaks as in the settings.
+  const agent = createAgent({ name: 'Kokoro agent' });
+  setVoice(agent.id, 'am_onyx');
+  createSession({ id: 'kokoro-chat', title: 'Kokoro', workspace: agent.home, executor: 'host' });
+  await (await speak('kokoro-chat')).arrayBuffer();
+  assert.equal(nativeRequest.voice, 'am_onyx');
+  setVoice(agent.id, await cloneVoice());
+  await (await speak('kokoro-chat')).arrayBuffer();
+  assert.equal(nativeRequest.voice, 'bf_emma');
+  // And back on another engine, an agent's Kokoro voice is not taken for a library one.
+  setVoice(agent.id, 'am_onyx');
+  assert.equal((await fetch(`${base}/voice`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...kokoro, runtime: 'audio-cpp' }) })).status, 200);
+  await (await speak('kokoro-chat')).arrayBuffer();
+  assert.equal(nativeRequest.model, 'breeze');
+  assert.equal(nativeRequest.reference_text, 'Reference voice.');
+  assert.throws(() => setVoice(agent.id, 'xx_nobody'), /not in the voice library/);
+  // Only its packaged voices, without the Japanese ones it cannot read, and the speeds the page offers.
+  assert.throws(() => validateConfig({ ...kokoro, kokoroVoice: 'jf_alpha' }), /Kokoro's voices/);
+  assert.throws(() => validateConfig({ ...kokoro, speed: 3 }), /speaking speed/);
+  assert.deepEqual([validateConfig(settings).kokoroVoice, validateConfig(settings).speed], ['af_heart', 1]);
 });
 
 test('VAD settings preserve defaults, accept tuning and reject invalid thresholds', () => {
@@ -275,7 +320,7 @@ test('a WAV whose data chunk carries a placeholder size keeps its samples', () =
 });
 
 test('connecting the managed voice drops a recognition model from another runtime', async () => {
-  const saved = await fetch(`${base}/voice`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...settings, runtime: 'chatterbox', voice: 'aria', language: 'de', sttModel: 'qwen3-asr' }) });
+  const saved = await fetch(`${base}/voice`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...settings, runtime: 'chatterbox', voice: await cloneVoice(), language: 'de', sttModel: 'qwen3-asr' }) });
   assert.equal(saved.status, 200);
   // Whisper.cpp is sent this field verbatim; another runtime's model id would
   // reach it in the multipart body of every transcription.
@@ -284,7 +329,8 @@ test('connecting the managed voice drops a recognition model from another runtim
 });
 
 test('connecting the managed voice points the settings at the engines it was built with', async () => {
-  const put = (patch: object) => fetch(`${base}/voice`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...settings, voice: 'aria', ...patch }) });
+  const voice = await cloneVoice();
+  const put = (patch: object) => fetch(`${base}/voice`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...settings, voice, ...patch }) });
   assert.equal((await put({ language: 'auto' })).status, 200);
   // Whisper: its own endpoint, and no model field in the request.
   const whisper = connectManagedVoice({ tts: 'breeze', asr: 'whisper', asrModel: 'small' });
@@ -302,6 +348,14 @@ test('connecting the managed voice points the settings at the engines it was bui
   assert.equal(connectManagedVoice({ tts: 'chatterbox', asr: 'whisper', asrModel: 'base' }).language, 'de');
   // Back to Breeze keeps the language and drops Chatterbox's runtime.
   assert.deepEqual([connectManagedVoice().runtime, connectManagedVoice().language], ['audio-cpp', 'de']);
+  // Kokoro reads the language from its voice: the recognition language stays as it was.
+  const kokoro = connectManagedVoice({ tts: 'kokoro', asr: 'whisper', asrModel: 'base' });
+  assert.deepEqual([kokoro.runtime, kokoro.language, kokoro.breezeUrl], ['kokoro', 'de', 'http://127.0.0.1:7862/v1/audio/speech']);
+  assert.equal((await (await fetch(`${base}/voice`)).json()).managed, true);
+  // Put on the CPU it is spoken to in the CPU process, which is managed just the same.
+  const onCpu = connectManagedVoice({ tts: 'kokoro', ttsDevice: 'cpu', asr: 'qwen3-asr', asrModel: '0.6b' });
+  assert.deepEqual([onCpu.runtime, onCpu.breezeUrl, onCpu.whisperUrl], ['kokoro', 'http://127.0.0.1:7863/v1/audio/speech', 'http://127.0.0.1:7863/v1/audio/transcriptions']);
+  assert.equal((await (await fetch(`${base}/voice`)).json()).managed, true);
 });
 
 test('recognition alone: nothing is spoken, and dictation still has its transcription', async () => {
@@ -357,7 +411,7 @@ test('without Docker an uninstall says the same as an install, and leaves the se
 
 test('install takes the engines to build, and refuses a choice the installer does not make', async () => {
   const post = (body: object) => fetch(`${base}/voice/install`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  for (const body of [{ tts: 'kokoro', asr: 'whisper', asrModel: 'base' }, { tts: 'breeze', asr: 'whisper', asrModel: '1.7b' }, { tts: 'breeze' }, { asr: 'qwen3-asr', asrModel: '0.6b' }]) {
+  for (const body of [{ tts: 'piper', asr: 'whisper', asrModel: 'base' }, { tts: 'breeze', asr: 'whisper', asrModel: '1.7b' }, { tts: 'breeze' }, { asr: 'qwen3-asr', asrModel: '0.6b' }]) {
     const answer = await post(body);
     assert.equal(answer.status, 400, JSON.stringify(body));
     assert.match((await answer.json()).error, /Choose a supported speech/);
@@ -381,11 +435,11 @@ test('the hardware check reports the GPUs and what it would suggest, and degrade
   const none = await fetch(`${base}/voice/hardware`);
   assert.equal(none.status, 200);
   const empty = await none.json();
-  // No tool and no Docker is no GPU, said plainly: what is suggested is recognition alone on the CPU, sized to the host.
+  // No tool and no Docker is no GPU, said plainly: what is suggested is Kokoro and recognition on the CPU, sized to the host.
   assert.deepEqual([empty.gpus, empty.source, empty.selected, empty.checked, empty.cpuOnly], [[], 'none', null, true, true]);
   assert.equal(empty.error, 'host: nvidia-smi was not found; docker: no GPU available');
   assert.deepEqual(empty.host, { totalMiB: 16384, freeMiB: 8192, threads: 8 });
-  assert.deepEqual(empty.suggestion, { tts: 'none', asr: 'qwen3-asr', asrModel: '0.6b' });
+  assert.deepEqual(empty.suggestion, { tts: 'kokoro', ttsDevice: 'cpu', asr: 'qwen3-asr', asrModel: '0.6b' });
   delete process.env.NVIDIA_SMI;
 });
 
@@ -424,6 +478,32 @@ test('speaking instructions: the built-in text is offered, a custom one is saved
   assert.equal((await put('x'.repeat(8000))).status, 200);
   assert.equal(getVoiceInstructions(), 'x'.repeat(8000));
   await put('');
+});
+test('the providers that skip thinking on the first spoken call: the default list is offered, another is saved, and the default sent back is not', async () => {
+  const put = (skipThinkingProviders: unknown) => fetch(`${base}/voice`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...settings, skipThinkingProviders }) });
+  const get = async () => (await fetch(`${base}/voice`)).json();
+  await put(undefined);
+  let shown = await get();
+  assert.deepEqual(shown.skipThinkingProviders, [...DEFAULT_SKIP_THINKING_PROVIDERS]);
+  assert.deepEqual(shown.defaultSkipThinkingProviders, [...DEFAULT_SKIP_THINKING_PROVIDERS]);
+  assert.equal(getSkipThinkingProviders(), undefined);
+  // Trimmed, each once, and what the first call then reads.
+  assert.equal((await put([' llama-swap ', 'my-gateway', 'llama-swap', ''])).status, 200);
+  assert.deepEqual(getSkipThinkingProviders(), ['llama-swap', 'my-gateway']);
+  shown = await get();
+  assert.deepEqual(shown.skipThinkingProviders, ['llama-swap', 'my-gateway']);
+  // Kept when the managed voice saves the settings again.
+  assert.deepEqual(connectManagedVoice().skipThinkingProviders, ['llama-swap', 'my-gateway']);
+  // Empty is a choice: thinking stays on everywhere.
+  await put([]);
+  assert.deepEqual(getSkipThinkingProviders(), []);
+  assert.deepEqual((await get()).skipThinkingProviders, []);
+  // The default list sent back, in any order, is not saved: it then follows the portal's updates.
+  await put([...DEFAULT_SKIP_THINKING_PROVIDERS].reverse());
+  assert.equal(getSkipThinkingProviders(), undefined);
+  // What is not a list of provider names.
+  for (const bad of ['llama-swap', [42], ['two words'], ['a/b'], Array(51).fill('x')]) assert.equal((await put(bad)).status, 400, JSON.stringify(bad).slice(0, 40));
+  await put(undefined);
 });
 test('VOICE_RESPONSE_INSTRUCTIONS=false is shown to the page, and leaves a saved text alone', async () => {
   const previous = process.env.VOICE_RESPONSE_INSTRUCTIONS;

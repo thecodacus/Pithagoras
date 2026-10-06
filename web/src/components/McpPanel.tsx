@@ -1,5 +1,7 @@
-import { cloneElement, isValidElement, useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Select } from "./Select";
+import { confirmDialog } from "./ConfirmDialog";
+import { useUnsavedDraft } from "./Modal";
 import {
   LuChevronLeft,
   LuChevronRight,
@@ -16,17 +18,17 @@ import {
   LuTriangleAlert,
 } from "react-icons/lu";
 import { api, type McpConfigView, type McpServerEntry, type McpServerView } from "../api";
-import { t, tx } from "../i18n";
+import { Field, LoadFailed, Segments, btnCls, codeAreaCls, inputCls, primaryCls, primarySmCls } from "./SettingsUi";
+import { msg, t, tx } from "../i18n";
 
-const inputCls =
-  "w-full rounded-lg border border-line bg-raised/60 px-3 py-2 text-sm outline-none transition placeholder:text-fg-faint focus:border-accent/60";
-const btnCls =
-  "inline-flex items-center gap-1.5 rounded-lg bg-fg/5 px-3 py-2 text-sm text-fg transition hover:bg-fg/10 disabled:opacity-40";
-const primaryCls =
-  "inline-flex items-center gap-1.5 rounded-lg bg-accent/12 px-3 py-2 text-sm text-accent ring-1 ring-inset ring-accent/25 transition hover:bg-accent/20 disabled:opacity-40";
-const monoCls = `${inputCls} font-mono text-xs leading-relaxed`;
 
 type Transport = "stdio" | "http" | "socket";
+
+const TRANSPORTS: { id: Transport; label: string }[] = [
+  { id: "stdio", label: msg("Local process") },
+  { id: "http", label: "HTTP" },
+  { id: "socket", label: msg("Unix socket") },
+];
 
 /** Lines in, list out — blank lines dropped. Used for args, filters and pairs. */
 const lines = (text: string): string[] =>
@@ -62,6 +64,7 @@ function textToPairs(text: string, sep: string): Record<string, string> | undefi
 export function McpPanel({ onError }: { onError: (e: string) => void }) {
   const [view, setView] = useState<McpConfigView | null>(null);
   const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ name: string | null } | null>(null);
   const [importing, setImporting] = useState(false);
   const [installing, setInstalling] = useState(false);
@@ -70,8 +73,11 @@ export function McpPanel({ onError }: { onError: (e: string) => void }) {
   const load = async () => {
     try {
       setView(await api.mcp());
+      setFailed(null);
     } catch (e) {
-      onError((e as Error).message);
+      // With nothing read yet, the page says so itself, with a way to try again; the banner is for a refresh.
+      if (view) onError((e as Error).message);
+      else setFailed((e as Error).message);
     } finally {
       setLoading(false);
     }
@@ -81,15 +87,19 @@ export function McpPanel({ onError }: { onError: (e: string) => void }) {
     load();
   }, []);
 
+  /** True when it went through. */
   const act = async (fn: () => Promise<unknown>) => {
     try {
       await fn();
       await load();
+      return true;
     } catch (e) {
       onError((e as Error).message);
+      return false;
     }
   };
 
+  if (!view && failed) return <LoadFailed error={failed} onRetry={load} />;
   if (loading || !view) {
     return (
       <p className="flex items-center gap-2 text-sm text-fg-subtle">
@@ -103,6 +113,7 @@ export function McpPanel({ onError }: { onError: (e: string) => void }) {
     return (
       <ServerForm
         server={existing}
+        taken={view.servers.filter((s) => s.name !== existing?.name).map((s) => s.name)}
         onBack={() => setEditing(null)}
         onSave={async (name, entry) => {
           await api.saveMcpServer(name, entry, existing?.name);
@@ -153,7 +164,7 @@ export function McpPanel({ onError }: { onError: (e: string) => void }) {
       )}
 
       {view.parseError && (
-        <section className="mb-6 rounded-xl border border-danger/30 bg-danger/10 p-3">
+        <section role="alert" className="mb-6 rounded-xl border border-danger/30 bg-danger/10 p-3">
           <div className="flex items-start gap-2">
             <LuCircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-danger" />
             <div className="min-w-0">
@@ -219,7 +230,11 @@ export function McpPanel({ onError }: { onError: (e: string) => void }) {
                     api.saveMcpServer(s.name, { ...s.entry, disabled: !s.disabled }, s.name),
                   )
                 }
-                onDelete={() => act(() => api.deleteMcpServer(s.name))}
+                onDelete={async () => {
+                  // It holds the server's environment, headers and anything written by hand, and a tap beside the On box is easy to make.
+                  if (!(await confirmDialog({ title: t("Remove {name}?", { name: s.name }), message: t("Its entry is deleted from the MCP file, with its environment, headers and anything added by hand. There is no undo."), confirmLabel: t("Remove"), danger: true, deletes: true }))) return;
+                  await act(() => api.deleteMcpServer(s.name));
+                }}
               />
             ))}
           </ul>
@@ -294,13 +309,14 @@ function ServerRow({
         {t("On")}
       </label>
       <button
-        className="shrink-0 rounded-lg p-1.5 text-fg-faint opacity-0 transition hover:bg-danger/10 hover:text-danger group-hover:opacity-100 [@media(hover:none)]:opacity-100"
+        className="shrink-0 rounded-lg p-1.5 text-fg-faint opacity-0 transition hover:bg-danger/10 hover:text-danger focus:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100"
         title={t("Remove")}
+        aria-label={t("Remove {name}", { name: server.name })}
         onClick={onDelete}
       >
         <LuTrash2 className="h-4 w-4" />
       </button>
-      <button className="shrink-0 text-fg-faint" onClick={onOpen} title={t("Edit")}>
+      <button className="shrink-0 text-fg-faint" onClick={onOpen} title={t("Edit")} aria-label={t("Edit {name}", { name: server.name })}>
         <LuChevronRight className="h-4 w-4" />
       </button>
     </li>
@@ -319,6 +335,8 @@ function ImportBox({
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ added: string[]; skipped: { name: string; reason: string }[] } | null>(null);
+  // The text is cleared once something was added; what stays after an import (every server skipped) is the person's to go on with.
+  useUnsavedDraft(!busy && text.trim() !== "");
 
   return (
     <div className="mb-3 rounded-xl border border-line bg-raised/40 p-3">
@@ -326,9 +344,10 @@ function ImportBox({
         {tx("Accepts a whole config, a bare {key} map, or a single server object.", { key: <span className="font-mono">mcpServers</span> })}
       </p>
       <textarea
-        className={monoCls}
+        className={codeAreaCls}
         rows={7}
         spellCheck={false}
+        aria-label={t("Server JSON")}
         placeholder={"{\n  \"mcpServers\": {\n    \"filesystem\": {\n      \"command\": \"npx\",\n      \"args\": [\"-y\", \"@modelcontextprotocol/server-filesystem\", \"/data\"]\n    }\n  }\n}"}
         value={text}
         onChange={(ev) => setText(ev.target.value)}
@@ -378,11 +397,14 @@ function ImportBox({
 
 function ServerForm({
   server,
+  taken,
   onBack,
   onSave,
   onError,
 }: {
   server?: McpServerView;
+  /** The names of the other servers: a new or renamed one on any of them would replace it. */
+  taken: string[];
   onBack: () => void;
   onSave: (name: string, entry: McpServerEntry) => Promise<void>;
   onError: (e: string) => void;
@@ -408,9 +430,15 @@ function ServerForm({
   const [debug, setDebug] = useState(e.debug === true);
   const [disabled, setDisabled] = useState(e.disabled === true);
   const [saving, setSaving] = useState(false);
+  const nameTaken = taken.includes(name.trim());
+  // Whatever it was opened with is not a draft; the first look at the fields is what they are compared with.
+  const fields = JSON.stringify([name, transport, command, args, env, cwd, url, headers, auth, tokenEnv, socket, lifecycle, includeTools, excludeTools, directTools, debug, disabled]);
+  const opened = useRef(fields);
+  useUnsavedDraft(!saving && fields !== opened.current);
 
   const submit = async () => {
     if (!name.trim()) return onError(t("Give the server a name"));
+    if (nameTaken) return onError(t("A server called {name} already exists", { name: name.trim() }));
     // Start from the stored entry so fields this form does not show — oauth
     // blocks, tracing, timeouts set by hand — survive an edit here.
     const next: McpServerEntry = { ...e };
@@ -466,9 +494,10 @@ function ServerForm({
       </button>
 
       <div className="space-y-4">
-        <Field label={t("Name")} hint={t("How its tools are prefixed, so keep it short")}>
+        <Field label={t("Name")} hint={nameTaken ? <span className="text-danger">{t("A server called {name} already exists", { name: name.trim() })}</span> : t("How its tools are prefixed, so keep it short")}>
           <input
             className={inputCls}
+            aria-invalid={nameTaken || undefined}
             value={name}
             placeholder="filesystem"
             onChange={(ev) => setName(ev.target.value)}
@@ -476,21 +505,7 @@ function ServerForm({
         </Field>
 
         <Field label={t("Transport")}>
-          <div className="flex gap-2">
-            {(["stdio", "http", "socket"] as Transport[]).map((kind) => (
-              <button
-                key={kind}
-                onClick={() => setTransport(kind)}
-                className={`rounded-lg px-3 py-2 text-sm transition ${
-                  transport === kind
-                    ? "bg-accent/12 text-accent ring-1 ring-inset ring-accent/25"
-                    : "bg-fg/5 text-fg-muted hover:bg-fg/10"
-                }`}
-              >
-                {kind === "stdio" ? t("Local process") : kind === "http" ? "HTTP" : t("Unix socket")}
-              </button>
-            ))}
-          </div>
+          <Segments label={t("Transport")} size="md" className="flex gap-2" value={transport} options={TRANSPORTS} onChange={setTransport} />
         </Field>
 
         {transport === "stdio" && (
@@ -505,7 +520,7 @@ function ServerForm({
             </Field>
             <Field label={t("Arguments")} hint={t("One per line")}>
               <textarea
-                className={monoCls}
+                className={codeAreaCls}
                 rows={3}
                 spellCheck={false}
                 value={args}
@@ -515,7 +530,7 @@ function ServerForm({
             </Field>
             <Field label={t("Environment")} hint={t("KEY=value per line; ${VAR} is expanded at launch")}>
               <textarea
-                className={monoCls}
+                className={codeAreaCls}
                 rows={2}
                 spellCheck={false}
                 value={env}
@@ -541,7 +556,7 @@ function ServerForm({
             </Field>
             <Field label={t("Headers")} hint={t("Name: value per line")}>
               <textarea
-                className={monoCls}
+                className={codeAreaCls}
                 rows={2}
                 spellCheck={false}
                 value={headers}
@@ -604,7 +619,7 @@ function ServerForm({
 
         <Field label={t("Only these tools")} hint={t("One name or glob per line; leave empty for all")}>
           <textarea
-            className={monoCls}
+            className={codeAreaCls}
             rows={2}
             spellCheck={false}
             value={includeTools}
@@ -613,7 +628,7 @@ function ServerForm({
         </Field>
         <Field label={t("Except these tools")} hint={t("One name or glob per line")}>
           <textarea
-            className={monoCls}
+            className={codeAreaCls}
             rows={2}
             spellCheck={false}
             value={excludeTools}
@@ -656,25 +671,35 @@ function GlobalSettings({
   onSave,
 }: {
   settings: Record<string, unknown>;
-  onSave: (next: Record<string, unknown>) => void;
+  /** True when it was saved: what is not stays to be saved again. */
+  onSave: (next: Record<string, unknown>) => Promise<boolean>;
 }) {
+  const shown = (v: unknown) => (v === undefined ? "" : String(v));
   const [prefix, setPrefix] = useState(String(settings.toolPrefix ?? "server"));
-  const [idle, setIdle] = useState(settings.idleTimeout === undefined ? "" : String(settings.idleTimeout));
-  const [timeout, setTimeout] = useState(
-    settings.requestTimeoutMs === undefined ? "" : String(settings.requestTimeoutMs),
-  );
+  const [idle, setIdle] = useState(shown(settings.idleTimeout));
+  const [request, setRequest] = useState(shown(settings.requestTimeoutMs));
   const [dirty, setDirty] = useState(false);
+  useUnsavedDraft(dirty);
 
-  const save = () => {
+  // The fields follow the file when it changes elsewhere (the raw editor, another
+  // window), unless something is typed in them: that is saved, or not, as it is.
+  const loaded = JSON.stringify(settings);
+  useEffect(() => {
+    if (dirty) return;
+    setPrefix(String(settings.toolPrefix ?? "server"));
+    setIdle(shown(settings.idleTimeout));
+    setRequest(shown(settings.requestTimeoutMs));
+  }, [loaded]);
+
+  const save = async () => {
     const next: Record<string, unknown> = { ...settings };
     if (prefix === "server") delete next.toolPrefix;
     else next.toolPrefix = prefix;
     if (idle.trim() === "") delete next.idleTimeout;
     else next.idleTimeout = Number(idle);
-    if (timeout.trim() === "") delete next.requestTimeoutMs;
-    else next.requestTimeoutMs = Number(timeout);
-    onSave(next);
-    setDirty(false);
+    if (request.trim() === "") delete next.requestTimeoutMs;
+    else next.requestTimeoutMs = Number(request);
+    if (await onSave(next)) setDirty(false);
   };
 
   const track = <T,>(set: (v: T) => void) => (v: T) => {
@@ -688,7 +713,7 @@ function GlobalSettings({
         <LuPlug className="h-3.5 w-3.5 text-fg-faint" />
         <h3 className="text-sm font-medium text-fg">{t("Adapter settings")}</h3>
         {dirty && (
-          <button className={`${primaryCls} ml-auto py-1.5`} onClick={save}>
+          <button className={`${primarySmCls} ml-auto`} onClick={save}>
             {t("Save")}
           </button>
         )}
@@ -719,10 +744,10 @@ function GlobalSettings({
         <Field label={t("Request timeout")} hint={t("Milliseconds")}>
           <input
             className={inputCls}
-            value={timeout}
+            value={request}
             placeholder={t("default")}
             inputMode="numeric"
-            onChange={(ev) => track(setTimeout)(ev.target.value)}
+            onChange={(ev) => track(setRequest)(ev.target.value)}
           />
         </Field>
       </div>
@@ -736,18 +761,30 @@ function RawEditor({
   onError,
 }: {
   initial: string;
-  onSaved: () => void;
+  onSaved: () => Promise<void>;
   onError: (e: string) => void;
 }) {
-  const [text, setText] = useState(initial || '{\n  "mcpServers": {}\n}\n');
+  const seeded = (file: string) => file || '{\n  "mcpServers": {}\n}\n';
+  const [text, setText] = useState(seeded(initial));
+  /** What `text` started from: it is changed once it is not that. */
+  const [from, setFrom] = useState(seeded(initial));
   const [saving, setSaving] = useState(false);
+  useUnsavedDraft(!saving && text !== from);
+
+  // The file as it is now, unless the text has been typed in: a toggle in the list
+  // above rewrites the file, and saving the old text would undo it.
+  useEffect(() => {
+    if (text === from) setText(seeded(initial));
+    setFrom(seeded(initial));
+  }, [initial]);
 
   return (
     <div className="mt-2">
       <textarea
-        className={monoCls}
+        className={codeAreaCls}
         rows={14}
         spellCheck={false}
+        aria-label="mcp.json"
         value={text}
         onChange={(ev) => setText(ev.target.value)}
       />
@@ -758,7 +795,8 @@ function RawEditor({
           setSaving(true);
           try {
             await api.saveMcpRaw(text);
-            onSaved();
+            setFrom(text);
+            await onSaved();
           } catch (e) {
             onError((e as Error).message);
           } finally {
@@ -770,36 +808,6 @@ function RawEditor({
         {t("Save file")}
       </button>
     </div>
-  );
-}
-
-function Field({
-  label,
-  hint,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  children: React.ReactNode;
-}) {
-  // A Select is a button: inside a label, a click anywhere on the label —
-  // the hint too — is passed on to it and opens the list, or shuts and opens
-  // it again. It is named by its own aria-label instead.
-  if (isValidElement<{ "aria-label"?: string }>(children) && children.type === Select) {
-    return (
-      <div className="block">
-        <span className="mb-1 block text-xs text-fg-subtle">{label}</span>
-        {cloneElement(children, { "aria-label": label })}
-        {hint && <span className="mt-1 block text-xs text-fg-faint">{hint}</span>}
-      </div>
-    );
-  }
-  return (
-    <label className="block">
-      <span className="mb-1 block text-xs text-fg-subtle">{label}</span>
-      {children}
-      {hint && <span className="mt-1 block text-xs text-fg-faint">{hint}</span>}
-    </label>
   );
 }
 

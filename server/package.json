@@ -1,10 +1,11 @@
 {
   "name": "@pithagoras/server",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "node --test test/*.test.mjs",
+    "test": "node --test --test-timeout=120000 test/*.test.mjs",
     "dev": "tsx watch src/index.ts"
   },
   "dependencies": {
@@ -13,6 +14,7 @@
     "cookie-parser": "^1.4.7",
     "express": "^5.0.1",
     "nanoid": "^5.0.9",
+    "playwright-core": "1.63.0",
     "typebox": "^1.1.38"
   },
   "devDependencies": {

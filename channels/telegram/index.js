@@ -145,6 +145,17 @@ export async function start(ctx) {
 
           const [promptId, index] = data.split(":");
           const pending = waiting.get(promptId);
+          // Anybody in a group can press a button: only the person it was asked
+          // of, or the primary user, may answer. The question stays open for them.
+          if (pending && !pending.canAnswer(String(q.from?.id))) {
+            await call(
+              token,
+              "answerCallbackQuery",
+              { callback_query_id: q.id, text: "This question is not for you to answer." },
+              ctx.signal
+            ).catch(() => {});
+            continue;
+          }
           await call(token, "answerCallbackQuery", { callback_query_id: q.id }, ctx.signal).catch(
             () => {}
           );
@@ -230,6 +241,7 @@ export async function start(ctx) {
           options,
           question: request.question,
           confirm: request.method === "confirm",
+          canAnswer: request.canAnswer ?? (() => true),
           resolve,
         });
         // The portal gives up on an unanswered dialog too; settling here as well

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   LuCheck,
   LuChevronLeft,
@@ -13,17 +13,14 @@ import {
   LuTriangleAlert,
   LuWrench,
 } from "react-icons/lu";
-import { api, type FoundSkill, type Skill, type SkillDiagnostic } from "../api";
+import { api, type FoundSkill, type Skill, type SkillDiagnostic, type SkippedSkill } from "../api";
+import { LoadFailed, Switch, btnCls, codeAreaCls, inputCls, primaryCls } from "./SettingsUi";
 import { confirmDialog } from "./ConfirmDialog";
+import { useUnsavedDraft } from "./Modal";
 import { isEnter } from "../shortcuts";
 import { t, tp, tx } from "../i18n";
+import { useFlash } from "../use-flash";
 
-const inputCls =
-  "w-full rounded-lg border border-line bg-raised/60 px-3 py-2 text-sm outline-none transition placeholder:text-fg-faint focus:border-accent/60";
-const btnCls =
-  "inline-flex items-center gap-1.5 rounded-lg bg-fg/5 px-3 py-2 text-sm text-fg transition hover:bg-fg/10 disabled:opacity-40";
-const primaryCls =
-  "inline-flex items-center gap-1.5 rounded-lg bg-accent/12 px-3 py-2 text-sm text-accent ring-1 ring-inset ring-accent/25 transition hover:bg-accent/20 disabled:opacity-40";
 
 /**
  * Skills the agent can reach for.
@@ -38,6 +35,9 @@ export function SkillsPanel({ onError }: { onError: (e: string) => void }) {
   const [diagnostics, setDiagnostics] = useState<SkillDiagnostic[]>([]);
   const [root, setRoot] = useState("");
   const [loading, setLoading] = useState(true);
+  // Why the first read failed: "None yet" would say there are no skills.
+  const [failed, setFailed] = useState<string | null>(null);
+  const had = useRef(false);
   const [openName, setOpenName] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -45,11 +45,15 @@ export function SkillsPanel({ onError }: { onError: (e: string) => void }) {
   const load = async () => {
     try {
       const r = await api.skills();
+      had.current = true;
+      setFailed(null);
       setSkills(r.skills);
       setDiagnostics(r.diagnostics ?? []);
       setRoot(r.root);
     } catch (e) {
-      onError((e as Error).message);
+      // A refresh of what is shown goes to the banner; with nothing read yet the page says it itself.
+      if (had.current) onError((e as Error).message);
+      else setFailed((e as Error).message);
     } finally {
       setLoading(false);
     }
@@ -124,6 +128,7 @@ export function SkillsPanel({ onError }: { onError: (e: string) => void }) {
           <ImportSkills
             onCancel={() => setImporting(false)}
             onError={onError}
+            onReload={load}
             onDone={async () => {
               setImporting(false);
               await load();
@@ -145,6 +150,10 @@ export function SkillsPanel({ onError }: { onError: (e: string) => void }) {
 
         {loading ? (
           <p className="mt-2 text-sm text-fg-subtle">{t("Loading…")}</p>
+        ) : failed && !had.current ? (
+          <div className="mt-2">
+            <LoadFailed error={failed} onRetry={load} />
+          </div>
         ) : mine.length === 0 ? (
           <div className="mt-2 rounded-xl border border-dashed border-line px-3 py-6 text-center text-sm text-fg-subtle">
             {t("None yet.")}
@@ -243,19 +252,7 @@ function SkillRow({
       </button>
 
       {onToggle ? (
-        <button
-          onClick={() => onToggle(!s.enabled)}
-          title={s.enabled ? t("Disable — pi stops loading it") : t("Enable")}
-          className={`relative h-5 w-9 shrink-0 rounded-full transition ${
-            s.enabled ? "bg-accent" : "bg-raised"
-          }`}
-        >
-          <span
-            className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${
-              s.enabled ? "left-[1.125rem]" : "left-0.5"
-            }`}
-          />
-        </button>
+        <Switch on={s.enabled} onChange={onToggle} label={s.name} title={s.enabled ? t("Disable — pi stops loading it") : t("Enable")} />
       ) : (
         <LuChevronRight className="h-4 w-4 shrink-0 text-fg-faint" />
       )}
@@ -275,6 +272,7 @@ function NewSkill({
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [busy, setBusy] = useState(false);
+  useUnsavedDraft(!busy && (!!name.trim() || !!description.trim()));
 
   const create = async () => {
     setBusy(true);
@@ -339,7 +337,8 @@ function SkillDetail({
 }) {
   const [draft, setDraft] = useState(s.content);
   const [busy, setBusy] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [saved, flashSaved] = useFlash();
+  useUnsavedDraft(draft !== s.content);
 
   useEffect(() => setDraft(s.content), [s.name, s.content]);
 
@@ -382,20 +381,14 @@ function SkillDetail({
           <p className="mt-0.5 truncate font-mono text-[10px] text-fg-faint">{s.path}</p>
         </div>
         {s.editable && (
-          <button
-            onClick={() => act(() => api.setSkillEnabled(s.name, !s.enabled))}
+          <Switch
+            on={s.enabled}
+            onChange={() => act(() => api.setSkillEnabled(s.name, !s.enabled))}
             disabled={busy}
+            label={s.name}
             title={s.enabled ? t("Disable") : t("Enable")}
-            className={`relative mt-1 h-5 w-9 shrink-0 rounded-full transition disabled:opacity-40 ${
-              s.enabled ? "bg-accent" : "bg-raised"
-            }`}
-          >
-            <span
-              className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${
-                s.enabled ? "left-[1.125rem]" : "left-0.5"
-              }`}
-            />
-          </button>
+            className="mt-1"
+          />
         )}
       </div>
 
@@ -410,9 +403,10 @@ function SkillDetail({
           <textarea
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
+            aria-label={t("The skill's file")}
             rows={18}
             spellCheck={false}
-            className="w-full resize-y rounded-lg border border-line bg-raised/60 px-3 py-2 font-mono text-xs leading-relaxed outline-none focus:border-accent/60"
+            className={`${codeAreaCls} resize-y`}
           />
           <p className="mt-1 text-[11px] text-fg-faint">
             {tx("The frontmatter at the top is what pi reads — changing {name} renames the skill, and {description} is what the model matches against.", { name: <code>name</code>, description: <code>description</code> })}
@@ -425,7 +419,11 @@ function SkillDetail({
                 {tx("Imported from {source}", { source: <span className="font-mono">{s.source.spec}</span> })}
               </span>
               <button
-                onClick={() => act(() => api.updateSkill(s.name))}
+                onClick={async () => {
+                  // Fetched again over what is on disk, and the draft follows the file: nothing of what was changed here stays.
+                  if (!(await confirmDialog({ title: t("Replace your local edits?"), message: t("Update fetches {name} from its source again. What you changed in it here, saved or not, is replaced.", { name: s.name }), confirmLabel: t("Update"), danger: true }))) return;
+                  act(() => api.updateSkill(s.name));
+                }}
                 disabled={busy}
                 className="shrink-0 text-accent hover:text-accent disabled:opacity-40"
                 title={t("Re-import, replacing local edits")}
@@ -440,8 +438,7 @@ function SkillDetail({
               onClick={() =>
                 act(async () => {
                   await api.saveSkill(s.name, draft);
-                  setSaved(true);
-                  setTimeout(() => setSaved(false), 2000);
+                  flashSaved();
                 })
               }
               disabled={busy || draft === s.content}
@@ -500,23 +497,33 @@ function SkillDetail({
 function ImportSkills({
   onCancel,
   onDone,
+  onReload,
   onError,
 }: {
   onCancel: () => void;
   onDone: () => Promise<void>;
+  onReload: () => Promise<void>;
   onError: (e: string) => void;
 }) {
   const [spec, setSpec] = useState("");
   const [found, setFound] = useState<FoundSkill[] | null>(null);
+  // What the look was of: the import takes exactly that, whatever the field says by then.
+  const [previewed, setPreviewed] = useState<{ spec: string; sha: string } | null>(null);
+  // What is in the repository and was not taken, and why.
+  const [skipped, setSkipped] = useState<SkippedSkill[]>([]);
   const [chosen, setChosen] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<null | "look" | "import">(null);
 
   const look = async () => {
     setBusy("look");
     setFound(null);
+    setPreviewed(null);
+    setSkipped([]);
     try {
       const r = await api.previewSkillImport(spec.trim());
       setFound(r.found);
+      setPreviewed({ spec: r.spec, sha: r.sha });
+      setSkipped(r.skipped);
       // Everything you do not already have, which is the common intent.
       setChosen(new Set(r.found.filter((f) => !f.installed).map((f) => f.name)));
     } catch (e) {
@@ -527,12 +534,22 @@ function ImportSkills({
   };
 
   const doImport = async () => {
+    if (!previewed) return;
     setBusy("import");
     try {
       // Overwrite is implied: anything already installed is only in the list
       // because it was ticked deliberately.
-      await api.importSkills(spec.trim(), [...chosen], true);
-      await onDone();
+      const r = await api.importSkills(previewed.spec, [...chosen], true, previewed.sha);
+      if (r.skipped.length) {
+        // Said here, not closed over: the list is what was imported, and this is what was not.
+        setSkipped(r.skipped);
+        setFound(null);
+        setPreviewed(null);
+        setChosen(new Set());
+        await onReload();
+      } else {
+        await onDone();
+      }
     } catch (e) {
       onError((e as Error).message);
     } finally {
@@ -553,9 +570,16 @@ function ImportSkills({
         <input
           autoFocus
           value={spec}
-          onChange={(e) => setSpec(e.target.value)}
+          onChange={(e) => {
+            setSpec(e.target.value);
+            // The list is of another address now.
+            setFound(null);
+            setPreviewed(null);
+            setSkipped([]);
+          }}
           onKeyDown={(e) => isEnter(e) && spec.trim() && look()}
           placeholder="anthropics/skills"
+          aria-label={t("GitHub repo of skills")}
           className={`${inputCls} font-mono text-xs`}
         />
         <button disabled={!spec.trim() || busy !== null} onClick={look} className={btnCls}>
@@ -565,6 +589,26 @@ function ImportSkills({
       <p className="text-[11px] text-fg-faint">
         {tx("{repo}, {branch}, a subdirectory like {folder}, or a GitHub URL pasted from the address bar.", { repo: <code>user/repo</code>, branch: <code>user/repo#branch</code>, folder: <code>user/repo/skills/pdf</code> })}
       </p>
+
+      <p className="text-[11px] text-fg-faint">
+        {t("A private repository is reached through the git login of this server. Do not put a token in the address.")}
+      </p>
+
+      {skipped.length > 0 && (
+        <div className="rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-[11px] text-warn/90">
+          <p className="flex items-start gap-1.5">
+            <LuTriangleAlert className="mt-0.5 h-3 w-3 shrink-0" />
+            {t("Not imported:")}
+          </p>
+          <ul className="mt-1 space-y-0.5 pl-4">
+            {skipped.map((s, i) => (
+              <li key={`${s.name}-${i}`}>
+                <span className="font-mono">{s.name}</span> — {s.reason}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {found && (
         <>
@@ -590,6 +634,8 @@ function ImportSkills({
             {found.map((f) => (
               <li key={f.name}>
                 <button
+                  role="checkbox"
+                  aria-checked={chosen.has(f.name)}
                   onClick={() => toggle(f.name)}
                   className={`flex w-full items-start gap-2.5 rounded-lg border px-3 py-2 text-left transition ${
                     chosen.has(f.name)
@@ -601,7 +647,7 @@ function ImportSkills({
                     className={`mt-0.5 grid h-3.5 w-3.5 shrink-0 place-items-center rounded border ${
                       chosen.has(f.name)
                         ? "border-accent/60 bg-accent/25 text-accent"
-                        : "border-white/20"
+                        : "border-fg/30"
                     }`}
                   >
                     {chosen.has(f.name) && <LuCheck className="h-2.5 w-2.5" />}

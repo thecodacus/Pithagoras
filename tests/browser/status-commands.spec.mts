@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './portal-mock';
 
 test('a status that names a command runs it when clicked, and one that does not stays text', async ({ page }) => {
   await page.goto('/tests/chat.html?phase=agents');

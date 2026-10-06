@@ -1,23 +1,10 @@
-import { test, expect, type Page } from '@playwright/test';
+import { type Page } from '@playwright/test';
+import { test, expect, mockPortal } from './portal-mock';
 
 /** The portal with no server: enough canned answers for Settings and the sidebar to draw. */
-async function portal(page: Page) {
-  await page.route('**/api/**', async (route) => {
-    const p = new URL(route.request().url()).pathname;
-    let body: unknown = {};
-    if (p === '/api/auth/status') body = { authed: true, authRequired: false };
-    else if (p === '/api/sessions') body = { sessions: [], executor: 'host' };
-    else if (p === '/api/settings') body = {
-      settings: { provider: 'llama-swap', model: 'Ornith', thinkingLevel: 'medium' }, stored: {}, defaults: { provider: 'llama-swap', model: 'Ornith', thinkingLevel: 'medium' },
-      piSettingsPath: '/a/settings.json', compaction: { keepRecentTokens: 20000 }, compactionDefaults: { keepRecentTokens: 20000 }, contextDefault: null, executor: 'host', workspaceRoot: '/w',
-    };
-    else if (p === '/api/models') body = { models: [{ provider: 'llama-swap', id: 'Ornith', name: 'Ornith 1.5', contextWindow: 65536, reasoning: true }], providers: { 'llama-swap': 'llama-swap' } };
-    else if (p === '/api/routines/report-targets') body = { targets: [], default: null };
-    else if (p === '/api/extensions') body = { settingsPath: '/a/settings.json', extensions: [] };
-    else if (p === '/api/features/flags') body = { subagent: false, understory: false };
-    await route.fulfill({ json: body });
-  });
-}
+const portal = (page: Page) => mockPortal(page, ({ path }) => {
+  if (path === '/api/models') return { models: [{ provider: 'llama-swap', id: 'model-a', name: 'Model A', contextWindow: 65536, reasoning: true }], providers: { 'llama-swap': 'llama-swap' } };
+}, { settings: true });
 
 const pickLanguage = async (page: Page, name: RegExp) => {
   await page.getByRole('combobox', { name: /^(Language|Sprache)$/ }).click();
@@ -48,6 +35,27 @@ test('the portal can be switched to German and back, and keeps the choice', asyn
   await expect(page.getByRole('dialog').getByText('Appearance', { exact: true })).toBeVisible();
 });
 
+/** Which files of the portal's languages the page asked for. */
+const askedForLanguages = (page: Page) => {
+  const asked: string[] = [];
+  page.on('request', (r) => {
+    const path = new URL(r.url()).pathname;
+    if (/\/locales\/(?!index)[\w-]+(\.ts|-[\w-]+\.js)$/.test(path)) asked.push(path);
+  });
+  return asked;
+};
+
+test('an English page does not fetch the German text, and picking German fetches it then', async ({ page }) => {
+  await portal(page);
+  const asked = askedForLanguages(page);
+  await page.goto('/settings/browser');
+  await expect(page.getByRole('dialog').getByText('Appearance', { exact: true })).toBeVisible();
+  expect(asked).toEqual([]);
+  await pickLanguage(page, /^Deutsch/);
+  await expect(page.getByRole('dialog').getByText('Darstellung', { exact: true })).toBeVisible();
+  expect(asked).toHaveLength(1);
+});
+
 test.describe('in a browser set to German', () => {
   test.use({ locale: 'de-DE' });
 
@@ -67,6 +75,23 @@ test.describe('in a browser set to German', () => {
     // Back to the browser's.
     await pickLanguage(page, /^Match the browser/);
     await expect(page.getByRole('dialog').getByText('Darstellung', { exact: true })).toBeVisible();
+  });
+
+  test('the German text is there before the first draw, not English for a moment first', async ({ page }) => {
+    await portal(page);
+    const asked = askedForLanguages(page);
+    // The first words of the page, in whatever language they are drawn: seen as they are drawn.
+    await page.addInitScript(() => {
+      (window as any).words = [];
+      new MutationObserver(() => {
+        const text = document.body?.innerText ?? '';
+        if (/Sitzungen|Sessions/.test(text) && !(window as any).words.length) (window as any).words.push(/Sitzungen/.test(text) ? 'de' : 'en');
+      }).observe(document, { childList: true, subtree: true });
+    });
+    await page.goto('/sessions');
+    await expect(page.getByRole('button', { name: 'Sitzungen' }).first()).toBeVisible();
+    expect(asked).toHaveLength(1);
+    expect(await page.evaluate(() => (window as any).words)).toEqual(['de']);
   });
 
   test('a setting is found by its German name and by its English one', async ({ page }) => {

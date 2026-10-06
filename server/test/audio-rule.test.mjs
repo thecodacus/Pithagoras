@@ -1,22 +1,15 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { once } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { fakeModel } from "./fake-model.mjs";
+import { inProcessHome } from "./server-harness.mjs";
 
 /**
  * The rule for spoken replies, against pi itself: which conversations have it
  * in the system prompt the model is sent.
  */
-const home = mkdtempSync(path.join(tmpdir(), "pithagoras-audio-rule-"));
-process.env.DATA_DIR = home;
-process.env.WORKSPACE_ROOT = path.join(home, "ws");
-process.env.PI_CODING_AGENT_DIR = path.join(home, "agent");
-process.env.SESSION_DIR = path.join(home, "sessions");
-mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
-mkdirSync(process.env.WORKSPACE_ROOT, { recursive: true });
+const home = inProcessHome("pithagoras-audio-rule-");
 
 /** Each request's system prompt, in the order they came. */
 const sent = [];
@@ -24,32 +17,15 @@ const sent = [];
 const offered = [];
 /** Held until let go, for a run that is still going when the next message comes. */
 let hold;
-const model = createServer((req, res) => {
-  let body = "";
-  req.on("data", (d) => { body += d; });
-  req.on("end", async () => {
-    const request = JSON.parse(body);
-    const system = request.messages.find((m) => m.role === "system" || m.role === "developer");
-    sent.push(typeof system?.content === "string" ? system.content : system?.content?.map((c) => c.text).join("") ?? "");
-    offered.push((request.tools ?? []).map((t) => t.function?.name));
-    if (hold) await hold;
-    res.writeHead(200, { "Content-Type": "text/event-stream" });
-    const chunk = (delta, finish = null) =>
-      `data: ${JSON.stringify({ id: "x", object: "chat.completion.chunk", created: 0, model: "m", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
-    res.end(chunk({ role: "assistant", content: "Sure." }) + chunk({}, "stop") + "data: [DONE]\n\n");
-  });
+const model = await fakeModel(async (request) => {
+  const system = request.messages.find((m) => m.role === "system" || m.role === "developer");
+  sent.push(typeof system?.content === "string" ? system.content : system?.content?.map((c) => c.text).join("") ?? "");
+  offered.push((request.tools ?? []).map((t) => t.function?.name));
+  if (hold) await hold;
+  return "Sure.";
 });
-model.listen(0, "127.0.0.1");
-await once(model, "listening");
-after(() => model.close());
-writeFileSync(path.join(process.env.PI_CODING_AGENT_DIR, "models.json"), JSON.stringify({
-  providers: {
-    fake: {
-      baseUrl: `http://127.0.0.1:${model.address().port}/v1`, api: "openai-completions", apiKey: "none",
-      models: [{ id: "m", name: "M", reasoning: false, input: ["text"], contextWindow: 10000, maxTokens: 100 }],
-    },
-  },
-}));
+writeFileSync(path.join(process.env.PI_CODING_AGENT_DIR, "models.json"), JSON.stringify(model.models()));
+
 
 // Sets the prompt of every run while a test asks it to: adding to what it is
 // given, as pi-background-tasks does with its shell policy, or writing its own.

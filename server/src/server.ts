@@ -1,6 +1,8 @@
 import { bindHost, loginThrottle, portalSecurityHeaders, tlsFiles } from "./http-security.js";
 import { canvasesRouter } from "./api/canvases.js";
-import { canvasEvents, listCanvases } from "./canvases.js";
+import { interruptCanvasWrites } from "./canvases.js";
+import { eventsRouter } from "./api/events.js";
+import { serveWeb } from "./web-static.js";
 import { clampLevel } from "./pi/model-runtime.js";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
@@ -11,41 +13,61 @@ import express from "express";
 import cookieParser from "cookie-parser";
 import { nanoid } from "nanoid";
 import {
+  BROWSER_CHANNEL,
+  clearProjectTools,
+  chatModel,
+  contextLimitProblem,
   createSession,
   deleteSession,
-  eventsBefore,
-  eventsSince,
-  replayStart,
+  getContextLimit,
+  getDb,
+  getDefaultContextLimit,
   getSession,
+  getSettingDefaults,
+  getSettings,
   listAgentSessions,
+  listChatSessions,
+  listHeartbeatSessions,
   listRoutineSessions,
   listSessions,
+  projectTools,
+  projectsWithTools,
+  setContextLimit,
+  setDefaultContextLimit,
+  setProjectTools,
+  setSettings,
+  setToolDefaultsOff,
+  setToolGroupNames,
+  shownStoredSettings,
+  shownTools,
+  toolDefaultsOff,
+  toolGroupNames,
   updateSession,
 } from "./db.js";
 import { checkWorkspace, workspaceRoot } from "./workspaces.js";
-import { insideReal, isUnderText, isWithinText } from "./within.js";
-import { agentHomePath } from "./agent-home.js";
-import { agentHome, resolveChannelSession } from "./agent.js";
-import {
-  agentFileStatus,
-  runWizard,
-  writeAgentFile,
-  type WizardInput,
-} from "./agent-setup.js";
-import { sessions, CommandFailed, EXECUTOR_KIND, IMAGE_ROOT } from "./session-manager.js";
+import { insideReal, isWithinText } from "./within.js";
+import { agentHome, agentHomePath } from "./agent-home.js";
+import { dataFolder } from "./data-dir.js";
+import { resolveChannelSession } from "./agent.js";
+import { AgentError, agentOf, agentsRoot, chatsOf, defaultAgent, deletable, deleteAgent, getAgent, listAgents, orbOf } from "./agents.js";
+import { sweepRemoved } from "./folder-removal.js";
+import { agentsRouter } from "./api/agents.js";
+import { heartbeat } from "./heartbeat.js";
+import { deleteNotesOf } from "./activity.js";
+import { EXECUTOR_KIND } from "./executor-kind.js";
+import { sessions, CommandFailed, IMAGE_ROOT } from "./session-manager.js";
 import { ImageError, MAX_IMAGE_BYTES, MAX_IMAGES, imagePath, mimeOf, parseImages, saveImages } from "./prompt-images.js";
 import { defaultsFor, exceptionsFor, toolEnabled, toolSource } from "./tool-policy.js";
-import { mcpServerNames } from "./api/mcp.js";
-import { authEnabled, checkPassword, isAuthed, issueCookie, requireAuth, signOut } from "./auth.js";
+import { mcpRouter, mcpServerNames } from "./api/mcp.js";
+import { authEnabled, checkPassword, isAuthed, issueCookie, keptShortPassword, requireAuth, signOut } from "./auth.js";
 import { packagesRouter } from "./api/packages.js";
 import { extensionsRouter } from "./api/extensions.js";
 import { channelsRouter } from "./api/channels.js";
-import { routinesIn, routinesRouter, switchOffRoutines } from "./api/routines.js";
+import { removeRoutines, routinesIn, routinesRouter, switchOffRoutines } from "./api/routines.js";
 import { filesRouter } from "./api/files.js";
 import { gitRouter } from "./api/git.js";
 import { holdsWork, unsavedRefusal, unsavedWork } from "./git.js";
 import { skillsRouter } from "./api/skills.js";
-import { mcpRouter } from "./api/mcp.js";
 import { featuresRouter } from "./api/features.js";
 import { imagesRouter } from "./api/images.js";
 import { forgetPicturesIn } from "./image-gallery.js";
@@ -54,13 +76,12 @@ import { memoryLlmRouter } from "./memory-llm.js";
 import { modelLevels, modelRuntime, providersRouter } from "./api/providers.js";
 import { peopleRouter } from "./api/people.js";
 import { voiceRouter } from "./api/voice.js";
-import { browserRouter } from "./api/browser.js";
-import { terminalRouter } from "./api/terminal.js";
-import { MARKER, clearFinished, listJobs, readOutput, stopJob } from "./background.js";
+import { adoptPortalBrowser, browserRouter, pinConnection } from "./api/browser.js";
+import { endAllTerminals, terminalRouter } from "./api/terminal.js";
+import { BACKGROUND_SUPPORTED, MARKER, clearFinished, listJobs, readOutput, stopJob, stopJobsIn } from "./background.js";
 import { attachBrowserUpgrade, mountBrowserProxy } from "./browser-proxy.js";
 import { watchBrowserFrames } from "./extensions/browser-frames.js";
 import { startLlamaProxy } from "./llama-progress.js";
-import { pinConnection } from "./api/browser.js";
 import { scheduleDreams } from "./extensions/understory-service.js";
 import { routineSupervisor } from "./routines/supervisor.js";
 import { channelSupervisor } from "./channels/supervisor.js";
@@ -70,11 +91,8 @@ import {
   readCompactionSettings,
   writeCompactionSettings,
 } from "./pi-settings.js";
-import { eventTime, getDb } from "./db.js";
-import { normalizeOrb } from "./orb-style.js";
 import { getBuiltinCommands, picturesRefused } from "./pi/builtins.js";
 import { SessionEditError } from "./pi/session-edit.js";
-import { isValidSlug, slugify } from "./slug.js";
 import {
   NEW_CHAT_TITLE,
   ProjectError,
@@ -87,42 +105,11 @@ import {
   titleFrom,
   writeInstructions,
 } from "./projects.js";
-import {
-  contextLimitProblem,
-  getContextLimit,
-  getDefaultContextLimit,
-  getSettingDefaults,
-  chatModel,
-  getSettings,
-  getStoredSettings,
-  shownStoredSettings,
-  shownTools,
-  clearProjectTools,
-  projectTools,
-  projectsWithTools,
-  setProjectTools,
-  toolGroupNames,
-  setToolGroupNames,
-  setToolDefaultsOff,
-  toolDefaultsOff,
-  setContextLimit,
-  setDefaultContextLimit,
-  setSettings,
-} from "./db.js";
 
 const WORKSPACE_ROOT = workspaceRoot();
 const PORT = Number(process.env.PORT || 4100);
-/**
- * How much of a long conversation a fresh page load replays.
- *
- * Small on purpose. Not a correctness limit — a reconnect with a cursor still
- * receives everything it missed, and older events are fetched on demand as you
- * scroll back. Replaying twenty thousand meant a refresh rendered the entire
- * history and then visibly scrolled through it.
- */
-const REPLAY_EVENTS = 1_200;
 /** Persistent place for CLIs, kept on PATH so pi and its tools can reach them. */
-const BIN_DIR = path.resolve(process.env.BIN_DIR || "/data/bin");
+const BIN_DIR = dataFolder("BIN_DIR", "bin");
 
 // Everything the portal starts carries this, and keeps it when it is detached:
 // it is how a background job is known to be the agent's. See background.ts.
@@ -153,7 +140,9 @@ app.use(cookieParser());
 // --- auth ---
 
 app.get("/api/auth/status", (req, res) => {
-  res.json({ authRequired: authEnabled, authed: isAuthed(req) });
+  const authed = isAuthed(req);
+  // Said to a login only: to anyone else it would say which password to guess.
+  res.json({ authRequired: authEnabled, authed, ...(authed && keptShortPassword ? { shortPassword: true } : {}) });
 });
 
 app.post("/api/auth/login", loginThrottle(), (req, res) => {
@@ -280,36 +269,9 @@ app.get("/api/workspaces", (_req, res) => {
   res.json({ root: WORKSPACE_ROOT, workspaces });
 });
 
-app.post("/api/workspaces", (req, res) => {
-  const raw = req.body?.name;
-  if (typeof raw !== "string" || !raw.trim()) {
-    return res.status(400).json({ error: "name required" });
-  }
-  // "Cool Project" becomes the directory "cool-project", and that same slug
-  // becomes the session title — one name drives both.
-  const name = slugify(raw);
-  if (!isValidSlug(name)) {
-    return res.status(400).json({ error: `"${raw}" does not produce a usable folder name` });
-  }
-
-  const target = path.join(WORKSPACE_ROOT, name);
-  if (path.resolve(target) !== target || !isUnderText(WORKSPACE_ROOT, target)) {
-    return res.status(400).json({ error: "Invalid workspace name" });
-  }
-  if (existsSync(target)) return res.status(409).json({ error: `Workspace "${name}" already exists` });
-
-  try {
-    mkdirSync(target, { recursive: true });
-  } catch (e) {
-    return res.status(500).json({ error: (e as Error).message });
-  }
-  clearProjectTools(name);
-  res.json({ name, path: target, isGit: false });
-});
-
 // --- projects ---
 
-const projectStatus = { invalid: 400, missing: 404, exists: 409 } as const;
+const projectStatus = { invalid: 400, missing: 404, exists: 409, conflict: 409 } as const;
 
 const projectFailure = (res: express.Response, e: unknown) => {
   if (e instanceof ProjectError) return res.status(projectStatus[e.code]).json({ error: e.message });
@@ -346,10 +308,12 @@ function workingIn<T extends { workspace: string }>(dir: string, rows: T[]): T[]
  */
 app.get("/api/projects", (req, res) => {
   const home = agentHomePath();
+  // Each agent's home is a folder of chats of its own, named after the agent.
+  const agents = listAgents().map((a) => ({ id: a.id, name: a.name, home: a.home }));
   try {
-    if (!existsSync(WORKSPACE_ROOT)) return res.json({ root: WORKSPACE_ROOT, home, projects: [] });
+    if (!existsSync(WORKSPACE_ROOT)) return res.json({ root: WORKSPACE_ROOT, home, agents, projects: [] });
     if (req.query.bare === "1") {
-      return res.json({ root: WORKSPACE_ROOT, home, projects: listProjects(WORKSPACE_ROOT).map((p) => ({ name: p.name, path: p.path })) });
+      return res.json({ root: WORKSPACE_ROOT, home, agents, projects: listProjects(WORKSPACE_ROOT).map((p) => ({ name: p.name, path: p.path })) });
     }
     // Read once, not once per project.
     const all = listSessions();
@@ -363,11 +327,14 @@ app.get("/api/projects", (req, res) => {
         lastActive: chats.reduce((latest, s) => (s.updated_at > latest ? s.updated_at : latest), "") || null,
       };
     });
-    res.json({ root: WORKSPACE_ROOT, home, projects });
+    res.json({ root: WORKSPACE_ROOT, home, agents, projects });
   } catch (e) {
     projectFailure(res, e);
   }
 });
+
+/** Whether a request's list of tools to switch off is one: a list of names. */
+const isToolList = (value: unknown): value is string[] => Array.isArray(value) && value.every((name) => typeof name === "string");
 
 /**
  * Stores what a project's chats start with, given the tools it wants off: the
@@ -393,10 +360,8 @@ app.post("/api/projects", (req, res) => {
     return res.status(400).json({ error: "instructions must be text" });
   }
   if (toolsOff !== undefined) {
-    if (!Array.isArray(toolsOff) || toolsOff.some((tool) => typeof tool !== "string")) {
-      return res.status(400).json({ error: "toolsOff must be a list of tool names" });
-    }
-    if (EXECUTOR_KIND === "container") return res.status(400).json({ error: TOOLS_UNSUPPORTED });
+    if (!isToolList(toolsOff)) return res.status(400).json({ error: "toolsOff must be a list of tool names" });
+    if (EXECUTOR_KIND === "container") return res.status(400).json(toolsUnsupported);
   }
   try {
     const project = createProject(WORKSPACE_ROOT, name, instructions);
@@ -437,17 +402,18 @@ app.get("/api/projects/:name", async (req, res) => {
 
 app.get("/api/projects/:name/instructions", (req, res) => {
   try {
-    res.json({ text: readInstructions(WORKSPACE_ROOT, req.params.name) });
+    res.json(readInstructions(WORKSPACE_ROOT, req.params.name));
   } catch (e) {
     projectFailure(res, e);
   }
 });
 
 app.put("/api/projects/:name/instructions", (req, res) => {
-  const text = req.body?.text;
+  const { text, mtime } = req.body ?? {};
   if (typeof text !== "string") return res.status(400).json({ error: "text required" });
+  if (mtime !== undefined && typeof mtime !== "number") return res.status(400).json({ error: "mtime must be a number" });
   try {
-    writeInstructions(WORKSPACE_ROOT, req.params.name, text);
+    writeInstructions(WORKSPACE_ROOT, req.params.name, text, mtime);
     res.json({ ok: true });
   } catch (e) {
     projectFailure(res, e);
@@ -464,7 +430,7 @@ app.put("/api/projects/:name/instructions", (req, res) => {
 app.get("/api/projects/:name/tools", (req, res) => {
   try {
     const project = getProject(WORKSPACE_ROOT, req.params.name);
-    if (EXECUTOR_KIND === "container") return res.status(400).json({ error: TOOLS_UNSUPPORTED });
+    if (EXECUTOR_KIND === "container") return res.status(400).json(toolsUnsupported);
     const defaults = toolDefaultsOff();
     const exceptions = projectTools(project.name);
     const servers = mcpServerNames();
@@ -494,12 +460,10 @@ app.get("/api/projects/:name/tools", (req, res) => {
  */
 app.put("/api/projects/:name/tools", async (req, res) => {
   const off = req.body?.off;
-  if (!Array.isArray(off) || off.some((name) => typeof name !== "string")) {
-    return res.status(400).json({ error: "off must be a list of tool names" });
-  }
+  if (!isToolList(off)) return res.status(400).json({ error: "off must be a list of tool names" });
   try {
     const project = getProject(WORKSPACE_ROOT, req.params.name);
-    if (EXECUTOR_KIND === "container") return res.status(400).json({ error: TOOLS_UNSUPPORTED });
+    if (EXECUTOR_KIND === "container") return res.status(400).json(toolsUnsupported);
     const stored = saveProjectTools(project, off);
     const applied = await sessions.applyToolDefaults(project.name);
     res.json({ off: defaultsFor(toolDefaultsOff(), stored), applied });
@@ -553,6 +517,8 @@ app.delete("/api/projects/:name", async (req, res) => {
       // go last, together, so that either all are removed or none.
       for (const run of runs) await sessions.discard(run.id);
       for (const chat of chats) await sessions.discard(chat.id);
+      // The jobs they started go with them: nothing would be left to list or stop them.
+      const jobsStopped = await stopJobsIn(project.path);
       // A routine can have been given this place while those were stopped. It
       // was not held, so it is looked for again, with nothing awaited from here
       // until the folder is gone.
@@ -569,12 +535,71 @@ app.delete("/api/projects/:name", async (req, res) => {
         for (const chat of chats) deleteSession(chat.id);
       })();
       for (const chat of chats) sessions.removeFiles(chat.id);
-      res.json({ ok: true, sessionsDeleted: chats.length, routinesSwitchedOff: switchedOff });
+      res.json({ ok: true, sessionsDeleted: chats.length, routinesSwitchedOff: switchedOff, jobsStopped });
     } finally {
+      // The chats that were not deleted take messages again.
+      sessions.reopen([...runs, ...chats].map((s) => s.id));
       release();
     }
   } catch (e) {
     projectFailure(res, e);
+  }
+});
+
+// --- agents ---
+
+/**
+ * The agent, its chats, and its folder if `?folder=delete` says so; kept
+ * otherwise, and taken up again by an agent made under the same name. Refused
+ * for the first agent, for one a channel talks as, and while any of its chats
+ * or a routine running as it is working. Its routines are switched off, as a
+ * deleted project's are, and keep their sessions; with `?folder=delete` they are
+ * deleted, since the folder they ran in is gone.
+ */
+app.delete("/api/agents/:id", async (req, res) => {
+  try {
+    // Checked before anything is stopped; deleteAgent checks again once they are.
+    const agent = deletable(req.params.id);
+    // Its chats and its conversations — those started on the Agent page and
+    // through channels — and the one its heartbeat looks around in.
+    const chats = workingIn(agent.home, [...listSessions(), ...listAgentSessions(), ...listHeartbeatSessions()]);
+    if (chats.some((s) => sessions.isBusy(s.id) || sessions.backgroundWork(s.id))) {
+      return res.status(409).json({ error: "A chat with this agent is still working. Stop it first." });
+    }
+    if (heartbeat.isRunning(agent.id)) {
+      return res.status(409).json({ error: "This agent is looking around right now. Wait for it to finish." });
+    }
+    const routines = routinesIn(agent.home);
+    const runs = workingIn(agent.home, listRoutineSessions().filter((s) => sessions.isLoaded(s.id)));
+    if (routines.some((r) => routineSupervisor.isRunning(r.slug)) || runs.some((s) => sessions.isBusy(s.id))) {
+      return res.status(409).json({ error: "A routine is running as this agent. Wait for it to finish, or stop it." });
+    }
+    const release = routineSupervisor.hold(routines.map((r) => r.slug));
+    try {
+      for (const run of runs) await sessions.discard(run.id);
+      for (const chat of chats) await sessions.discard(chat.id);
+      // The jobs they started go with them, in a folder that is kept as well: nothing would be left to list or stop them.
+      const jobsStopped = await stopJobsIn(agent.home);
+      deleteAgent(agent.id, { deleteFolder: req.query.folder === "delete" });
+      // The pictures of every chat that worked there, the routine runs the folder's removal leaves behind too: no file of them is left to show.
+      if (req.query.folder === "delete") forgetPicturesIn(agent.home);
+      deleteNotesOf(agent.id);
+      // With its folder they have nowhere left to run, and an agent made under the
+      // same name must not take them over. Kept with the folder, they stay, switched off.
+      const deleted = req.query.folder === "delete";
+      const switchedOff = deleted ? [] : switchOffRoutines(routines);
+      const removed = deleted ? removeRoutines(routines) : [];
+      getDb().transaction(() => {
+        for (const chat of chats) deleteSession(chat.id);
+      })();
+      for (const chat of chats) sessions.removeFiles(chat.id);
+      res.json({ ok: true, sessionsDeleted: chats.length, routinesSwitchedOff: switchedOff, routinesDeleted: removed, jobsStopped });
+    } finally {
+      sessions.reopen([...runs, ...chats].map((s) => s.id));
+      release();
+    }
+  } catch (e) {
+    res.status(e instanceof AgentError ? e.status : 500).json({ error: (e as Error).message });
   }
 });
 
@@ -602,7 +627,7 @@ const toApi = (s: ReturnType<typeof getSession> & {}) => ({
 });
 
 app.get("/api/sessions", (_req, res) => {
-  res.json({ sessions: listSessions().map(toApi), executor: EXECUTOR_KIND });
+  res.json({ sessions: listChatSessions().map(toApi), executor: EXECUTOR_KIND });
 });
 
 /**
@@ -610,15 +635,18 @@ app.get("/api/sessions", (_req, res) => {
  * transcript, same replay, same model handling — so the Agent tab opens them
  * with the ordinary chat view rather than a parallel implementation.
  */
-app.get("/api/agent/sessions", (_req, res) => {
+app.get("/api/agent/sessions", (req, res) => {
+  // One agent's, given `?agent=`; the first agent's otherwise.
+  const agent = typeof req.query.agent === "string" ? getAgent(req.query.agent) : defaultAgent();
+  if (!agent) return res.status(404).json({ error: "No such agent" });
   const channels = getDb()
     .prepare("SELECT id, slug, name, kind FROM channels")
     .all() as { id: string; slug: string; name: string; kind: string }[];
   const bySlug = new Map(channels.map((c) => [c.slug, c]));
 
   res.json({
-    agentHome: agentHome(),
-    sessions: listAgentSessions().map((s) => ({
+    agentHome: agent.home,
+    sessions: chatsOf(agent, listAgentSessions()).map((s) => ({
       ...toApi(s),
       // Matched on the slug, so a channel deleted and recreated under the same
       // one still owns its conversations.
@@ -644,12 +672,15 @@ app.get("/api/agent/sessions", (_req, res) => {
  */
 app.post("/api/agent/sessions", (req, res) => {
   const title = cleanTitle(req.body?.title);
+  const agentId = req.body?.agent;
+  if (agentId !== undefined && (typeof agentId !== "string" || !getAgent(agentId))) return res.status(404).json({ error: "No such agent" });
   try {
     const { session } = resolveChannelSession({
-      channelSlug: "browser",
+      channelSlug: BROWSER_CHANNEL,
       key: nanoid(8),
       title: title || `Chat ${new Date().toISOString().slice(0, 16).replace("T", " ")}`,
       executor: EXECUTOR_KIND,
+      agentId,
     });
     res.json(toApi(session));
   } catch (e) {
@@ -659,71 +690,28 @@ app.post("/api/agent/sessions", (req, res) => {
 
 // --- the agent's home directory ---
 
-app.get("/api/agent/setup", (_req, res) => {
-  res.json(agentFileStatus());
-});
-
-/** Run the wizard. Refuses to overwrite an existing MEMORY.md. */
-app.post("/api/agent/setup", (req, res) => {
-  const body = (req.body ?? {}) as WizardInput;
-  if (typeof body.agentName !== "string" || !body.agentName.trim()) {
-    return res.status(400).json({ error: "The agent needs a name" });
-  }
-  if (typeof body.userName !== "string" || !body.userName.trim()) {
-    return res.status(400).json({ error: "Who is it working for?" });
-  }
-  try {
-    runWizard(body);
-    res.json(agentFileStatus());
-  } catch (e) {
-    res.status(500).json({ error: (e as Error).message });
-  }
-});
-
-app.put("/api/agent/files/:name", (req, res) => {
-  const content = req.body?.content;
-  if (typeof content !== "string") return res.status(400).json({ error: "content required" });
-  try {
-    writeAgentFile(req.params.name, content);
-    res.json(agentFileStatus());
-  } catch (e) {
-    res.status(400).json({ error: (e as Error).message });
-  }
-});
-
-/** The voice-mode orb's look and personality: one for the portal, so every device shows the same orb. */
-app.get("/api/agent/orb", (_req, res) => {
-  const row = getDb().prepare("SELECT value FROM settings WHERE key = 'orb'").get() as { value: string } | undefined;
-  let stored: unknown;
-  try {
-    stored = row ? JSON.parse(row.value) : undefined;
-  } catch {
-    // A value that no longer parses is the default orb, not a broken page.
-  }
-  res.json(normalizeOrb(stored));
-});
-
-app.put("/api/agent/orb", (req, res) => {
-  if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
-    return res.status(400).json({ error: "An orb style is required" });
-  }
-  const style = normalizeOrb(req.body);
-  getDb()
-    .prepare("INSERT INTO settings (key, value) VALUES ('orb', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-    .run(JSON.stringify(style));
-  res.json(style);
+/**
+ * The avatar voice mode shows for a chat (`?session=`): its agent's, and the
+ * first agent's for a chat in a project, or without one.
+ */
+app.get("/api/agent/orb", (req, res) => {
+  const session = typeof req.query.session === "string" ? getSession(req.query.session) : undefined;
+  res.json(orbOf(agentOf(session?.workspace) ?? defaultAgent()));
 });
 
 app.post("/api/sessions", (req, res) => {
-  const { workspace } = req.body ?? {};
+  const { workspace, agent: agentId } = req.body ?? {};
   const title = cleanTitle(req.body?.title);
   if (workspace !== undefined && (typeof workspace !== "string" || !workspace)) {
     return res.status(400).json({ error: "workspace must be a path" });
   }
-  // Without one, a chat starts in Home: the agent's own directory, where its
-  // SOUL.md, PrimaryUser.md and MEMORY.md are. Home is the one place outside
-  // the workspace root a chat may start.
-  const where = workspace === undefined ? { path: agentHome() } : checkWorkspace(workspace);
+  // `agent` starts it in that agent's home.
+  const agent = agentId === undefined ? undefined : typeof agentId === "string" ? getAgent(agentId) : undefined;
+  if (agentId !== undefined && !agent) return res.status(404).json({ error: "No such agent" });
+  // Without either, a chat starts in Home: the first agent's own directory,
+  // where its SOUL.md, PrimaryUser.md and MEMORY.md are. Agents' homes are the
+  // only places outside the workspace root a chat may start.
+  const where = agent ? { path: agentHome(agent.home) } : workspace === undefined ? { path: agentHome() } : checkWorkspace(workspace);
   if ("error" in where) return res.status(400).json({ error: where.error });
   const resolved = where.path;
 
@@ -761,8 +749,14 @@ app.patch("/api/sessions/:id", (req, res) => {
 app.delete("/api/sessions/:id", async (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "Not found" });
-  await sessions.discard(session.id);
-  deleteSession(session.id);
+  try {
+    await sessions.discard(session.id);
+    deleteSession(session.id);
+  } catch (e) {
+    // The chat stays: it takes messages again.
+    sessions.reopen([session.id]);
+    throw e;
+  }
   sessions.removeFiles(session.id);
   res.json({ ok: true });
 });
@@ -791,7 +785,10 @@ app.post("/api/sessions/:id/prompt", promptJson, async (req, res) => {
     const images = saveImages(IMAGE_ROOT, session.id, parsed);
     // Returns as soon as pi accepts the prompt. The run continues server-side
     // regardless of what this browser does next.
-    await sessions.prompt(session.id, message, { voice: req.body?.voice === true, images, steer: req.body?.steer === true });
+    const sent = await sessions.prompt(session.id, message, { voice: req.body?.voice === true, images, steer: req.body?.steer === true });
+    // A Stop got there first: the words are back with the person, as not sent,
+    // and a chat they were the start of is not named after them.
+    if (!sent) return res.json({ ok: true, unsent: true });
     // A chat that has no name yet is named after what it starts with — once pi
     // has taken the message, so one that never got there does not keep its name.
     // Read again: a rename that came in meanwhile is not overwritten.
@@ -811,14 +808,18 @@ app.post("/api/sessions/:id/prompt", promptJson, async (req, res) => {
 
 const editStatus = { busy: 409, missing: 404, empty: 400 } as const;
 
+const editFailure = (res: express.Response, e: unknown) => {
+  if (!(e instanceof SessionEditError)) return res.status(500).json({ error: (e as Error).message });
+  res.status(editStatus[e.code as keyof typeof editStatus] ?? 422).json({ error: e.message });
+};
+
 /** Removes a message and the agent's answer to it. */
 app.delete("/api/sessions/:id/messages/:seq", async (req, res) => {
   try {
     await sessions.removeMessage(req.params.id, Number(req.params.seq), "turn");
     res.json({ ok: true });
   } catch (e) {
-    if (!(e instanceof SessionEditError)) return res.status(500).json({ error: (e as Error).message });
-    res.status(editStatus[e.code as keyof typeof editStatus] ?? 422).json({ error: e.message });
+    editFailure(res, e);
   }
 });
 
@@ -834,8 +835,7 @@ app.post("/api/sessions/:id/messages/:seq/edit", async (req, res) => {
     await sessions.editMessage(req.params.id, Number(req.params.seq), message);
     res.json({ ok: true, status: "running" });
   } catch (e) {
-    if (!(e instanceof SessionEditError)) return res.status(500).json({ error: (e as Error).message });
-    res.status(editStatus[e.code as keyof typeof editStatus] ?? 422).json({ error: e.message });
+    editFailure(res, e);
   }
 });
 
@@ -847,21 +847,23 @@ app.post("/api/sessions/:id/messages/:seq/version", async (req, res) => {
     await sessions.switchVersion(req.params.id, Number(req.params.seq), to);
     res.json({ ok: true });
   } catch (e) {
-    if (!(e instanceof SessionEditError)) return res.status(500).json({ error: (e as Error).message });
-    res.status(editStatus[e.code as keyof typeof editStatus] ?? 422).json({ error: e.message });
+    editFailure(res, e);
   }
 });
 
 /** A picture sent with a message, for the transcript to show. */
 app.get("/api/sessions/:id/images/:name", (req, res) => {
-  const file = imagePath(IMAGE_ROOT, req.params.id, req.params.name);
+  // A chat that is gone serves no pictures, whatever a removal that failed left behind.
+  const file = getSession(req.params.id) ? imagePath(IMAGE_ROOT, req.params.id, req.params.name) : undefined;
   if (!file) return res.status(404).json({ error: "Not found" });
   // Named by a random id and never rewritten, so it can be kept as long as a
   // browser likes. The type is the one its bytes were checked against.
   res.setHeader("Cache-Control", "private, max-age=31536000, immutable");
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.type(mimeOf(req.params.name)!);
-  res.sendFile(file);
+  // The name was checked and the file looked at above, so a dot folder further up
+  // (`~/.local/share`) is no reason for Express to treat it as hidden and answer 404.
+  res.sendFile(file, { dotfiles: "allow" });
 });
 
 /** The browser answering a dialog an extension is waiting on. */
@@ -888,24 +890,26 @@ app.put("/api/sessions/:id/draft", (req, res) => {
 });
 
 /**
- * The tools this conversation could use, and which of them are on.
- *
- * A running session answers from pi's registry. One that is not running —
- * not started yet, or gone idle — from what the portal has seen registered,
- * marked `live: false`: what is switched there is kept for when it starts.
- */
-/**
  * A container session reaches pi over RPC, which has no tool registry to ask
  * and nothing to tell. Said plainly rather than answered with an empty list
  * and a switch that does nothing.
  */
 const TOOLS_UNSUPPORTED =
   "Tools cannot be switched with EXECUTOR=container: pi runs inside the container and the portal never sees what it registered";
+/** With a `code`, so that the page tells this answer from any other failure of the same request by it, not by the sentence. */
+const toolsUnsupported = { error: TOOLS_UNSUPPORTED, code: "tools-unsupported" };
 
+/**
+ * The tools this conversation could use, and which of them are on.
+ *
+ * A running session answers from pi's registry. One that is not running —
+ * not started yet, or gone idle — from what the portal has seen registered,
+ * marked `live: false`: what is switched there is kept for when it starts.
+ */
 app.get("/api/sessions/:id/tools", async (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "Not found" });
-  if (EXECUTOR_KIND === "container") return res.status(400).json({ error: TOOLS_UNSUPPORTED });
+  if (EXECUTOR_KIND === "container") return res.status(400).json(toolsUnsupported);
   const { tools, live } = await sessions.getTools(session.id);
   const names = toolGroupNames();
   // The whole off list, not only the tools loaded right now: the page sends
@@ -918,11 +922,9 @@ app.get("/api/sessions/:id/tools", async (req, res) => {
 app.put("/api/sessions/:id/tools", async (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "Not found" });
-  if (EXECUTOR_KIND === "container") return res.status(400).json({ error: TOOLS_UNSUPPORTED });
+  if (EXECUTOR_KIND === "container") return res.status(400).json(toolsUnsupported);
   const off = req.body?.off;
-  if (!Array.isArray(off) || off.some((name) => typeof name !== "string")) {
-    return res.status(400).json({ error: "off must be a list of tool names" });
-  }
+  if (!isToolList(off)) return res.status(400).json({ error: "off must be a list of tool names" });
   res.json({ off: await sessions.setTools(session.id, off) });
 });
 
@@ -936,7 +938,7 @@ app.put("/api/sessions/:id/tools", async (req, res) => {
 app.get("/api/tools", (_req, res) => {
   // Refused here as well as on the PUT: a list of checkboxes that draws fine
   // and answers every flip with an error is the switch that looks like it works.
-  if (EXECUTOR_KIND === "container") return res.status(400).json({ error: TOOLS_UNSUPPORTED });
+  if (EXECUTOR_KIND === "container") return res.status(400).json(toolsUnsupported);
   const off = new Set(toolDefaultsOff());
   const servers = mcpServerNames();
   res.json({
@@ -969,11 +971,9 @@ app.put("/api/tool-names", (req, res) => {
  * see working.
  */
 app.put("/api/tools", async (req, res) => {
-  if (EXECUTOR_KIND === "container") return res.status(400).json({ error: TOOLS_UNSUPPORTED });
+  if (EXECUTOR_KIND === "container") return res.status(400).json(toolsUnsupported);
   const off = req.body?.off;
-  if (!Array.isArray(off) || off.some((name) => typeof name !== "string")) {
-    return res.status(400).json({ error: "off must be a list of tool names" });
-  }
+  if (!isToolList(off)) return res.status(400).json({ error: "off must be a list of tool names" });
   const stored = setToolDefaultsOff(off);
   const applied = await sessions.applyToolDefaults();
   res.json({ off: stored, applied });
@@ -987,8 +987,6 @@ app.post("/api/sessions/:id/abort", async (req, res) => {
 });
 
 // --- what runs beside the conversation: background jobs, extension status, subagents ---
-
-const BACKGROUND_SUPPORTED = EXECUTOR_KIND !== "container" && process.platform === "linux";
 
 app.get("/api/sessions/:id/background", async (req, res) => {
   const session = getSession(req.params.id);
@@ -1323,6 +1321,7 @@ app.use("/api", featuresRouter());
 app.use("/api", imagesRouter());
 app.use("/api", memoryRouter());
 app.use("/api", channelsRouter());
+app.use("/api", agentsRouter());
 app.use("/api", routinesRouter());
 app.use("/api", skillsRouter());
 app.use("/api", filesRouter());
@@ -1339,144 +1338,7 @@ mountBrowserProxy(app);
 
 // --- event stream ---
 
-/**
- * Replay-then-tail. The client passes the last seq it saw, so reconnecting
- * after minutes or days delivers exactly what was missed and then continues
- * live — no gap, no duplicates.
- */
-/** What came before a cursor: the transcript scrolling back rather than forward. */
-app.get("/api/sessions/:id/events/before", (req, res) => {
-  const session = getSession(req.params.id);
-  if (!session) return res.status(404).json({ error: "Not found" });
-  const before = Number(req.query.before ?? 0) || 0;
-  // At least one: SQLite takes a negative LIMIT as no limit at all.
-  const limit = Math.max(1, Math.min(Math.floor(Number(req.query.limit)) || 1200, 3000));
-  const rows = eventsBefore(session.id, before, limit);
-  res.json({
-    events: rows.map((r) => ({
-      seq: r.seq,
-      type: r.type,
-      at: eventTime(r.created_at),
-      payload: JSON.parse(r.payload),
-    })),
-    // Whether asking again would return anything, so the UI knows to stop.
-    more: rows.length === limit,
-  });
-});
-
-/** How often a canvas being written is sent on its chat's stream, at most. */
-const CANVAS_EVERY_MS = 250;
-
-app.get("/api/sessions/:id/events", (req, res) => {
-  const session = getSession(req.params.id);
-  if (!session) return res.status(404).json({ error: "Not found" });
-
-  const since = Number(req.query.since ?? 0) || 0;
-
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache, no-transform",
-    Connection: "keep-alive",
-    "X-Accel-Buffering": "no",
-  });
-
-  const write = (row: { seq: number; type: string; payload: string; created_at?: string }) => {
-    res.write(`${row.seq > 0 ? `id: ${row.seq}\n` : ""}data: ${JSON.stringify({
-      seq: row.seq,
-      type: row.type,
-      // What the activity line counts from, so a refresh mid-run still knows
-      // how long the agent has been on this rather than starting from zero.
-      at: eventTime(row.created_at),
-      payload: JSON.parse(row.payload),
-    })}\n\n`);
-  };
-
-  // The chat's canvases come on the same stream, under their own name. They
-  // had a stream of their own, and two per open chat is how three tabs used up
-  // the six connections a browser allows one address: a fourth chat, and every
-  // request its page made, waited for one of them to close.
-  //
-  // The list first, not after the conversation: a long one replayed over a
-  // slow link kept the panel empty until the last of it had come.
-  const writeCanvas = (message: unknown) => res.write(`event: canvas\ndata: ${JSON.stringify(message)}\n\n`);
-  // A document being written changes many times a second, each change the
-  // whole of it, and the conversation's own events wait behind them on this
-  // one connection. So only the latest of a document's changes goes, at most
-  // every CANVAS_EVERY_MS; anything else sends what was held first, in order.
-  const held = new Map<string, unknown>();
-  let heldTimer: ReturnType<typeof setTimeout> | undefined;
-  const sendHeld = () => {
-    clearTimeout(heldTimer);
-    heldTimer = undefined;
-    for (const message of held.values()) writeCanvas(message);
-    held.clear();
-  };
-  const onCanvas = (message: { type?: string; canvas?: { id?: string } }) => {
-    if (message?.type === "update" && message.canvas?.id) {
-      held.set(message.canvas.id, message);
-      heldTimer ??= setTimeout(sendHeld, CANVAS_EVERY_MS);
-      return;
-    }
-    sendHeld();
-    writeCanvas(message);
-  };
-  canvasEvents.on(session.id, onCanvas);
-  writeCanvas({ type: "snapshot", canvases: listCanvases(session.id) });
-
-  // How often this chat's events were put back under seqs a page had read
-  // past (see bumpReloads): a page that last saw another count missed one, and
-  // loads the chat again rather than go on from its cursor.
-  res.write(`event: reloads\ndata: ${JSON.stringify({ reloads: session.reloads ?? 0 })}\n\n`);
-  // The versions of its messages, as they are now; later changes come live
-  // (portal_versions). A page does not ask for them after each change.
-  res.write(`event: versions\ndata: ${JSON.stringify({ versions: sessions.messageVersions(session.id) })}\n\n`);
-  // Replace stale in-memory deltas before durable replay, then restore the current snapshot.
-  res.write("event: live-reset\ndata: {}\n\n");
-
-  // A fresh load gets the end of the conversation, not the beginning. Replaying
-  // from zero and stopping at the batch limit is how a long session came back
-  // from a refresh showing its first few thousand events and nothing since —
-  // the transcript ended mid-turn, on whatever the cap happened to land on.
-  const cursor = since === 0 ? replayStart(session.id, REPLAY_EVENTS) : since;
-
-  // Paged to the end rather than one batch: a reconnect after a long run has
-  // more to catch up on than a single query returns, and stopping early loses
-  // exactly the part it was reconnecting for.
-  let lastSent = cursor;
-  for (;;) {
-    const batch = eventsSince(session.id, lastSent);
-    if (!batch.length) break;
-    for (const row of batch) {
-      write(row);
-      lastSent = row.seq;
-    }
-    if (batch.length < 5000) break;
-  }
-  for (const row of sessions.liveSnapshot(session.id)) write(row);
-  res.write(`event: caught-up\ndata: ${JSON.stringify({ seq: lastSent })}\n\n`);
-
-  const onEvent = (row: { seq: number; type: string; payload: string; created_at?: string }) => {
-    // Live-only events carry a negative seq: deliver them, but never let one
-    // move the replay cursor, or a reconnect would skip stored history.
-    if (row.seq < 0) {
-      write(row);
-      return;
-    }
-    // Guard against double-sending anything the replay already covered.
-    if (row.seq <= lastSent) return;
-    lastSent = row.seq;
-    write(row);
-  };
-  sessions.on(`session:${session.id}`, onEvent);
-
-  const heartbeat = setInterval(() => res.write(": ping\n\n"), 25_000);
-  req.on("close", () => {
-    clearInterval(heartbeat);
-    sessions.off(`session:${session.id}`, onEvent);
-    canvasEvents.off(session.id, onCanvas);
-    clearTimeout(heldTimer);
-  });
-});
+app.use("/api", eventsRouter());
 
 /**
  * Anything under /api that no route took. Answered in JSON, like every other
@@ -1492,11 +1354,7 @@ app.use("/api", (req, res) => {
 const webDist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");
 if (existsSync(webDist)) {
   app.use(portalSecurityHeaders);
-  app.use(express.static(webDist));
-  // A built file that is not there is a 404, not the page: a tab from before a
-  // deploy asking for a chunk the deploy removed would otherwise be handed
-  // HTML under a script's name, and the service worker would keep it.
-  app.get(/^(?!\/api|\/assets\/).*/, (_req, res) => res.sendFile(path.join(webDist, "index.html")));
+  serveWeb(app, webDist);
 }
 
 /**
@@ -1543,6 +1401,9 @@ const tls =
     : null;
 
 const host = bindHost(process.env.PORTAL_PASSWORD, process.env.ALLOW_OPEN);
+// Before anything can start a run: a catch-up routine marked running in the same
+// moment would be taken for one the last server left.
+const cutOff = sessions.recoverOrphans();
 const server = (tls ? createHttpsServer(tls, app) : createHttpServer(app)).listen(
   PORT,
   host,
@@ -1553,10 +1414,10 @@ const server = (tls ? createHttpsServer(tls, app) : createHttpServer(app)).liste
   console.log(`  workspaces: ${WORKSPACE_ROOT}`);
   console.log(`  auth:     ${authEnabled ? "password" : "DISABLED"}`);
 
-  // Enabled channels come up with the server, so a restart does not silently
-  // leave the agent unreachable.
   // Recurring schedules wait for their next slot; overdue one-off routines catch up.
   routineSupervisor.start();
+  // Agents with a heartbeat look around on their own, when nothing else is using the model.
+  heartbeat.start();
 
   // pi's catalogue, built now rather than when the first chat is opened:
   // that chat's effort pill waits for it to say which levels its model has.
@@ -1566,9 +1427,13 @@ const server = (tls ? createHttpsServer(tls, app) : createHttpServer(app)).liste
     modelRuntime().catch((e) => console.error(`[portal] pi's model catalogue could not be built: ${(e as Error).message}`));
   }
 
+  // Enabled channels come up with the server, so a restart does not silently
+  // leave the agent unreachable.
   channelSupervisor
     .sync()
     .then(() => console.log(`  channels: ${channelSupervisor.summary()}`))
+    // Once they are up: the person whose request the restart cut off is told.
+    .then(() => channelSupervisor.tellRestart(cutOff))
     .catch((e) => console.error(`[portal] channel startup failed: ${e.message}`));
   }
 );
@@ -1590,24 +1455,49 @@ watchBrowserFrames();
 startLlamaProxy(
   (sessionId, prefill) => sessions.reportPrefill(sessionId, prefill),
   (sessionId, load) => sessions.reportModelLoad(sessionId, load),
+  (sessionId, timings) => sessions.reportTimings(sessionId, timings),
 );
-sessions.recoverOrphans();
-getDb().prepare("UPDATE canvases SET active_call = NULL, status = 'interrupted', agent_read_revision = revision WHERE active_call IS NOT NULL").run();
+sessions.startReaper();
+// Folders put aside for removal that a stop cut short: see folder-removal.ts.
+sweepRemoved(WORKSPACE_ROOT);
+sweepRemoved(agentsRoot());
+interruptCanvasWrites();
 pinConnection();
+adoptPortalBrowser();
 // The memory tidied up at its set time, when the portal runs Understory.
 scheduleDreams();
 
-async function shutdown(signal: string) {
+/**
+ * The stop is one, however many signals ask for it: a second Ctrl-C does, and so
+ * does a package that ends its own children on SIGTERM and raises the signal
+ * again, as pi-lens does. A second run found the shells already taken out of the
+ * list, had nothing to wait for, and ended the portal before the first run's two
+ * seconds were up, with whatever the shells' jobs ignoring a hangup left running.
+ */
+let stopping: Promise<void> | undefined;
+function shutdown(signal: string): Promise<void> {
+  if (stopping) {
+    console.log(`${signal} received — already stopping`);
+    return stopping;
+  }
+  return (stopping = stop(signal));
+}
+
+async function stop(signal: string) {
   console.log(`${signal} received — stopping running sessions`);
+  // However long the rest takes, and no longer than docker waits before it kills.
+  setTimeout(() => process.exit(0), 10_000).unref();
   routineSupervisor.stop();
+  // Alongside the rest: their shells are given a moment to wind down.
+  const shells = endAllTerminals();
   await channelSupervisor.shutdown();
   await sessions.shutdown();
+  await shells;
   server.close(() => process.exit(0));
   // Every open page holds an event stream that never ends by itself, and
   // close() waits for them — so a restart always sat out the full ten seconds
-  // below, which is as long as docker waits before it kills.
+  // of the timer above.
   server.closeAllConnections();
-  setTimeout(() => process.exit(0), 10_000).unref();
 }
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 process.on("SIGINT", () => void shutdown("SIGINT"));

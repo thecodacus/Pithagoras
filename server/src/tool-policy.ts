@@ -15,13 +15,30 @@
 /**
  * The MCP the portal attaches the agent's browser as.
  *
- * Its tools arrive named `browser_<whatever>`, and they are the one group here
- * that already has a switch: the globe beside the composer, which grants the
- * session the browser itself. Two switches for one question is one too many,
- * and the weaker of them is this one — turning the tools off does not take the
- * browser away, it only stops offering it.
+ * Its tools arrive named `browser_<whatever>`, and they are switched here like
+ * any other server's: having the browser is having its tools, and there is no
+ * second switch for it. The globe beside the composer only shows or hides the
+ * view of the browser the agent is driving.
  */
 export const BROWSER_MCP = "browser";
+
+/**
+ * The portal's own browser tools (browser/tools.ts): browser tools by name,
+ * whatever MCP servers there are, since they come from no server.
+ */
+export const PORTAL_BROWSER_TOOLS = [
+  "browser_navigate",
+  "browser_back",
+  "browser_snapshot",
+  "browser_click",
+  "browser_type",
+  "browser_select",
+  "browser_key",
+  "browser_scroll",
+  "browser_find",
+  "browser_get_text",
+  "browser_screenshot",
+] as const;
 
 /**
  * Which MCP server a tool came through, if any.
@@ -34,12 +51,21 @@ export const BROWSER_MCP = "browser";
  *
  * The longest match wins, or a server called `browser` would claim the tools
  * of one called `browser_staging`.
+ *
+ * The prefix is the server's name with its hyphens as underscores, which is how
+ * the adapter writes it: `brave-search` registers `brave_search_brave_web_search`.
+ * What is returned is the name as configured.
  */
 export function mcpServerOf(name: string, servers: Iterable<string>): string | undefined {
   let best: string | undefined;
+  let bestLength = -1;
   for (const server of servers) {
-    if (!name.startsWith(`${server}_`)) continue;
-    if (!best || server.length > best.length) best = server;
+    const prefix = server.replace(/-/g, "_");
+    if (!name.startsWith(`${prefix}_`)) continue;
+    if (prefix.length > bestLength) {
+      best = server;
+      bestLength = prefix.length;
+    }
   }
   return best;
 }
@@ -61,6 +87,7 @@ export function browserTool(
   servers: Iterable<string>,
   browsers: string[] = [BROWSER_MCP]
 ): boolean {
+  if ((PORTAL_BROWSER_TOOLS as readonly string[]).includes(name)) return true;
   const server = mcpServerOf(name, servers);
   return server !== undefined && browsers.includes(server);
 }

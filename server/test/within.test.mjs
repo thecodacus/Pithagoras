@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, symlinkSync } from "node:fs";
 import path from "node:path";
+import { scratch } from "./server-harness.mjs";
 
 const { insideReal, isUnderText, isWithinText, pathBelow } = await import("../dist/within.js");
 
@@ -42,7 +42,7 @@ test("what is written with .. or doubled separators is judged by where it goes",
 });
 
 test("by where it leads, a link into the folder counts as inside, and an empty place does not", (t) => {
-  const home = mkdtempSync(path.join(tmpdir(), "pithagoras-within-"));
+  const home = scratch("pithagoras-within-");
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const project = path.join(home, "site");
   mkdirSync(path.join(project, "docs"), { recursive: true });

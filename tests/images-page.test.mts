@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appendPage, fieldsOf, fieldsText, madeButNotListed, mergeTop, parseFields, readFilter, readForm, sameList, tiles, typed, viewerList, viewerPicture } from "../web/src/images-gallery.ts";
+import { LIMITS, OUTPUT_FORMATS, appendPage, fieldsText, madeButNotListed, mergeTop, readFilter, readForm, sameList, settingsBody, sizeParts, tiles, viewerList, viewerPicture } from "../web/src/images-gallery.ts";
+import { LIMITS as portalLimits, OUTPUT_FORMATS as portalFormats } from "../server/src/image-settings.ts";
 import type { GalleryPicture, PictureJob } from "../web/src/api.ts";
+
+/** Every field empty, as a form that was kept nothing starts. */
+const noFields = () => readForm(null, 1).make;
 
 let n = 0;
 const picture = (over: Partial<GalleryPicture> = {}): GalleryPicture => {
@@ -12,6 +16,25 @@ const picture = (over: Partial<GalleryPicture> = {}): GalleryPicture => {
 const newestFirst = (...p: GalleryPicture[]) => [...p].sort((a, b) => b.createdAt - a.createdAt);
 const ids = (p: { id: string }[]) => p.map((x) => x.id);
 const job = (over: Partial<PictureJob> = {}): PictureJob => ({ id: `j${++n}`, kind: "generate", state: "running", prompt: "j", startedAt: 5000 + n, ...over });
+
+test("the form's limits are the portal's own, so that raising one raises both and the form does not refuse what the portal takes", () => {
+  assert.equal(LIMITS, portalLimits);
+  assert.equal(OUTPUT_FORMATS, portalFormats);
+  const wide = { ...noFields(), width: "9000", height: "9000" };
+  assert.deepEqual(settingsBody(wide, false, false), { field: "width", problem: "size-range" });
+  const side = portalLimits.side as { min: number; max: number };
+  const was = side.max;
+  side.max = 9000;
+  try {
+    assert.deepEqual(settingsBody(wide, false, false), { body: { size: "9000x9000" } });
+  } finally {
+    side.max = was;
+  }
+  // The seed's lowest and the strength's range are the portal's too.
+  assert.deepEqual(settingsBody({ ...noFields(), seed: String(portalLimits.seed.min) }, false, true), { body: { seed: portalLimits.seed.min } });
+  assert.ok("body" in settingsBody({ ...noFields(), strength: String(portalLimits.strength.max) }, true, true));
+  assert.ok("field" in settingsBody({ ...noFields(), strength: String(portalLimits.strength.max + 0.5) }, true, true));
+});
 
 test("the filters are read from the address, and what is not a filter is none", () => {
   assert.deepEqual(readFilter(new URLSearchParams("origin=chat&kind=edited")), { origin: "chat", kind: "edited" });
@@ -157,39 +180,107 @@ test("a picture that a job made and the list has not got is asked for, unless th
   assert.deepEqual(madeButNotListed(all, have, new Set(), { origin: "chat" }), []);
 });
 
-test("extra fields are read one to a line, with what is wrong with a line said by its number", () => {
-  assert.deepEqual(parseFields("quality=high\n\n  seed = 42 \nstyle=\"natural\"\r\nnote=a=b"), { fields: { quality: "high", seed: "42", style: '"natural"', note: "a=b" } });
-  assert.deepEqual(parseFields(""), { fields: {} });
-  assert.deepEqual(parseFields("quality=high\nnonsense"), { error: "missing", line: 2 });
-  assert.deepEqual(parseFields("=value"), { error: "missing", line: 1 });
-  assert.deepEqual(parseFields("a=1\nb=2\na=3"), { error: "twice", line: 3 });
-  // A name that is also on the object's prototype is a name like another.
-  assert.deepEqual(parseFields("constructor=1"), { fields: { constructor: "1" } });
-  assert.deepEqual(Object.keys(parseFields("__proto__=1").fields ?? {}), ["__proto__"]);
-});
-
-test("extra fields read back as they were sent: text that looks like a number or a switch keeps its quotes", () => {
-  assert.equal(typed("high"), "high");
-  assert.equal(typed("42"), '"42"');
-  assert.equal(typed("true"), '"true"');
-  assert.equal(typed(42), "42");
-  assert.equal(typed(1.5), "1.5");
-  assert.equal(typed(false), "false");
-  assert.deepEqual(fieldsOf({ quality: "high", seed: "42", steps: 30, hd: true }), { quality: "high", seed: '"42"', steps: "30", hd: "true" });
-  assert.deepEqual(fieldsOf(undefined), {});
-  assert.equal(fieldsText({ quality: "high", seed: "42" }), 'quality=high\nseed="42"');
+test("what an older version sent as free fields is shown as it was, text that looks like a number or a switch keeping its quotes", () => {
+  assert.equal(fieldsText({ quality: "high", seed: "42", steps: 30, hd: true, soft: "false" }), 'quality=high\nseed="42"\nsteps=30\nhd=true\nsoft="false"');
   assert.equal(fieldsText(undefined), "");
 });
 
-test("what the form kept is read back as far as it still makes sense", () => {
-  const kept = JSON.stringify({ model: "draw-2", size: "768x512", count: 3, extra: "quality=high", open: true });
-  assert.deepEqual(readForm(kept, 4), { model: "draw-2", size: "768x512", count: 3, extra: "quality=high", open: true });
+const fields = (over: Partial<ReturnType<typeof noFields>> = {}) => ({ ...noFields(), ...over });
+
+test("a setting that is left empty is not sent, and nothing is sent for a form with none", () => {
+  assert.deepEqual(settingsBody(noFields(), false, true), { body: {} });
+  assert.deepEqual(settingsBody(noFields(), true, true), { body: {} });
+  assert.deepEqual(settingsBody(fields({ model: "  ", width: " ", seed: " ", negativePrompt: "  \n" }), true, true), { body: {} });
+  assert.deepEqual(
+    settingsBody(fields({ model: " m ", width: "512", height: "768", outputFormat: "jpeg", outputCompression: "80", negativePrompt: " blurry ", seed: "42", sampleSteps: "20" }), false, true),
+    { body: { model: "m", size: "512x768", outputFormat: "jpeg", outputCompression: 80, negativePrompt: "blurry", seed: 42, sampleSteps: 20 } },
+  );
+});
+
+test("what only stable-diffusion.cpp reads is looked at, and sent, only while the switch for it is on", () => {
+  const typed = fields({ width: "512", height: "512", negativePrompt: "blurry", seed: "7", sampleSteps: "20", strength: "0.5", fromNoise: true });
+  assert.deepEqual(settingsBody(typed, true, false), { body: { size: "512x512" } }, "off: the OpenAI ones only");
+  assert.deepEqual(settingsBody(typed, false, false), { body: { size: "512x512" } });
+  // Off, a wrong value is not even looked at: it is not on the form, and not the person's to fix.
+  assert.deepEqual(settingsBody(fields({ seed: "x", sampleSteps: "0", strength: "9", negativePrompt: "x".repeat(5000) }), true, false), { body: {} });
+  assert.deepEqual(settingsBody(fields({ seed: "7", sampleSteps: "20", negativePrompt: "blurry", strength: "0.5" }), false, true), { body: { negativePrompt: "blurry", seed: 7, sampleSteps: 20 } }, "a new picture has no strength");
+  assert.deepEqual(settingsBody(fields({ strength: "0,75" }), true, true), { body: { strength: 0.75 } }, "a comma is a decimal point");
+  assert.deepEqual(settingsBody(fields({ strength: ".5" }), true, true), { body: { strength: 0.5 } });
+  assert.deepEqual(settingsBody(fields({ strength: "1" }), true, true), { body: { strength: 1 } });
+  assert.deepEqual(settingsBody(fields({ strength: "0" }), true, true), { body: { strength: 0 } });
+  assert.deepEqual(settingsBody(fields({ seed: "-1" }), false, true), { body: { seed: -1 } });
+  assert.deepEqual(settingsBody(fields({ seed: "0" }), false, true), { body: { seed: 0 } });
+});
+
+test("starting from noise is a setting of a change, and takes the strength away", () => {
+  assert.deepEqual(settingsBody(fields({ fromNoise: true }), true, true), { body: { fromNoise: true } });
+  assert.deepEqual(settingsBody(fields({ fromNoise: true, strength: "0.5", seed: "3" }), true, true), { body: { fromNoise: true, seed: 3 } }, "no strength with it, and not checked either");
+  assert.deepEqual(settingsBody(fields({ fromNoise: true, strength: "nonsense" }), true, true), { body: { fromNoise: true } });
+  assert.deepEqual(settingsBody(fields({ fromNoise: true }), false, true), { body: {} }, "a new picture has none to start from");
+  assert.deepEqual(settingsBody(fields({ fromNoise: false, strength: "0.5" }), true, true), { body: { strength: 0.5 } });
+});
+
+test("a compression goes only with a format that has one, and a setting that is wrong is named, with why", () => {
+  assert.deepEqual(settingsBody(fields({ outputFormat: "png", outputCompression: "50" }), false, true), { body: { outputFormat: "png" } });
+  assert.deepEqual(settingsBody(fields({ outputCompression: "50" }), false, true), { body: {} }, "no format, no compression");
+  assert.deepEqual(settingsBody(fields({ outputFormat: "webp", outputCompression: "0" }), false, true), { body: { outputFormat: "webp", outputCompression: 0 } });
+
+  const wrong = (over: Partial<ReturnType<typeof noFields>>, field: string, problem: string, edit = false) =>
+    assert.deepEqual(settingsBody(fields(over), edit, true), { field, problem }, JSON.stringify(over));
+  wrong({ width: "512" }, "height", "size-pair");
+  wrong({ height: "512" }, "width", "size-pair");
+  wrong({ width: "63", height: "512" }, "width", "size-range");
+  wrong({ width: "512", height: "8193" }, "height", "size-range");
+  wrong({ width: "5.5", height: "512" }, "width", "size-range");
+  wrong({ width: "abc", height: "512" }, "width", "size-range");
+  wrong({ outputFormat: "jpeg", outputCompression: "101" }, "outputCompression", "compression-range");
+  wrong({ outputFormat: "jpeg", outputCompression: "-1" }, "outputCompression", "compression-range");
+  wrong({ outputFormat: "jpeg", outputCompression: "1.5" }, "outputCompression", "compression-range");
+  wrong({ seed: "1.5" }, "seed", "seed");
+  wrong({ seed: "-2" }, "seed", "seed");
+  wrong({ seed: "abc" }, "seed", "seed");
+  wrong({ sampleSteps: "0" }, "sampleSteps", "steps");
+  wrong({ sampleSteps: "101" }, "sampleSteps", "steps");
+  wrong({ sampleSteps: "2.5" }, "sampleSteps", "steps");
+  wrong({ strength: "1.1" }, "strength", "strength", true);
+  wrong({ strength: "-0.1" }, "strength", "strength", true);
+  wrong({ strength: "high" }, "strength", "strength", true);
+  wrong({ strength: "0.5.5" }, "strength", "strength", true);
+  wrong({ negativePrompt: "x".repeat(4001) }, "negativePrompt", "negative-long");
+});
+
+test("a size of the add-on is shown in the fields as what is used while they are empty", () => {
+  assert.deepEqual(sizeParts("1024x768"), { width: "1024", height: "768" });
+  assert.deepEqual(sizeParts("auto"), { width: "auto", height: "auto" });
+  assert.deepEqual(sizeParts(""), { width: "", height: "" });
+  assert.deepEqual(sizeParts("huge"), { width: "", height: "" });
+});
+
+test("what the form kept is read back as far as it still makes sense, a seed never", () => {
+  const kept = JSON.stringify({
+    make: { model: "draw-2", width: "768", height: "512", negativePrompt: "blurry", outputFormat: "webp", outputCompression: "70", seed: "42", sampleSteps: "20", strength: "0.5" },
+    edit: { model: "edit-2", width: "", height: "", fromNoise: true },
+    count: 3,
+    open: true,
+  });
+  const got = readForm(kept, 4);
+  assert.deepEqual(got.make, { model: "draw-2", width: "768", height: "512", negativePrompt: "blurry", outputFormat: "webp", outputCompression: "70", seed: "", sampleSteps: "20", strength: "0.5", fromNoise: false });
+  assert.deepEqual(got.edit, { ...noFields(), model: "edit-2" }, "making and changing keep their own, and not starting from noise");
+  assert.equal(got.count, 3);
+  assert.equal(got.open, true);
   // Fewer may be made at once now than when it was kept.
   assert.equal(readForm(kept, 2).count, 2);
   // Nothing, or what is not it: the form as it starts.
-  const start = { model: "", size: "", count: 1, extra: "", open: false };
+  const start = { make: noFields(), edit: noFields(), count: 1, open: false };
   assert.deepEqual(readForm(null, 4), start);
   assert.deepEqual(readForm("not json", 4), start);
   assert.deepEqual(readForm('"text"', 4), start);
-  assert.deepEqual(readForm(JSON.stringify({ model: 5, count: -2, extra: {}, open: "yes" }), 4), start);
+  assert.deepEqual(readForm(JSON.stringify({ make: 5, edit: "x", count: -2, open: "yes" }), 4), start);
+  assert.deepEqual(readForm(JSON.stringify({ make: { outputFormat: "gif", width: 512 } }), 4).make, noFields());
+});
+
+test("what an older page kept is still the model and the size for making, and its free fields are gone", () => {
+  const old = JSON.stringify({ model: "draw-2", size: "768x512", count: 3, extra: "quality=high", open: true });
+  assert.deepEqual(readForm(old, 4), { make: { ...noFields(), model: "draw-2", width: "768", height: "512" }, edit: noFields(), count: 3, open: true });
+  assert.deepEqual(readForm(JSON.stringify({ model: "m", size: "auto" }), 4).make, { ...noFields(), model: "m" });
 });

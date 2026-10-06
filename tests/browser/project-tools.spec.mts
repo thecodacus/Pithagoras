@@ -1,33 +1,33 @@
-import { test, expect, type Page } from '@playwright/test';
+import { type Page } from '@playwright/test';
+import { test, expect, mockPortal, reply } from './portal-mock';
 
 /**
  * A portal with one project, "demo", and three tools seen. `off` is what the
  * project has off (the portal-wide default has web_fetch off, which the
  * project's answer includes); `puts` is what the page sent.
  */
-async function portal(page: Page, opts: { off?: string[]; refuse?: string; toolsError?: string } = {}) {
+async function portal(page: Page, opts: { off?: string[]; refuse?: string; toolsError?: string; readsFail?: boolean; saveFails?: string } = {}) {
   let off = opts.off ?? ['web_fetch'];
+  /** Whether the portal answers the list with an error: the test says when it is up again. */
+  const down = { reads: opts.readsFail ?? false };
   const puts: string[][] = [];
   /** What the page asked to have made, and the chats it then started. */
   const made: { body: any }[] = [];
   const chats: string[] = [];
-  await page.route('**/api/**', async (route) => {
-    const url = new URL(route.request().url());
-    const p = url.pathname;
-    const method = route.request().method();
-    let reply: unknown = {};
-    if (p === '/api/auth/status') reply = { authed: true, authRequired: false };
-    else if (p === '/api/sessions' && method === 'POST') {
+  await mockPortal(page, async ({ path: p, method, json, route }) => {
+    if (p === '/api/sessions' && method === 'POST') {
       chats.push(route.request().postData() ?? '');
-      reply = { id: 'c1', title: 'New chat', workspace: '/w/fresh', executor: 'host', status: 'idle', created_at: '', updated_at: '', last_error: null, pinned: false };
-    } else if (p === '/api/sessions') reply = { sessions: [], executor: 'host' };
-    else if (p === '/api/projects' && method === 'POST') {
-      const body = route.request().postDataJSON();
+      return { id: 'c1', title: 'New chat', workspace: '/w/fresh', executor: 'host', status: 'idle', created_at: '', updated_at: '', last_error: null, pinned: false };
+    }
+    if (p === '/api/sessions') return { sessions: [], executor: 'host' };
+    if (p === '/api/projects' && method === 'POST') {
+      const body = json();
       made.push({ body });
-      reply = { name: 'fresh', path: '/w/fresh', isGit: false, hasInstructions: false, ...(opts.toolsError ? { toolsError: opts.toolsError } : {}) };
-    } else if (p === '/api/tools') {
+      return { name: 'fresh', path: '/w/fresh', isGit: false, hasInstructions: false, ...(opts.toolsError ? { toolsError: opts.toolsError } : {}) };
+    }
+    if (p === '/api/tools') {
       // What the portal-wide default says: web_fetch off.
-      reply = {
+      return {
         tools: [
           { name: 'web_search', source: 'pi-web-access', defaultOn: true },
           { name: 'web_fetch', source: 'pi-web-access', defaultOn: false },
@@ -36,16 +36,26 @@ async function portal(page: Page, opts: { off?: string[]; refuse?: string; tools
         off: ['web_fetch'],
         names: {},
       };
-    } else if (p === '/api/projects') {
-      reply = { root: '/w', home: '/h', projects: [{ name: 'demo', path: '/w/demo', isGit: false, hasInstructions: false, hasTools: off.length !== 1 || off[0] !== 'web_fetch', sessions: 0, lastActive: null }] };
-    } else if (p === '/api/projects/demo/tools' && opts.refuse) {
-      return route.fulfill({ status: 400, json: { error: opts.refuse } });
-    } else if (p === '/api/projects/demo/tools' && method === 'PUT') {
-      off = route.request().postDataJSON().off;
+    }
+    if (p === '/api/projects') {
+      return { root: '/w', home: '/h', projects: [{ name: 'demo', path: '/w/demo', isGit: false, hasInstructions: false, hasTools: off.length !== 1 || off[0] !== 'web_fetch', sessions: 0, lastActive: null }] };
+    }
+    if (p === '/api/projects/demo/tools' && opts.refuse) {
+      return reply(400, { error: opts.refuse, code: 'tools-unsupported' });
+    }
+    if (p === '/api/projects/demo/tools' && method === 'GET' && down.reads) {
+      return reply(500, { error: 'The portal is starting up' });
+    }
+    if (p === '/api/projects/demo/tools' && method === 'PUT' && opts.saveFails) {
+      return reply(500, { error: opts.saveFails });
+    }
+    if (p === '/api/projects/demo/tools' && method === 'PUT') {
+      off = json().off;
       puts.push(off);
-      reply = { off, applied: 0 };
-    } else if (p === '/api/projects/demo/tools') {
-      reply = {
+      return { off, applied: 0 };
+    }
+    if (p === '/api/projects/demo/tools') {
+      return {
         live: false,
         off,
         names: {},
@@ -55,16 +65,12 @@ async function portal(page: Page, opts: { off?: string[]; refuse?: string; tools
           { name: 'todo', source: 'pi-todo', enabled: !off.includes('todo'), defaultOn: true },
         ],
       };
-    } else if (p === '/api/models') reply = { models: [], providers: {} };
-    await route.fulfill({ json: reply });
-  });
-  await page.addInitScript(() => {
-    (window as any).EventSource = class { onmessage: any; onopen: any; onerror: any; addEventListener() {} close() {} };
-    localStorage.setItem('pithagoras.setup', 'done');
-    localStorage.removeItem('toolGroupsOpen');
-  });
+    }
+    if (p === '/api/projects/demo/instructions') return { text: 'Use tabs.' };
+  }, { settings: true });
+  await page.addInitScript(() => localStorage.removeItem('toolGroupsOpen'));
   await page.goto('/projects');
-  return { puts, made, chats };
+  return { puts, made, chats, down };
 }
 
 const dialog = (page: Page) => page.getByRole('dialog');
@@ -113,6 +119,28 @@ test('a deployment that cannot switch tools says why in place of the list', asyn
   await page.getByRole('button', { name: 'Tools for demo' }).click();
   await expect(dialog(page)).toContainText('Tools cannot be switched with EXECUTOR=container');
   await expect(dialog(page).getByRole('checkbox')).toHaveCount(0);
+});
+
+test('a read that fails is not taken for a deployment without tool switches: it can be tried again', async ({ page }) => {
+  const { down } = await portal(page, { readsFail: true });
+  await page.getByRole('button', { name: 'Tools for demo' }).click();
+  await expect(dialog(page).getByRole('alert')).toContainText('Could not load this: The portal is starting up');
+  await expect(dialog(page).getByRole('checkbox')).toHaveCount(0);
+  down.reads = false;
+  await dialog(page).getByRole('button', { name: 'Try again' }).click();
+  await dialog(page).getByRole('button', { name: /pi-web-access/ }).click();
+  await expect(dialog(page).getByRole('checkbox', { name: 'web_search' })).toBeChecked();
+  await expect(dialog(page).getByRole('alert')).toHaveCount(0);
+});
+
+test('a switch the portal did not save snaps back, and says why', async ({ page }) => {
+  await portal(page, { saveFails: 'The settings file is read-only' });
+  await page.getByRole('button', { name: 'Tools for demo' }).click();
+  await dialog(page).getByRole('button', { name: /pi-todo/ }).click();
+  const todo = dialog(page).getByRole('checkbox', { name: 'todo' });
+  await todo.uncheck();
+  await expect(dialog(page).getByRole('alert')).toContainText('That switch was not saved: The settings file is read-only');
+  await expect(todo).toBeChecked();
 });
 
 test('the tools are chosen while the project is made, and go with it', async ({ page }) => {
@@ -179,4 +207,48 @@ test('the hint above the tools has room above it', async ({ page }) => {
   const hint = dialog(page).getByText('These are the tools earlier chats had.');
   await expect(hint).toBeVisible();
   expect(await hint.evaluate((el) => getComputedStyle(el).paddingTop)).toBe('8px');
+});
+
+test('the New project dialog asks before it is closed with something typed in, and not before', async ({ page }) => {
+  const { made } = await portal(page);
+  await page.getByRole('button', { name: 'New project' }).click();
+  // Nothing typed: Escape just closes it.
+  await page.keyboard.press('Escape');
+  await expect(dialog(page)).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'New project' }).click();
+  await dialog(page).getByRole('textbox', { name: 'Name' }).fill('fresh');
+  await page.keyboard.press('Escape');
+  const ask = page.getByRole('alertdialog', { name: 'Discard your changes?' });
+  await expect(ask).toBeVisible();
+  await ask.getByRole('button', { name: 'Cancel' }).click();
+  await expect(dialog(page).getByRole('textbox', { name: 'Name' })).toHaveValue('fresh');
+  // The close button and a click beside the dialog ask as well; Discard closes it.
+  await dialog(page).getByRole('button', { name: 'Close' }).click();
+  await expect(ask).toBeVisible();
+  await ask.getByRole('button', { name: 'Cancel' }).click();
+  await expect(ask).toBeHidden();
+  // Inside the page's own area, beside the dialog.
+  await page.mouse.click(300, 360);
+  await expect(ask).toBeVisible();
+  await ask.getByRole('button', { name: 'Discard' }).click();
+  await expect(dialog(page)).toHaveCount(0);
+  expect(made).toEqual([]);
+});
+
+test("a project's instructions asks before they are closed with changes, and not before", async ({ page }) => {
+  await portal(page);
+  await page.getByRole('button', { name: 'Instructions for demo' }).click();
+  const text = dialog(page).getByRole('textbox', { name: 'Project instructions' });
+  await expect(text).toHaveValue('Use tabs.');
+  await page.keyboard.press('Escape');
+  await expect(dialog(page)).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Instructions for demo' }).click();
+  await text.fill('Use spaces.');
+  await page.keyboard.press('Escape');
+  const ask = page.getByRole('alertdialog', { name: 'Discard your changes?' });
+  await expect(ask).toBeVisible();
+  await ask.getByRole('button', { name: 'Discard' }).click();
+  await expect(dialog(page)).toHaveCount(0);
 });

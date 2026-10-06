@@ -67,7 +67,7 @@ const side = (raw: string) => {
  * where the two halves are the same name; a rename with spaces in it is split
  * at its last " b/", and put right by the "rename from/to" lines after it.
  */
-export function headerNames(rest: string): [string, string] | null {
+function headerNames(rest: string): [string, string] | null {
   const quoted = /^("(?:[^"\\]|\\.)*"|\S+) ("(?:[^"\\]|\\.)*")$/.exec(rest) ?? /^("(?:[^"\\]|\\.)*") (.+)$/.exec(rest);
   if (quoted && (quoted[1].startsWith('"') || quoted[2].startsWith('"'))) return [side(quoted[1]), side(quoted[2])];
   if ((rest.length - 5) % 2 === 0) {

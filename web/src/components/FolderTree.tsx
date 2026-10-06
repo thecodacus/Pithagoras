@@ -1,8 +1,8 @@
 import { useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
-import { LuChevronRight, LuFolder, LuFolderOpen, LuFolderSearch, LuFolderTree, LuGripVertical, LuHouse, LuList, LuPlus } from "react-icons/lu";
+import { LuBot, LuChevronRight, LuFolder, LuFolderOpen, LuFolderSearch, LuFolderTree, LuGripVertical, LuHouse, LuList, LuPlus } from "react-icons/lu";
 import type { SessionStatus } from "../api";
 import { followPointer } from "../pointer-drag";
-import { folderName, type Folder, type FolderSort } from "../session-folders";
+import { HOME, folderName, type Folder, type FolderSort } from "../session-folders";
 import type { Grouping } from "../use-session-folders";
 import { Select } from "./Select";
 import { StatusDot } from "./StatusDot";
@@ -147,7 +147,8 @@ export function FolderTree<S extends { status: SessionStatus }>({
         const before = drag && !carried && drag.to === other;
         if (!carried) other++;
         const running = !open && f.sessions.some((s) => s.status === "running");
-        const Icon = f.kind === "home" ? LuHouse : f.kind === "elsewhere" ? LuFolderSearch : open ? LuFolderOpen : LuFolder;
+        // Home is the first agent's; every other agent's home is its own.
+        const Icon = f.kind === "home" ? (f.key === HOME ? LuHouse : LuBot) : f.kind === "elsewhere" ? LuFolderSearch : open ? LuFolderOpen : LuFolder;
         return (
           <div key={f.key} data-folder={f.key} className={carried ? "opacity-50" : undefined}>
             {before && mark}
@@ -186,8 +187,9 @@ export function FolderTree<S extends { status: SessionStatus }>({
                 <span className="truncate font-medium">{folderName(f)}</span>
               </button>
               {running && <StatusDot status="running" bare />}
-              <span className="shrink-0 px-1 text-[11px] tabular-nums text-fg-faint" aria-label={tp(f.sessions.length, "{n} chat", "{n} chats")}>
-                {f.sessions.length}
+              <span className="shrink-0 px-1 text-[11px] tabular-nums text-fg-faint">
+                <span aria-hidden>{f.sessions.length}</span>
+                <span className="sr-only">{tp(f.sessions.length, "{n} chat", "{n} chats")}</span>
               </span>
               {extra?.(f)}
               {onNewChat && f.path !== null && (
@@ -222,7 +224,7 @@ const SORTS: { value: FolderSort; label: string }[] = [
 ];
 
 /** How the chats are listed: by folder or as one list, and the folders in which order. */
-export function FolderControls({
+function FolderControls({
   grouping,
   sort,
   onGrouping,

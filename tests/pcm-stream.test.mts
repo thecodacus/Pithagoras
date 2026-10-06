@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { preparePcmSpeech, readPcmStream } from '../web/src/pcm-stream.js';
 import { stretch } from '../web/src/time-stretch.js';
+import { addLocale, setLanguage } from '../web/src/i18n.js';
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function audio() {
   const sources: any[] = [];
@@ -76,6 +77,26 @@ test('buffered PCM with a missing half-sample is incomplete', async () => {
   const body = new ReadableStream<Uint8Array>({ start(c) { writer = c; } });
   writer.enqueue(new Uint8Array(15)); writer.close();
   await assert.rejects(readPcmStream(body, context, new AbortController().signal), /incomplete/);
+});
+test('audio that stops short is reported without naming an engine, in the portal\'s language', async () => {
+  const { context } = audio();
+  const reasons = async () => {
+    const buffered = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new Uint8Array(15)); c.close(); } });
+    const streamed = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new Uint8Array(32001)); c.close(); } });
+    const speech = await preparePcmSpeech(streamed, context, new AbortController().signal);
+    return Promise.all([
+      readPcmStream(buffered, context, new AbortController().signal).then(() => '', (e: Error) => e.message),
+      speech.completed.then(() => '', (e: Error) => e.message),
+    ]);
+  };
+  addLocale({ code: 'xx', name: 'Test', strings: { 'The voice service returned incomplete audio': 'xx: incomplete audio' } });
+  assert.deepEqual(await reasons(), ['The voice service returned incomplete audio', 'The voice service returned incomplete audio']);
+  setLanguage('xx');
+  try {
+    assert.deepEqual(await reasons(), ['xx: incomplete audio', 'xx: incomplete audio']);
+  } finally {
+    setLanguage('system');
+  }
 });
 test('barge-in cancels both streaming reads and scheduled audio', async () => {
   const { context, sources } = audio(); const abort = new AbortController(); let cancelled = false;

@@ -1,17 +1,17 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { ASR_MODELS, DEFAULT_CHOICE, asrDevice, asrDevices, cpuServerConfig, parseChoice, serverConfig, usesGpu, type VoiceChoice } from '../server/src/voice-engines.js';
+import { ASR_MODELS, DEFAULT_CHOICE, asrDevice, asrDevices, cpuServerConfig, parseChoice, serverConfig, ttsDevice, ttsDevices, usesGpu, type Device, type VoiceChoice } from '../server/src/voice-engines.js';
 import { containerSpec } from '../server/src/extensions/voice-service.js';
+import { scratch } from "./helpers.mts";
 
 // The setup script run for real, with every command that would build, download or
 // install something replaced by a stub that writes down what it was asked to do.
 // Nothing is downloaded, built or installed, and no GPU is needed.
 const script = readFileSync('deploy/voice/setup.sh', 'utf8');
-const root = mkdtempSync(path.join(tmpdir(), 'voice-setup-'));
+const root = scratch('voice-setup-');
 const calls = path.join(root, 'calls.log');
 const stubs = path.join(root, 'stubs.sh');
 const volume = path.join(root, 'volume');
@@ -27,12 +27,15 @@ writeFileSync(stubs, `
 log() { echo "$*" >> "$CALLS"; }
 cd() { if [ "\${1:-}" = /voice ]; then builtin cd "$VOLUME"; else builtin cd "$@"; fi; }
 touch() { case "\${1:-}" in /usr/*) log "touch $1";; *) command touch "$@";; esac; }
-dpkg() { log "dpkg $*"; }
+# Nothing is installed yet as far as a package query can tell.
+dpkg() { log "dpkg $*"; [ "$1" != -s ]; }
 apt-get() { log "apt-get $*"; }
 nvidia-smi() { log "nvidia-smi $*"; echo "\${ARCH:-8.6}"; }
 git() {
   log "git $*"
   if [ "$1" = clone ]; then mkdir -p "$3/.git" "$3/scripts"; fi
+  # A clone from an earlier pin does not have the revision asked for.
+  if [ "\${3:-}" = cat-file ] && [ -n "\${MISSING_REVISION:-}" ]; then return 1; fi
 }
 cmake() { log "cmake $*"; if [ "$1" = --build ]; then mkdir -p whisper/build/bin; cp "$SERVER_STUB" whisper/build/bin/whisper-server; fi; }
 aria2c() {
@@ -59,13 +62,24 @@ bash() {
 `);
 after(() => rmSync(root, { recursive: true, force: true }));
 
+// The script finds only these programs: anything else it runs is "command not found", and not whatever this machine has,
+// so a line added to it that installs or downloads something fails here instead of doing it.
+const programs = path.join(root, 'bin');
+mkdirSync(programs);
+const where = (name: string) => spawnSync('sh', ['-c', `command -v ${name}`], { encoding: 'utf8' }).stdout.trim();
+for (const name of ['basename', 'cat', 'cp', 'dirname', 'grep', 'head', 'mkdir', 'mv', 'paste', 'rm', 'sed', 'sleep', 'sort', 'touch', 'tr']) symlinkSync(where(name), path.join(programs, name));
+// bash is named in full: the PATH it is run with does not have it.
+const bash = where('bash');
+
 /** Runs the script in the volume, as the container would. */
 function run(env: Record<string, string> = {}) {
   mkdirSync(volume, { recursive: true });
   writeFileSync(calls, '');
-  const result = spawnSync('bash', ['--noprofile', '--norc', '-c', script], {
-    env: { PATH: process.env.PATH!, BASH_ENV: stubs, CALLS: calls, VOLUME: volume, SERVER_STUB: serverStub, GGUF_STUB: ggufStub, ...env }, encoding: 'utf8', timeout: 30000,
+  const result = spawnSync(bash, ['--noprofile', '--norc', '-c', script], {
+    env: { PATH: programs, BASH_ENV: stubs, CALLS: calls, VOLUME: volume, SERVER_STUB: serverStub, GGUF_STUB: ggufStub, ...env }, encoding: 'utf8', timeout: 30000,
   });
+  // A program that is not in the list would not fail the script, only change what it does: it is said here instead.
+  assert.doesNotMatch(result.stderr, /command not found/);
   const log = readFileSync(calls, 'utf8').split('\n').filter(Boolean);
   return { status: result.status, stderr: result.stderr, stdout: result.stdout, log };
 }
@@ -80,6 +94,14 @@ const smi = (log: string[]) => log.filter(l => l.startsWith('nvidia-smi'));
 const startedRaw = (log: string[]) => log.filter(l => /^(whisper-server|audiocpp_server) /.test(l)).sort();
 const started = (log: string[]) => startedRaw(log).map(l => l.replace(/ cvd=.*$/, ''));
 const NONE = (asr: VoiceChoice['asr'], asrModel: string): VoiceChoice => ({ tts: 'none', asr, asrModel });
+
+test('the script reaches only the programs it is given: any other is not found', () => {
+  for (const name of ['curl', 'pip', 'pip3', 'npm', 'wget', 'sudo']) {
+    const result = spawnSync(bash, ['--noprofile', '--norc', '-c', `${name} --version`], { env: { PATH: programs }, encoding: 'utf8' });
+    assert.equal(result.status, 127, name);
+    assert.match(result.stderr, /not found/, name);
+  }
+});
 
 test('the script is valid bash', () => {
   const result = spawnSync('bash', ['-n'], { input: script, encoding: 'utf8' });
@@ -103,35 +125,38 @@ test('without any choice the script makes the original combination: Breeze, Whis
   assert.equal(existsSync(path.join(volume, 'audio/build/portal-cpu')), false);
 });
 
-/** Every choice the installer can make: each speech engine, or none, with each recognition model on each device it runs on. */
-const everyChoice = (): VoiceChoice[] => (['breeze', 'chatterbox', 'none'] as const).flatMap(tts => ASR_MODELS.flatMap(o =>
-  asrDevices({ tts, asr: o.asr }).map(device => parseChoice({ tts, asr: o.asr, asrModel: o.model, asrDevice: device }))));
+/** Every choice the installer can make: each speech engine, on each device it runs on, or none, with each recognition model on each device it runs on. */
+const everyChoice = (): VoiceChoice[] => (['breeze', 'chatterbox', 'kokoro', 'none'] as const).flatMap(tts =>
+  (tts === 'none' ? [undefined] : ttsDevices(tts) as (Device | undefined)[]).flatMap(ttsDevice => ASR_MODELS.flatMap(o =>
+    asrDevices({ tts, asr: o.asr, ttsDevice }).map(device => parseChoice({ tts, ttsDevice, asr: o.asr, asrModel: o.model, asrDevice: device })))));
 
 test('every engine, model size and device the page offers is built, downloaded and started by the script', () => {
   const sums: Record<string, string> = {
     '0.6b': '6c44ec2fb4cee513892d7863c1fcc3ea6b699ffa4d899b0ef4ab19956d9544f7', '1.7b': 'da4fc2ac7f24dee784d1684eb1f35836cdbf559519452ae11777670734c0a4f8',
   };
   const choices = everyChoice();
-  // 3 speech choices; Whisper in 2 sizes on the CPU only, Qwen3-ASR in 2 on the CPU, and on the GPU too beside a speech engine.
-  assert.equal(choices.length, 2 * (2 + 2 * 2) + 2 + 2);
+  // Speech on the GPU: 3 engines; Whisper in 2 sizes on the CPU only, Qwen3-ASR in 2 on the CPU, and on the GPU too beside it.
+  // Kokoro on the CPU, and no speech: recognition on the CPU only.
+  assert.equal(choices.length, 3 * (2 + 2 * 2) + (2 + 2) + (2 + 2));
   for (const choice of choices) {
     fresh();
-    const name = `${choice.tts} + ${choice.asr}:${choice.asrModel} on the ${asrDevice(choice)}`;
-    const qwen = choice.asr === 'qwen3-asr', qwenCpu = qwen && asrDevice(choice) === 'cpu', gpu = usesGpu(choice);
-    // The portal gives recognition on the CPU the threads of the host; what is on the GPU keeps the script's four.
+    const name = `${choice.tts}${choice.ttsDevice === 'cpu' ? ' on the CPU' : ''} + ${choice.asr}:${choice.asrModel} on the ${asrDevice(choice)}`;
+    const qwen = choice.asr === 'qwen3-asr', qwenCpu = qwen && asrDevice(choice) === 'cpu', gpu = usesGpu(choice), speechCpu = ttsDevice(choice) === 'cpu';
+    // The portal gives what runs on the CPU the threads of the host; what is on the GPU keeps the script's four.
     const threads = !gpu || qwenCpu ? 6 : undefined;
     const { status, log, stderr } = run(environment(choice, threads));
     assert.equal(status, 0, `${name}: ${stderr}`);
     // Build: CUDA wherever the GPU is used, for the card's architecture and with the quantizer; else a CPU build of its own with no
     // CUDA and no nvidia-smi; and no audio.cpp at all for Whisper alone.
     if (gpu) {
-      const families = [choice.tts === 'breeze' ? 'breeze_tts' : 'chatterbox', ...(qwen ? ['qwen3_asr'] : [])].sort().join(',');
+      const families = [{ breeze: 'breeze_tts', chatterbox: 'chatterbox', kokoro: 'kokoro_tts', none: '' }[choice.tts], ...(qwen ? ['qwen3_asr'] : [])].filter(Boolean).sort().join(',');
       assert.equal(built(log).length, 1, name);
       assert.match(built(log)[0], new RegExp(`--cuda on --cuda-arch 86 --build-dir /voice/audio/build/portal --build-type Release --model-set custom --models ${families} --target audiocpp_server --target audiocpp_gguf`), name);
       assert.equal(smi(log).length, 1, name);
-    } else if (qwen) {
+    } else if (qwen || speechCpu) {
+      const families = [...(speechCpu ? ['kokoro_tts'] : []), ...(qwen ? ['qwen3_asr'] : [])].join(',');
       assert.equal(built(log).length, 1, name);
-      assert.match(built(log)[0], /--cuda off --build-dir \/voice\/audio\/build\/portal-cpu --build-type Release --model-set custom --models qwen3_asr --target audiocpp_server --jobs 4$/, name);
+      assert.match(built(log)[0], new RegExp(`--cuda off --build-dir /voice/audio/build/portal-cpu --build-type Release --model-set custom --models ${families} --target audiocpp_server --jobs 4$`), name);
       assert.ok(!built(log)[0].includes('audiocpp_gguf') && !built(log)[0].includes('--cuda on') && !built(log)[0].includes('--cuda-arch'), `${name}: a CPU build has no CUDA`);
       assert.deepEqual(smi(log), [], `${name}: nothing is asked of a GPU there is none of`);
     } else {
@@ -142,6 +167,10 @@ test('every engine, model size and device the page offers is built, downloaded a
     if (choice.tts === 'chatterbox') assert.ok(downloads(log).some(l => l.startsWith('aria2c d586dd1aa59613cab8046176fb7ca5ba191c02a9b10ffa5b0d892ed22b470656 https://huggingface.co/audio-cpp/audio.cpp-gguf/resolve/6d5436fc85f7a20c2e9f4e472b7f3a532f686444/Chatterbox-GGUF/chatterbox-q8_0.gguf')), name);
     assert.equal(names.includes('models/chatterbox-q8_0.gguf.part'), choice.tts === 'chatterbox', name);
     assert.equal(names.includes('models/breeze-bf16.gguf.part'), choice.tts === 'breeze', name);
+    if (choice.tts === 'kokoro') assert.ok(downloads(log).some(l => l.startsWith('aria2c 5d800fd204029302c10313daeafdb31c875c7c29ae31974d0d156cc7f512d1d0 https://huggingface.co/audio-cpp/audio.cpp-gguf/resolve/351dbab8d8534675ee29440bb402e348b09e55e2/Kokoro-82M-GGUF/kokoro-82m-q8_0.gguf')), name);
+    assert.equal(names.includes('models/kokoro-82m-q8_0.gguf.part'), choice.tts === 'kokoro', name);
+    // eSpeak NG turns Kokoro's text into phonemes; nothing else needs it.
+    assert.equal(log.some(l => l === 'apt-get install -y --no-install-recommends libespeak-ng1 espeak-ng-data'), choice.tts === 'kokoro', name);
     if (qwen) {
       const folder = `Qwen3-ASR-${choice.asrModel.toUpperCase()}-GGUF`;
       assert.ok(downloads(log).some(l => l.startsWith(`aria2c ${sums[choice.asrModel]} https://huggingface.co/audio-cpp/audio.cpp-gguf/resolve/6d5436fc85f7a20c2e9f4e472b7f3a532f686444/${folder}/qwen3-asr-${choice.asrModel}-q8_0.gguf`)), name);
@@ -154,7 +183,7 @@ test('every engine, model size and device the page offers is built, downloaded a
     const expected = [
       ...(qwen ? [] : [`whisper-server --host 127.0.0.1 --port 8188 --model /voice/models/ggml-${choice.asrModel}.bin --language auto --threads ${threads ?? 4}`]),
       ...(gpu ? ['audiocpp_server --config /voice/server.json'] : []),
-      ...(qwenCpu ? ['audiocpp_server --config /voice/server-cpu.json'] : []),
+      ...(qwenCpu || speechCpu ? ['audiocpp_server --config /voice/server-cpu.json'] : []),
     ].sort();
     assert.deepEqual(started(log).map(l => l.replace(/ bin=.*$/, '')), expected, name);
     // The configs the portal sent are the ones audio.cpp is started with, and every model they name is on disk by then.
@@ -245,7 +274,7 @@ test('a card of another architecture rebuilds the runtime, because its kernels a
   assert.deepEqual(built(run({ ...environment(NONE('qwen3-asr', '0.6b'), 6), ARCH: '9.0' }).log), []);
 });
 
-test('a volume from before engines could be chosen is neither rebuilt nor downloaded again for the same combination', () => {
+test('a volume from before engines could be chosen is built once for the pinned release, and nothing is downloaded again', () => {
   fresh();
   // What the old installer left: Breeze-only binaries without a families file, the quantized model, Whisper.
   const bin = path.join(volume, 'audio/build/portal/bin');
@@ -261,19 +290,59 @@ test('a volume from before engines could be chosen is neither rebuilt nor downlo
   writeFileSync(path.join(volume, 'models/breeze-q8_0.gguf'), 'weights');
   const { status, log, stderr } = run();
   assert.equal(status, 0, stderr);
-  assert.deepEqual([built(log), downloads(log), log.filter(l => l.startsWith('cmake'))], [[], [], []]);
+  // Its build is from an earlier audio.cpp: built again, for Breeze alone, as it was.
+  assert.equal(built(log).length, 1);
+  assert.match(built(log)[0], /--models breeze_tts --target/);
+  assert.deepEqual([downloads(log), log.filter(l => l.startsWith('cmake'))], [[], []]);
   assert.equal(started(log).length, 2);
-  // Such a volume has its architecture in the CMake cache only; another card still rebuilds it.
+  assert.deepEqual(built(run().log), [], 'and once only');
+  // Another card still rebuilds it.
   assert.match(built(run({ ARCH: '8.9' }).log)[0], /--cuda-arch 89 /);
   // The same volume grows when another engine is chosen: Breeze stays in the build.
   const next = run(environment({ tts: 'breeze', asr: 'qwen3-asr', asrModel: '1.7b' }));
   assert.match(built(next.log)[0], /--models breeze_tts,qwen3_asr /);
 });
 
+test('a build from another audio.cpp revision is built again, and a clone that has not seen the pinned one fetches it first', () => {
+  fresh();
+  assert.equal(run(environment(DEFAULT_CHOICE)).status, 0);
+  const marker = path.join(volume, 'audio/build/portal/pithagoras-revision');
+  const pinned = readFileSync(marker, 'utf8').trim();
+  assert.match(script, new RegExp(`audio_revision=${pinned}\n`));
+  const again = run(environment(DEFAULT_CHOICE)).log;
+  assert.ok(!again.some(l => l.includes('fetch')), 'a clone that has the revision does not fetch');
+  // Its submodule is named by an SSH address, and the container has no SSH.
+  assert.ok(again.includes('git -C audio -c url.https://github.com/.insteadOf=git@github.com: submodule update --init --recursive'), again.join('\n'));
+  writeFileSync(marker, 'efb04233dab73aeee4b2912042a90e7b36329061\n');
+  const upgraded = run({ ...environment(DEFAULT_CHOICE), MISSING_REVISION: '1' });
+  assert.equal(upgraded.status, 0, upgraded.stderr);
+  const fetched = upgraded.log.indexOf('git -C audio fetch origin'), checkedOut = upgraded.log.indexOf(`git -C audio checkout ${pinned}`);
+  assert.ok(fetched >= 0 && fetched < checkedOut, upgraded.log.join('\n'));
+  assert.equal(built(upgraded.log).length, 1);
+  assert.equal(readFileSync(marker, 'utf8').trim(), pinned);
+  assert.deepEqual(downloads(upgraded.log), [], 'the models are the same files');
+});
+
+test('eSpeak NG is installed for Kokoro only where it is not there yet', () => {
+  fresh();
+  const kokoro: VoiceChoice = { tts: 'kokoro', asr: 'whisper', asrModel: 'base' };
+  const { status, log, stderr } = run(environment(kokoro));
+  assert.equal(status, 0, stderr);
+  assert.ok(log.includes('dpkg -s libespeak-ng1 espeak-ng-data'));
+  assert.ok(log.includes('apt-get install -y --no-install-recommends libespeak-ng1 espeak-ng-data'));
+  // The volume has the model and the build: only eSpeak, which lives in the container, is asked about again.
+  const again = run(environment(kokoro));
+  assert.deepEqual([built(again.log), downloads(again.log)], [[], []]);
+});
+
 test('a choice the script does not know, or a config it was not sent, stops it before anything is built', () => {
   fresh();
   for (const [env, message] of [
-    [{ VOICE_TTS: 'kokoro' }, /unknown speech engine 'kokoro'/],
+    [{ VOICE_TTS: 'piper' }, /unknown speech engine 'piper'/],
+    // Only Kokoro runs on the CPU, and recognition beside it is there too.
+    [{ VOICE_TTS: 'breeze', VOICE_TTS_DEVICE: 'cpu' }, /speech engine 'breeze' runs on the GPU/],
+    [{ VOICE_TTS: 'kokoro', VOICE_TTS_DEVICE: 'tpu' }, /unknown speech device 'tpu'/],
+    [{ VOICE_TTS: 'kokoro', VOICE_TTS_DEVICE: 'cpu', VOICE_ASR: 'qwen3-asr', VOICE_ASR_MODEL: '0.6b', VOICE_ASR_DEVICE: 'gpu' }, /without speech synthesis on the GPU runs on the CPU/],
     [{ VOICE_ASR: 'qwen3-asr', VOICE_ASR_MODEL: 'base' }, /unknown speech recognition model 'qwen3-asr:base'/],
     [{ VOICE_ASR: 'whisper', VOICE_ASR_MODEL: '1.7b' }, /unknown speech recognition model 'whisper:1\.7b'/],
     [{ VOICE_ASR_DEVICE: 'tpu' }, /unknown recognition device 'tpu'/],
@@ -294,7 +363,12 @@ test('a choice the script does not know, or a config it was not sent, stops it b
   fresh();
   const noCpuConfig = run({ VOICE_TTS: 'none', VOICE_ASR: 'qwen3-asr', VOICE_ASR_MODEL: '0.6b' });
   assert.equal(noCpuConfig.status, 2);
-  assert.match(noCpuConfig.stderr, /VOICE_ASR_CPU_CONFIG is missing/);
+  assert.match(noCpuConfig.stderr, /VOICE_CPU_CONFIG is missing/);
+  // Nor has Kokoro on the CPU.
+  fresh();
+  const noKokoroConfig = run({ VOICE_TTS: 'kokoro', VOICE_TTS_DEVICE: 'cpu' });
+  assert.equal(noKokoroConfig.status, 2);
+  assert.match(noKokoroConfig.stderr, /VOICE_CPU_CONFIG is missing/);
   // A container made before the device could be chosen has none set: Qwen3-ASR next to a speech engine is on the GPU, as it was.
   fresh();
   const legacy = run({ VOICE_TTS: 'breeze', VOICE_ASR: 'qwen3-asr', VOICE_ASR_MODEL: '0.6b', VOICE_SERVER_CONFIG: JSON.stringify(serverConfig({ tts: 'breeze', asr: 'qwen3-asr', asrModel: '0.6b' })) });

@@ -4,7 +4,7 @@ import { LuCheck, LuChevronDown } from "react-icons/lu";
 
 import { useLeaveRef } from "../motion";
 import { t } from "../i18n";
-export interface SelectOption<T extends string | number = string> {
+interface SelectOption<T extends string | number = string> {
   value: T;
   label: ReactNode;
   /** A second, quieter line under the label. */

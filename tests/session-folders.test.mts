@@ -114,3 +114,22 @@ test("Home and the workspace root inside each other: each chat in the deepest", 
 test("Elsewhere can be asked for when empty", () => {
   assert.deepEqual(keys(groupByFolder([], places, { elsewhere: true })).at(-1), ELSEWHERE);
 });
+
+test("each agent's home is a folder named after it, the first one keeping Home's key", () => {
+  const withAgents = {
+    ...places,
+    agents: [
+      { id: "home", name: "Nova", home: "/data/agent" },
+      { id: "scout", name: "Scout", home: "/data/agents/scout" },
+    ],
+  };
+  const folders = groupByFolder([...chats, chat("s", "/data/agents/scout", "2026-09-28T13:00")], withAgents);
+  assert.deepEqual(keys(folders).slice(0, 2), [HOME, "agent:scout"]);
+  assert.deepEqual(folders.slice(0, 2).map((f) => [f.name, f.agent, f.sessions.map((s) => s.id)]), [
+    ["Nova", "home", ["a"]],
+    ["Scout", "scout", ["s"]],
+  ]);
+  assert.ok(folderKeys(withAgents).includes("agent:scout"));
+  // By name the first agent comes first, then the others, then the projects.
+  assert.deepEqual(keys(sortFolders(folders, "name")).slice(0, 3), [HOME, "agent:scout", projectKey("empty")]);
+});

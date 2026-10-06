@@ -1,8 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-process.env.DATA_DIR=mkdtempSync(tmpdir()+'/voice-presets-');
+import { inProcessHome } from './helpers.mts';
+inProcessHome('voice-presets-');
 const {addVoice,readVoice,listVoices,updateVoice,deleteVoice,VoiceNotFound}=await import('../server/src/voice-presets.js');
 const {getDb}=await import('../server/src/db.js');
 const {validateConfig}=await import('../server/src/api/voice.js');
@@ -41,4 +40,23 @@ test('changing the description of a voice that is not there says so and adds not
  assert.throws(()=>updateVoice('voice-missing',{instruction:'Clear'}),(e:unknown)=>e instanceof VoiceNotFound&&/not found/.test(e.message));
  assert.throws(()=>readVoice('voice-missing'),(e:unknown)=>e instanceof VoiceNotFound);
  assert.equal(listVoices().length,count);
+});
+test('the table of saved voices is part of the versioned schema, and the voices never make it themselves',()=>{
+ // There before any voice is asked for, and found by the same check as every other table of a fresh database.
+ assert.ok(getDb().prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='voice_presets'").get());
+ const db=getDb() as any;const exec=db.exec.bind(db);const prepare=db.prepare.bind(db);const made:string[]=[];
+ db.exec=(sql:string)=>{made.push(sql);return exec(sql)};
+ db.prepare=(sql:string)=>{if(/CREATE/i.test(sql))made.push(sql);return prepare(sql)};
+ try{addVoice({name:'Schema',kind:'design',instruction:'Plain'});listVoices();}finally{delete db.exec;delete db.prepare}
+ assert.deepEqual(made,[]);
+});
+test('a voice setting that does not parse does not stop a voice from being deleted',()=>{
+ const voice=addVoice({name:'Doomed',kind:'design',instruction:'Plain voice'});
+ for(const broken of ['{not json','null','"design"','[]']){
+  getDb().prepare("INSERT INTO settings(key,value) VALUES ('voice',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(broken);
+  const again=addVoice({name:'Doomed '+broken.length,kind:'design',instruction:'Plain voice'});
+  deleteVoice(again.id);assert.throws(()=>readVoice(again.id),/not found/);
+  assert.equal((getDb().prepare("SELECT value FROM settings WHERE key='voice'").get() as any).value,broken,'left as it was');
+ }
+ deleteVoice(voice.id);
 });

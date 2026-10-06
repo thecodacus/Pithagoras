@@ -10,7 +10,10 @@ import { msg, t } from "../../i18n";
 export function Branches() {
   const { id, repo, act, busy } = useGit();
   const [list, setList] = useState<Branch[] | null>(null);
+  // The list could not be read, apart from a delete that was refused: the first is a list that never came.
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [again, setAgain] = useState(0);
   const [filter, setFilter] = useState("");
   const [name, setName] = useState("");
   const [remotesOpen, setRemotesOpen] = useState(false);
@@ -18,14 +21,18 @@ export function Branches() {
   useEffect(() => {
     let gone = false;
     gitApi.branches(id).then(
-      (r) => !gone && setList(r.branches),
-      (e) => !gone && setError((e as Error).message),
+      (r) => {
+        if (gone) return;
+        setList(r.branches);
+        setLoadError(null);
+      },
+      (e) => !gone && setLoadError((e as Error).message),
     );
     return () => {
       gone = true;
     };
     // Again whenever something moved: a switch, a fetch, a push. A delete takes its row out itself.
-  }, [id, repo.head, repo.branch, repo.upstream, repo.ahead, repo.behind]);
+  }, [id, repo.head, repo.branch, repo.upstream, repo.ahead, repo.behind, again]);
 
   const create = async (e: FormEvent) => {
     e.preventDefault();
@@ -40,7 +47,8 @@ export function Branches() {
       () => null,
       (e) => (e as Error).message,
     );
-    if (refused === null) return setList((l) => l?.filter((x) => x.remote || x.name !== b.name) ?? l);
+    const gone = () => setList((l) => l?.filter((x) => x.remote || x.name !== b.name) ?? l);
+    if (refused === null) return gone();
     // Not merged anywhere: its commits go with it, so that is asked separately.
     if (!/not fully merged/i.test(refused)) return setError(refused);
     const sure = await confirmDialog({
@@ -49,17 +57,19 @@ export function Branches() {
       confirmLabel: t("Delete anyway"),
       danger: true,
     });
-    if (sure) await act(msg("Deleting {name}"), () => gitApi.deleteBranch(id, b.name, true), { name: b.name });
+    // The reload after it moves none of what the list is read for, so the row goes out here too.
+    if (sure && (await act(msg("Deleting {name}"), () => gitApi.deleteBranch(id, b.name, true), { name: b.name }))) gone();
   };
 
-  if (error) return <ErrorNote onClose={() => setError(null)}>{error}</ErrorNote>;
-  if (!list) return <Quiet>{t("Loading…")}</Quiet>;
+  if (!list) return loadError ? <ErrorNote onRetry={() => setAgain((n) => n + 1)}>{loadError}</ErrorNote> : <Quiet>{t("Loading…")}</Quiet>;
   const match = (b: Branch) => !filter || b.name.toLowerCase().includes(filter.toLowerCase());
   const local = list.filter((b) => !b.remote && match(b));
   const remote = list.filter((b) => b.remote && match(b));
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
+      {loadError && <ErrorNote onRetry={() => setAgain((n) => n + 1)}>{loadError}</ErrorNote>}
+      {error && <ErrorNote onClose={() => setError(null)}>{error}</ErrorNote>}
       <form onSubmit={create} className="flex shrink-0 items-center gap-1.5 border-b border-line px-2 py-1.5">
         <LuGitBranchPlus aria-hidden className="h-3.5 w-3.5 shrink-0 text-fg-faint" />
         <input

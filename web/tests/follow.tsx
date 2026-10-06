@@ -1,7 +1,7 @@
 // Development-only fixture: a box kept at its end by useFollowBottom, on its own. Its entries are its own
 // children, as the terminal's runs are, not a list inside it; `window.redraw()` draws the box again as another
 // element, as a component that shows something else for a while does, and `window.grow(px)` adds to its end.
-import React, { useLayoutEffect, useState } from 'react';
+import { useLayoutEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { useFollowBottom } from '../src/use-follow-bottom';
 
@@ -16,9 +16,7 @@ function Entry({ n }: { n: number }) {
 
 function Box() {
   const followed = useFollowBottom<HTMLDivElement>();
-  const { onScroll, hold, follow } = followed;
-  // Before the box was given by `attach`, it was given as `ref`.
-  const attach = (followed as any).attach ?? followed.ref;
+  const { onScroll, hold, follow, attach } = followed;
   const [drawn, setDrawn] = useState(0);
   (window as any).redraw = () => setDrawn((n) => n + 1);
   (window as any).grow = (px: number) => {

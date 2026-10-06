@@ -1,16 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
+import { inProcessHome } from "./server-harness.mjs";
 
-const home = mkdtempSync(path.join(tmpdir(), "pithagoras-notify-"));
-process.env.DATA_DIR = home;
-process.env.WORKSPACE_ROOT = path.join(home, "ws");
-process.env.PI_CODING_AGENT_DIR = path.join(home, "agent");
-process.env.SESSION_DIR = path.join(home, "sessions");
-mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
+const home = inProcessHome("pithagoras-notify-");
 
 const { createSession, eventsSince } = await import("../dist/db.js");
 const { SdkPiClient } = await import("../dist/pi/sdk-client.js");
@@ -69,4 +63,50 @@ test("what an extension says that is not for a channel's command stays in the ch
   assert.equal(reply, "Hello there");
   const notices = eventsSince("news").filter((r) => r.type === "portal_notice").map((r) => JSON.parse(r.payload).text);
   assert.deepEqual(notices, ["job 3 finished", "pkg-other failed: bad"]);
+});
+
+test("a status line or a widget that lands in the middle of a reply does not cut it", async () => {
+  // An extension refreshes its status on its own clock, whatever the model is writing.
+  const ui = (method, extra) => ({ type: "extension_ui_request", id: `u-${Math.random()}`, method, ...extra });
+  const delta = (text) => ({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: text } });
+  sessions.submit = async () => {
+    setImmediate(() => {
+      pi.emit("event", { type: "agent_start" });
+      pi.emit("event", delta("Hello wor"));
+      pi.emit("event", ui("setStatus", { statusKey: "background-tasks", statusText: "0 tasks" }));
+      pi.emit("event", delta("ld, and "));
+      pi.emit("event", ui("setWidget", { widgetKey: "background-tasks", widgetContent: [] }));
+      pi.emit("event", ui("notify", { message: "   ", notifyType: "info" }));
+      pi.emit("event", delta("goodbye"));
+      pi.emit("event", ui("setTitle", { title: "t" }));
+      pi.emit("event", { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Hello world, and goodbye" }] } });
+      pi.emit("event", { type: "agent_settled" });
+    });
+  };
+  createSession({ id: "refresh", title: "refresh", workspace: home, executor: "host" });
+  assert.equal(await sessions.ask("refresh", "Say hello", { streamText: false }), "Hello world, and goodbye", "as one answer");
+
+  // A channel that relays progress posts each piece as a message of its own.
+  createSession({ id: "refresh-live", title: "refresh-live", workspace: home, executor: "host" });
+  const pieces = [];
+  await sessions.ask("refresh-live", "Say hello", { onReply: (line) => pieces.push(line), streamText: true });
+  assert.deepEqual(pieces, ["Hello world, and goodbye"], "relayed as one piece");
+});
+
+test("a question an extension asks still ends the text before it", async () => {
+  createSession({ id: "question", title: "question", workspace: home, executor: "host" });
+  const asked = [];
+  sessions.submit = async () => {
+    setImmediate(() => {
+      pi.emit("event", { type: "agent_start" });
+      pi.emit("event", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Before the question" } });
+      pi.emit("event", { type: "extension_ui_request", id: "q1", method: "confirm", title: "Go on?", message: "" });
+      pi.emit("event", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "After it" } });
+      pi.emit("event", { type: "message_end", message: { role: "assistant", content: [] } });
+      pi.emit("event", { type: "agent_settled" });
+    });
+  };
+  const reply = await sessions.ask("question", "go", { streamText: false, onUi: (r) => asked.push(r.method) });
+  assert.equal(reply, "Before the question\n\nAfter it");
+  assert.deepEqual(asked, ["confirm"]);
 });

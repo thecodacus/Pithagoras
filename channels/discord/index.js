@@ -178,8 +178,10 @@ export async function start(ctx) {
             await rest(token, `/channels/${message.channel_id}/messages`, { content: chunk });
           }
         };
-        // Relayed between tool calls, so a long task is visibly working.
-        await ctx.ask(text, {
+        // Relayed between tool calls, so a long task is visibly working. What
+        // comes back is the rest: the whole answer when nothing is relayed, and
+        // always the portal's own words ("Stopped.", the refusal a stranger gets).
+        const reply = await ctx.ask(text, {
           session: `channel:${message.channel_id}`,
           from: message.author?.id
             ? {
@@ -195,6 +197,7 @@ export async function start(ctx) {
           guild: message.guild_id,
           onReply: say,
         });
+        if (reply) await say(reply);
       } catch (e) {
         ctx.log(`failed to answer in ${message.channel_id}: ${e.message}`);
         await rest(token, `/channels/${message.channel_id}/messages`, {

@@ -10,7 +10,7 @@ export const HOLD = 1000;
 const distance = (el: { scrollHeight: number; scrollTop: number; clientHeight: number }) => el.scrollHeight - el.scrollTop - el.clientHeight;
 
 /** True when a scrolling box is at, or within a hair of, its end. */
-export function atEnd(el: { scrollHeight: number; scrollTop: number; clientHeight: number }): boolean {
+function atEnd(el: { scrollHeight: number; scrollTop: number; clientHeight: number }): boolean {
   return distance(el) <= NEAR_END;
 }
 

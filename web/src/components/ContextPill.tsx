@@ -3,6 +3,7 @@ import { LuChevronRight, LuRefreshCw } from "react-icons/lu";
 import { api, type PiConfig } from "../api";
 import { parseWindow } from "../context-window";
 import { KeepRecent, useKeepRecentSave } from "./KeepRecent";
+import { SwitchTrack } from "./SettingsUi";
 import { isEnter } from "../shortcuts";
 import { MENU_WIDTH, anchorLeft } from "../menu-anchor";
 import { useDismiss } from "../use-dismiss";
@@ -20,10 +21,9 @@ const CIRC = 2 * Math.PI * RING.r;
 
 /** Green while there's room, amber once compaction is near, red when it's close. */
 function tone(pct: number) {
-  if (pct >= 90) return { stroke: "#f87171", text: "text-danger", bar: "bg-danger" };
-  if (pct >= 75) return { stroke: "#fb923c", text: "text-warn", bar: "bg-warn" };
-  if (pct >= 50) return { stroke: "#fbbf24", text: "text-warn", bar: "bg-warn" };
-  return { stroke: "#34d399", text: "text-ok", bar: "bg-ok" };
+  if (pct >= 90) return { stroke: "stroke-danger", text: "text-danger", bar: "bg-danger" };
+  if (pct >= 50) return { stroke: "stroke-warn", text: "text-warn", bar: "bg-warn" };
+  return { stroke: "stroke-ok", text: "text-ok", bar: "bg-ok" };
 }
 
 /**
@@ -160,17 +160,16 @@ function Donut({ pct, color }: { pct: number; color: string }) {
   const filled = Math.max(0, Math.min(100, pct));
   return (
     <svg width={18} height={18} viewBox="0 0 18 18" className="-rotate-90">
-      <circle cx={9} cy={9} r={RING.r} fill="none" stroke="#3f3f46" strokeWidth={RING.stroke} />
+      <circle cx={9} cy={9} r={RING.r} fill="none" className="stroke-fg/15" strokeWidth={RING.stroke} />
       <circle
         cx={9}
         cy={9}
         r={RING.r}
         fill="none"
-        stroke={color}
         strokeWidth={RING.stroke}
         strokeLinecap="round"
         strokeDasharray={`${(filled / 100) * CIRC} ${CIRC}`}
-        className="transition-[stroke-dasharray] duration-500"
+        className={`${color} transition-[stroke-dasharray] duration-500`}
       />
     </svg>
   );
@@ -259,6 +258,9 @@ export function ContextPill({
     [t("Cost"), `$${formatNumber(cfg.stats.cost, { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`],
   ];
 
+  // The donut says it in colour; the pill says it in words, as its name and its tooltip.
+  const fullness = known ? t("Context {n}% full", { n: formatNumber(pct, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) }) : t("Context: counted again at the next reply");
+
   return (
     // Not positioned itself: the card is placed in the toolbar, over this pill
     // (see menu-anchor.ts), rather than hanging leftwards off its right edge.
@@ -267,7 +269,10 @@ export function ContextPill({
         ref={pill}
         type="button"
         onClick={() => setOpen(!open)}
-        title={known ? t("Context {n}% full", { n: formatNumber(pct, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) }) : t("Context: counted again at the next reply")}
+        aria-haspopup="true"
+        aria-expanded={open}
+        aria-label={fullness}
+        title={fullness}
         className={`flex items-center gap-1.5 rounded px-2 py-1 ${
           open ? "bg-raised" : "hover:bg-raised"
         }`}
@@ -277,7 +282,7 @@ export function ContextPill({
       </button>
 
       {open && (
-        <div ref={card} style={{ left: anchorLeft(pill.current, MENU_WIDTH) }} className="composer-menu float-in absolute bottom-full left-0 z-20 mb-2 w-72 max-w-full rounded-xl border border-line bg-surface p-3 shadow-pop">
+        <div ref={card} role="group" aria-label={t("Context")} style={{ left: anchorLeft(pill.current, MENU_WIDTH) }} className="composer-menu float-in absolute bottom-full left-0 z-20 mb-2 w-72 max-w-full rounded-xl border border-line bg-surface p-3 shadow-pop">
           <div className="flex items-baseline justify-between">
             <p className="text-sm text-fg-muted">{t("Context")}</p>
             <p className={`text-sm tabular-nums ${known ? look.text : "text-fg-subtle"}`}>{known ? t("{n}% full", { n: formatNumber(pct, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) }) : t("just compacted")}</p>
@@ -313,6 +318,8 @@ export function ContextPill({
 
           <button
             type="button"
+            role="switch"
+            aria-checked={auto}
             onClick={toggleAuto}
             disabled={busy !== null}
             className="flex w-full items-center gap-2 rounded-lg px-1 py-1.5 text-left hover:bg-raised disabled:opacity-50"
@@ -321,17 +328,7 @@ export function ContextPill({
               <p className="text-sm text-fg">{t("Auto-compact")}</p>
               <p className="text-[11px] text-fg-subtle">{t("Summarise automatically before it fills")}</p>
             </div>
-            <span
-              className={`relative h-5 w-9 shrink-0 rounded-full transition ${
-                auto ? "bg-accent" : "bg-raised"
-              }`}
-            >
-              <span
-                className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${
-                  auto ? "left-[1.125rem]" : "left-0.5"
-                }`}
-              />
-            </span>
+            <SwitchTrack on={auto} />
           </button>
 
           {keepRecent !== null && (

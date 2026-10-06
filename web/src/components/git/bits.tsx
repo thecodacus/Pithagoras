@@ -127,11 +127,17 @@ export function TextButton({
   );
 }
 
-export function ErrorNote({ children, onClose }: { children: ReactNode; onClose?: () => void }) {
+/** What went wrong. `onRetry` is for a read that failed: dismissing it would leave a list that never came. */
+export function ErrorNote({ children, onClose, onRetry }: { children: ReactNode; onClose?: () => void; onRetry?: () => void }) {
   return (
     <div role="alert" className="m-2 flex items-start gap-1.5 rounded-lg border border-danger/25 bg-danger/10 px-2 py-2 text-xs text-danger">
       <LuCircleAlert aria-hidden className="mt-0.5 h-3.5 w-3.5 shrink-0" />
       <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">{children}</span>
+      {onRetry && (
+        <button type="button" onClick={onRetry} className="shrink-0 rounded px-1.5 underline hover:text-fg">
+          {t("Try again")}
+        </button>
+      )}
       {onClose && (
         <button type="button" onClick={onClose} aria-label={t("Dismiss")} className="shrink-0 rounded px-1 hover:text-fg">
           ✕

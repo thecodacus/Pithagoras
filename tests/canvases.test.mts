@@ -1,12 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-process.env.DATA_DIR=mkdtempSync(join(tmpdir(),'pithagoras-canvas-test-'));
+import { inProcessHome } from './helpers.mts';
+inProcessHome('pithagoras-canvas-test-');
 const {getDb}=await import('../server/src/db.js');
-const {CanvasTools,canvasWritePrefix}=await import('../server/src/pi/canvas-tools.js');
-const {readCanvas,editCanvas,listCanvases,persistCanvas}=await import('../server/src/canvases.js');
+const {CanvasTools,WriteStream,canvasWritePrefix}=await import('../server/src/pi/canvas-tools.js');
+const {readCanvas,editCanvas,listCanvases,persistCanvas,restoreCanvas,forgetCanvases,createCanvas,interruptCanvasWrites}=await import('../server/src/canvases.js');
 getDb().prepare('INSERT INTO sessions (id,title,workspace) VALUES (?,?,?)').run('s1','test','/tmp');
 getDb().prepare('INSERT INTO sessions (id,title,workspace) VALUES (?,?,?)').run('s2','other','/tmp');
 function setup(){const controller=new CanvasTools('s1');const tools:Record<string,any>={};controller.extension({registerTool:(t:any)=>tools[t.name]=t} as any);return {controller,tools};}
@@ -126,4 +124,205 @@ test('a streamed write is one revision however many pieces it arrives in',async(
  const raw2=JSON.stringify(next);
  for(const piece of raw2.match(/.{1,7}/g)!)delta(controller,'second',piece);
  assert.equal(value(await tools.canvas_write.execute('second',next)).revision,2);
+});
+
+// A long document streams in as thousands of pieces: each is decoded once, and the table is written now and then.
+test('a streamed argument is decoded the same however it is cut up, and nothing half-finished is kept',()=>{
+ const text='Ünï "quoted" \\ slash\nline\ttab \u{1F600} end \u2603 done';
+ const raw=JSON.stringify({canvas_id:'abc',revision:3,operation:'replace',content:text})+'\n';
+ for(const size of [1,2,3,5,7,64]){
+  const stream=new WriteStream();let last:any;
+  for(let i=0;i<raw.length;i+=size)last=stream.push(raw.slice(i,i+size))??last;
+  assert.deepEqual(last,{canvas_id:'abc',revision:3,operation:'replace',content:text},`in pieces of ${size}`);
+ }
+ // Cut anywhere: what has come is a start of the text, never a character that is not there yet.
+ for(let cut=0;cut<=raw.length;cut++){
+  const content=new WriteStream().push(raw.slice(0,cut))?.content;
+  if(content!==undefined)assert.ok(text.startsWith(content),`cut at ${cut}: ${JSON.stringify(content)}`);
+ }
+ const pair=new WriteStream();pair.push('{"canvas_id":"a","revision":0,"operation":"append","content":"x\\ud83d');
+ assert.equal(pair.push('')?.content,'x');
+ assert.equal(pair.push('\\ude00 y"}')?.content,'x\u{1F600} y');
+ const bad=new WriteStream();bad.push('{"canvas_id":"a","revision":0,"operation":"append","content":"ab\\qcd');
+ assert.equal(bad.push('more')?.content,'ab');
+ const wrongOrder=new WriteStream().push('{"content":"text","canvas_id":"a"}');
+ assert.deepEqual(wrongOrder,{content:'text'});
+});
+test('a long write costs the same for each piece however much has come before',async()=>{
+ const {controller,tools}=setup();const row=value(await tools.canvas_create.execute('create',{title:'Long document'}));
+ delta(controller,'long',`{"canvas_id":"${row.id}","revision":0,"operation":"replace","content":"`);
+ const started=performance.now();
+ for(let i=0;i<40_000;i++)delta(controller,'long',i%80===79?'\\n':'w');
+ const took=performance.now()-started;
+ assert.equal(readCanvas('s1',row.id).content.length,40_000);
+ // Decoding the whole argument again for each piece took half a minute for a hundred thousand characters.
+ assert.ok(took<3000,`forty thousand pieces took ${Math.round(took)} ms`);
+ controller.interrupt();
+});
+async function storedCanvas(tools:any,text:string,title='Stored'){
+ const row=value(await tools.canvas_create.execute('create-'+title,{title}));
+ value(await tools.canvas_write.execute('first-'+title,{canvas_id:row.id,revision:0,operation:'replace',content:text}));
+ persistCanvas('s1',row.id);return row.id as string;
+}
+const inTable=(id:string)=>getDb().prepare('SELECT content, previous_content, active_call, status FROM canvases WHERE id=?').get(id) as any;
+const sleep=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
+test('a stored canvas that is being written reaches the table every so often and when the write ends',async()=>{
+ const {controller,tools}=setup();const before='x'.repeat(5000);const id=await storedCanvas(tools,before,'Throttled');
+ const fresh=value(await tools.canvas_read.execute('read',{canvas_id:id}));
+ const db=getDb() as any;const prepare=db.prepare.bind(db);const selects:string[]=[];let writes=0;
+ db.prepare=(sql:string)=>{if(/^UPDATE canvases SET title/.test(sql))writes++;if(/^SELECT/.test(sql))selects.push(sql);return prepare(sql)};
+ try{
+  delta(controller,'w',`{"canvas_id":"${id}","revision":${fresh.revision},"operation":"replace","content":"`);
+  delta(controller,'w','y');selects.length=0;
+  for(let i=1;i<300;i++)delta(controller,'w','y');
+  assert.equal(readCanvas('s1',id).content,'y'.repeat(300),'what is read is the text so far');
+  assert.ok(writes<=1,`${writes} writes of the whole document for 300 pieces`);
+  assert.deepEqual(selects.filter(sql=>/FROM canvases/.test(sql)),[],'the text so far is not read back from the table');
+  assert.equal(inTable(id).content,before,'the table has the text from before, not every piece');
+  // Held and not forgotten: it is written once the pieces stop.
+  await sleep(900);
+  assert.equal(inTable(id).content,'y'.repeat(300));
+  for(let i=0;i<100;i++)delta(controller,'w','z');
+  assert.equal(inTable(id).content,'y'.repeat(300));
+  controller.interrupt();
+  assert.equal(inTable(id).content,'y'.repeat(300)+'z'.repeat(100));
+  assert.equal(inTable(id).active_call,null);
+ }finally{delete db.prepare}
+});
+test('a replace that is cut off leaves the document it was rewriting to go back to',async()=>{
+ const {controller,tools}=setup();
+ const original='First paragraph.\n\nSecond paragraph.\n\nThird paragraph.';const id=await storedCanvas(tools,original,'Cut off');
+ const fresh=value(await tools.canvas_read.execute('read',{canvas_id:id}));
+ assert.equal(fresh.restorable,false);
+ delta(controller,'cut',`{"canvas_id":"${id}","revision":${fresh.revision},"operation":"replace","content":"First para`);
+ assert.equal(inTable(id).previous_content,original,'kept while the write goes on');
+ assert.equal(readCanvas('s1',id).restorable,true);
+ assert.equal('previous_content' in readCanvas('s1',id),false,'the old text is not sent along with every row');
+ controller.interrupt();
+ const cut=readCanvas('s1',id);
+ assert.equal(cut.content,'First para');assert.equal(cut.status,'interrupted');assert.equal(cut.restorable,true);
+ assert.equal(listCanvases('s1').find(row=>row.id===id)!.restorable,true);
+ assert.throws(()=>restoreCanvas('s1',id,cut.revision-1),/Reload/);
+ const back=restoreCanvas('s1',id,cut.revision);
+ assert.equal(back.content,original);assert.equal(back.status,'edited');assert.equal(back.revision,cut.revision+1);assert.equal(back.restorable,false);
+ assert.equal(inTable(id).content,original);assert.equal(inTable(id).previous_content,null);
+ assert.throws(()=>restoreCanvas('s1',id,back.revision),/no earlier version/);
+ await assert.rejects(tools.canvas_write.execute('stale',{canvas_id:id,revision:back.revision,operation:'append',content:'!'}),/Read this canvas/);
+});
+test('the text from before a write is let go when the write goes through, or the person edits',async()=>{
+ const {controller,tools}=setup();
+ const original='The whole of the document, as it was.';const id=await storedCanvas(tools,original,'Let go');
+ let row=value(await tools.canvas_read.execute('read',{canvas_id:id}));
+ const done={canvas_id:id,revision:row.revision,operation:'replace',content:'A new text'};
+ delta(controller,'ok',JSON.stringify(done));
+ assert.equal(inTable(id).previous_content,original);
+ value(await tools.canvas_write.execute('ok',done));
+ assert.equal(inTable(id).previous_content,null);assert.equal(readCanvas('s1',id).restorable,false);assert.equal(readCanvas('s1',id).content,'A new text');
+ // A cut-off write that is tried again keeps the text from before the first one, until one goes through.
+ row=readCanvas('s1',id);
+ delta(controller,'one',`{"canvas_id":"${id}","revision":${row.revision},"operation":"replace","content":"Tr`);controller.interrupt();
+ row=value(await tools.canvas_read.execute('read',{canvas_id:id}));
+ delta(controller,'two',`{"canvas_id":"${id}","revision":${row.revision},"operation":"replace","content":"Tried again, and`);controller.interrupt();
+ assert.equal(readCanvas('s1',id).content,'Tried again, and');
+ assert.equal(restoreCanvas('s1',id,readCanvas('s1',id).revision).content,'A new text');
+ // The person takes the text over: there is nothing to go back to.
+ row=value(await tools.canvas_read.execute('read',{canvas_id:id}));
+ delta(controller,'three',`{"canvas_id":"${id}","revision":${row.revision},"operation":"replace","content":"Cut`);controller.interrupt();
+ row=readCanvas('s1',id);assert.equal(row.restorable,true);
+ editCanvas('s1',id,row.revision,row.title,'My own words');
+ assert.equal(readCanvas('s1',id).restorable,false);assert.equal(inTable(id).previous_content,null);
+ // A document that was empty has nothing to go back to.
+ const empty=value(await tools.canvas_create.execute('empty',{title:'Empty'}));persistCanvas('s1',empty.id);
+ delta(controller,'e',`{"canvas_id":"${empty.id}","revision":0,"operation":"replace","content":"Some`);controller.interrupt();
+ assert.equal(readCanvas('s1',empty.id).restorable,false);assert.equal(inTable(empty.id).previous_content,null);
+});
+test('a temporary canvas can go back too, and takes the old text along when it is stored',async()=>{
+ const {controller,tools}=setup();
+ const row=value(await tools.canvas_create.execute('create',{title:'Temporary cut'}));
+ value(await tools.canvas_write.execute('first',{canvas_id:row.id,revision:0,operation:'replace',content:'Kept text'}));
+ const current=readCanvas('s1',row.id);
+ delta(controller,'cut',`{"canvas_id":"${row.id}","revision":${current.revision},"operation":"replace","content":"Ke`);controller.interrupt();
+ assert.equal(readCanvas('s1',row.id).restorable,true);assert.equal(readCanvas('s1',row.id).persisted,false);
+ const stored=persistCanvas('s1',row.id);
+ assert.equal(stored.restorable,true);assert.equal(inTable(row.id).previous_content,'Kept text');
+ assert.equal(restoreCanvas('s1',row.id,stored.revision).content,'Kept text');
+ const other=value(await tools.canvas_create.execute('create',{title:'Never stored'}));
+ value(await tools.canvas_write.execute('o1',{canvas_id:other.id,revision:0,operation:'replace',content:'Kept as well'}));
+ delta(controller,'cut2',`{"canvas_id":"${other.id}","revision":${readCanvas('s1',other.id).revision},"operation":"replace","content":"K`);controller.interrupt();
+ assert.equal(restoreCanvas('s1',other.id,readCanvas('s1',other.id).revision).content,'Kept as well');
+ assert.equal(readCanvas('s1',other.id).persisted,false);
+});
+test('a write cut off by a restart can be gone back from; what was held back is the loss',async()=>{
+ const {controller,tools}=setup();
+ const original='A document the restart should not cost.';const id=await storedCanvas(tools,original,'Restart');
+ const row=value(await tools.canvas_read.execute('read',{canvas_id:id}));
+ const calm=await storedCanvas(tools,'Nobody is writing to this one.','Calm');
+ const calmBefore=inTable(calm);
+ delta(controller,'r',`{"canvas_id":"${id}","revision":${row.revision},"operation":"replace","content":"A doc`);
+ // The server stops here: nothing held in memory is left, and what it does at start is this.
+ forgetCanvases('s1');
+ // What the write had moved on in the table is not what the agent had read.
+ getDb().prepare('UPDATE canvases SET agent_read_revision = NULL WHERE id = ?').run(id);
+ interruptCanvasWrites();
+ // A canvas no write was going on in is left as it was.
+ assert.deepEqual(inTable(calm),calmBefore);
+ const after=readCanvas('s1',id);
+ assert.equal(after.restorable,true);
+ // No call is running any more, the canvas says it was cut off, and it counts as read: the agent may write to it again.
+ assert.deepEqual([after.status,after.active_call,after.agent_read_revision],['interrupted',null,after.revision]);
+ assert.equal(restoreCanvas('s1',id,after.revision).content,original);
+});
+test('temporary canvases of a chat that is gone are let go, and nothing else is',async()=>{
+ const {controller,tools}=setup();
+ const keep=value(await tools.canvas_create.execute('keep',{title:'Stays'}));
+ const gone=createCanvas('s2','Unsaved').id;
+ forgetCanvases('s2');
+ assert.deepEqual(listCanvases('s2'),[]);assert.throws(()=>readCanvas('s2',gone),/not found/);
+ assert.equal(readCanvas('s1',keep.id).title,'Stays');
+ controller.interrupt();
+});
+test('the restore route puts the text from before the cut-off write back',async()=>{
+ const express=(await import('express')).default;const {canvasesRouter}=await import('../server/src/api/canvases.js');
+ const portal=express().use(express.json()).use('/api',canvasesRouter()).listen(0,'127.0.0.1');
+ await new Promise(resolve=>portal.once('listening',resolve));
+ const at=`http://127.0.0.1:${(portal.address() as {port:number}).port}/api/sessions/s1/canvases`;
+ try{
+  const {controller,tools}=setup();const original='The text the route brings back.';const id=await storedCanvas(tools,original,'Route');
+  const row=value(await tools.canvas_read.execute('read',{canvas_id:id}));
+  const post=(body:any)=>fetch(`${at}/${id}/restore`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+  assert.equal((await post({revision:row.revision})).status,409,'nothing to go back to yet');
+  delta(controller,'cut',`{"canvas_id":"${id}","revision":${row.revision},"operation":"replace","content":"The te`);controller.interrupt();
+  const listed=await (await fetch(at)).json() as any[];
+  assert.equal(listed.find(c=>c.id===id).restorable,true);
+  assert.equal((await post({})).status,409,'a revision is needed');
+  const cut=readCanvas('s1',id);
+  assert.equal((await post({revision:cut.revision-1})).status,409,'an older revision is refused');
+  const back=await post({revision:cut.revision});
+  assert.equal(back.status,200);
+  const body=await back.json() as any;
+  assert.equal(body.content,original);assert.equal(body.restorable,false);assert.equal(readCanvas('s1',id).content,original);
+ }finally{portal.close()}
+});
+// A call whose arguments come in one piece (a provider that does not stream them token by token) hands the new text
+// to a canvas that still holds the old document: text of the same length is a different text all the same.
+test('a replace with text as long as the old document is written, whole or in one piece',async()=>{
+ const {controller,tools}=setup();
+ const temporary=value(await tools.canvas_create.execute('create',{title:'Same length'}));
+ value(await tools.canvas_write.execute('first',{canvas_id:temporary.id,revision:0,operation:'replace',content:'Meet at 10:00 on Monday'}));
+ const before=value(await tools.canvas_read.execute('read',{canvas_id:temporary.id}));
+ const whole={canvas_id:temporary.id,revision:before.revision,operation:'replace',content:'Meet at 09:15 on Friday'};
+ value(await tools.canvas_write.execute('same',whole));
+ assert.equal(readCanvas('s1',temporary.id).content,'Meet at 09:15 on Friday','execute alone');
+ const id=await storedCanvas(tools,'Budget: 4000 EUR','Same length stored');
+ const fresh=value(await tools.canvas_read.execute('read-stored',{canvas_id:id}));
+ const args={canvas_id:id,revision:fresh.revision,operation:'replace',content:'Budget: 9500 EUR'};
+ delta(controller,'one-piece',JSON.stringify(args));
+ value(await tools.canvas_write.execute('one-piece',args));
+ assert.equal(readCanvas('s1',id).content,'Budget: 9500 EUR','one toolcall_delta with the whole arguments');
+ assert.equal(inTable(id).content,'Budget: 9500 EUR');
+ // The same text again is still not written twice.
+ const again=value(await tools.canvas_read.execute('read-again',{canvas_id:id}));
+ const revision=again.revision;
+ value(await tools.canvas_write.execute('same-text',{...args,revision}));
+ assert.equal(readCanvas('s1',id).content,'Budget: 9500 EUR');
 });

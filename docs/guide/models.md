@@ -43,6 +43,10 @@ Leaving the field empty keeps the stored key. A key written as `$NAME` is read
 from the environment; a service whose key is already in the environment shows
 *key from the environment*, and removing the provider does not touch that.
 
+Removing a provider does not change the model that was chosen from it. A chat
+that is sent to a model that has no provider any more answers "There is no model
+to answer with" and says where to pick another: Settings → Models.
+
 The kind — llama-swap, Ollama — is something pi has no field for. It is kept in
 `portal-providers.json` beside pi's files, and a server without an entry is told
 by its name and address.

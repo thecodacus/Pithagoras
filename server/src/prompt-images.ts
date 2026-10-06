@@ -66,6 +66,24 @@ export const pictureType = (head: Buffer): string | undefined => KINDS.find((k) 
 export const pictureExt = (head: Buffer): string | undefined => KINDS.find((k) => k.is(head))?.ext;
 
 /**
+ * Base64, or a data: URL holding it, decoded: what every picture that arrives as
+ * text goes through, so that they are all held to the same rules. Line breaks
+ * and spaces in it are dropped, as wrapped base64 has them. `data` is what was
+ * decoded, as plain base64. The size is worked out from the length before
+ * anything large is decoded: that cost is what the check is for.
+ */
+export function decodeBase64(given: string, max: number): { bytes: Buffer; data: string } | { error: "invalid" | "large" } {
+  const comma = given.startsWith("data:") ? given.indexOf(",") : -1;
+  const data = (comma >= 0 ? given.slice(comma + 1) : given).replace(/\s+/g, "");
+  if (!data || !BASE64.test(data)) return { error: "invalid" };
+  if (Math.floor((data.length * 3) / 4) > max + 3) return { error: "large" };
+  const bytes = Buffer.from(data, "base64");
+  // The length said at most `max` and three bytes more.
+  if (bytes.length > max) return { error: "large" };
+  return { bytes, data };
+}
+
+/**
  * The pictures in a request body, checked, or an empty list when there are none.
  * `data` may be plain base64 or a data: URL, which is what a browser has to hand.
  */
@@ -74,15 +92,11 @@ export function parseImages(raw: unknown): { data: string; mimeType: string; ext
   if (!Array.isArray(raw)) throw new ImageError("images must be a list");
   if (raw.length > MAX_IMAGES) throw new ImageError(`At most ${MAX_IMAGES} pictures can go with one message`);
   return raw.map((item, i) => {
-    let data = typeof item?.data === "string" ? item.data : "";
-    const comma = data.startsWith("data:") ? data.indexOf(",") : -1;
-    if (comma >= 0) data = data.slice(comma + 1);
-    if (!data || !BASE64.test(data)) throw new ImageError(`Picture ${i + 1} is not base64`);
-    // Worked out from the length first: decoding something far too big to find that out is the cost being avoided.
-    if (Math.floor((data.length * 3) / 4) > MAX_IMAGE_BYTES + 3) {
-      throw new ImageError(`Picture ${i + 1} is over ${MAX_IMAGE_BYTES / 1024 / 1024} MB`);
+    const decoded = decodeBase64(typeof item?.data === "string" ? item.data : "", MAX_IMAGE_BYTES);
+    if ("error" in decoded) {
+      throw new ImageError(decoded.error === "invalid" ? `Picture ${i + 1} is not base64` : `Picture ${i + 1} is over ${MAX_IMAGE_BYTES / 1024 / 1024} MB`);
     }
-    const bytes = Buffer.from(data, "base64");
+    const { bytes, data } = decoded;
     const kind = KINDS.find((k) => k.is(bytes));
     if (!kind) throw new ImageError(`Picture ${i + 1} is not a PNG, JPEG, GIF or WebP image`);
     return { data, mimeType: kind.mimeType, ext: kind.ext };

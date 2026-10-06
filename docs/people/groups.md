@@ -41,6 +41,11 @@ Groups are solid against somebody *asking* for what they should not have. They
 are weaker against somebody *influencing* what you ask for. If that matters for
 a particular piece of work, do it in a DM.
 
+A question an extension asks mid-run (`Delete branch release?`) is answered only
+by the person whose message raised it, or by you. Anybody else's "yes" is not
+taken as the answer, and on Telegram the buttons ignore a press by somebody
+else.
+
 One known gap: an approval is scoped to the conversation, so in a group anybody
 in it can spend it during the fifteen-minute window. In a DM the two are the
 same thing.

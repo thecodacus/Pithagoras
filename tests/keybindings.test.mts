@@ -65,3 +65,20 @@ test('shortcuts are written the way this computer and keyboard name them', () =>
   assert.equal(keyName('KeyY', new Map([['KeyY', 'z']])), 'Z');
   assert.equal(keyName('Period'), '.');
 });
+
+test('Tab is how the keyboard moves on, so no shortcut can take it, stored by an older version or not', () => {
+  assert.equal(setBinding('voice.toggle', { code: 'Tab' }), undefined);
+  assert.equal(setBinding('voice.mute', { code: 'Tab', shift: true }), undefined);
+  assert.deepEqual(resolve()['voice.mute'], { code: 'KeyM' });
+  assert.equal(store.get('keybindings') ?? '{}', '{}');
+  store.set('keybindings', '{"voice.mute":{"code":"Tab"},"voice.repeat":{"code":"Tab","shift":true},"voice.hold":{"code":"Tab","ctrl":true}}');
+  assert.deepEqual(resolve()['voice.mute'], { code: 'KeyM' });
+  assert.deepEqual(resolve()['voice.repeat'], { code: 'KeyR' });
+  // With a modifier the browser does not take it for moving on: that one is a shortcut like any.
+  assert.deepEqual(resolve()['voice.hold'], { code: 'Tab', ctrl: true });
+});
+
+test('the Esc line in the fixed shortcuts does not say the message box has to be empty', async () => {
+  const { FIXED } = await import('../web/src/keybindings.js');
+  assert.equal(FIXED.find((f) => f.keys.code === 'Escape')?.label, 'Stop the run');
+});

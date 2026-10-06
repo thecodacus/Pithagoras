@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { containerState, dockerAvailable, imagePresent, pullImage, request } from './docker.js';
-import { asrDevice, choiceFromKey, choiceKey, cpuServerConfig, cpuThreads, DEFAULT_CHOICE, healthUrls, parseChoice, pickGpu, sameChoice, serverConfig, SPEECH_PORT, speechUrl, suggestChoice, suggestCpuChoice, ttsModel, usesGpu, whisperUrl as managedWhisperUrl, type Gpu, type Host, type TtsEngine, type VoiceChoice } from '../voice-engines.js';
+import { checked, containerAction, containerState, dockerAvailable, ensureImage, PULL_STARTING, request } from './docker.js';
+import { asrDevice, ttsDevice, choiceFromKey, choiceKey, cpuServerConfig, cpuThreads, DEFAULT_CHOICE, healthUrls, parseChoice, pickGpu, sameChoice, serverConfig, SPEECH_PORT, suggestChoice, suggestCpuChoice, ttsModel, usesGpu, type Gpu, type Host, type TtsEngine, type VoiceChoice } from '../voice-engines.js';
 import { NoGpu, askedCard, cardOf, decide, detectGpus, deviceId, explain, holds, hostProbe, isNoGpu, readHost, SMI_ARGS, type Card, type Detected, type Probe } from '../voice-gpu.js';
 
 export const CONTAINER = 'pithagoras-voice';
@@ -11,8 +11,6 @@ export const BASE_IMAGE = 'ubuntu:22.04';
 /** The image a choice runs in: the CUDA one wherever the GPU is used, else the small base. */
 export const imageFor = (choice: VoiceChoice) => usesGpu(choice) ? IMAGE : BASE_IMAGE;
 const VOLUME = 'pithagoras_voice-models';
-export const whisperUrl = managedWhisperUrl;
-export const breezeUrl = speechUrl;
 let pending = false;
 let progress = '';
 let error = '';
@@ -24,11 +22,6 @@ let error = '';
  */
 let chosenGpu = '';
 export function useGpu(id: string): void { chosenGpu = id; }
-async function checked<T = unknown>(method: string, path: string, body?: unknown) {
-  const result = await request<T & { message?: string }>(method, path, body);
-  if (result.status >= 400) throw new Error(result.body?.message || `Docker returned ${result.status}`);
-  return result;
-}
 async function healthy(url: string) {
   try { return (await fetch(url, { signal: AbortSignal.timeout(1500) })).ok; } catch { return false; }
 }
@@ -87,8 +80,8 @@ export function containerSpec(script: string, networkMode: string, choice: Voice
   const gpu = plan.card ? { DeviceIDs: [deviceId(plan.card)] } : { Count: 1 };
   const server = serverConfig(choice), cpuServer = cpuServerConfig(choice, plan.threads);
   return { Image: imageFor(choice), Tty: true, Cmd: ['bash', '-c', script],
-    Env: [`VOICE_TTS=${choice.tts}`, `VOICE_ASR=${choice.asr}`, `VOICE_ASR_MODEL=${choice.asrModel}`, `VOICE_ASR_DEVICE=${asrDevice(choice)}`,
-      ...(server ? [`VOICE_SERVER_CONFIG=${JSON.stringify(server)}`] : []), ...(cpuServer ? [`VOICE_ASR_CPU_CONFIG=${JSON.stringify(cpuServer)}`] : []),
+    Env: [`VOICE_TTS=${choice.tts}`, ...(ttsDevice(choice) ? [`VOICE_TTS_DEVICE=${ttsDevice(choice)}`] : []), `VOICE_ASR=${choice.asr}`, `VOICE_ASR_MODEL=${choice.asrModel}`, `VOICE_ASR_DEVICE=${asrDevice(choice)}`,
+      ...(server ? [`VOICE_SERVER_CONFIG=${JSON.stringify(server)}`] : []), ...(cpuServer ? [`VOICE_CPU_CONFIG=${JSON.stringify(cpuServer)}`] : []),
       ...(plan.threads ? [`VOICE_THREADS=${plan.threads}`] : []), ...(plan.note ? [`VOICE_PLAN=${plan.note}`] : [])],
     Labels: { 'pithagoras.addon': 'voice', 'pithagoras.voice-network': 'shared-v1', 'pithagoras.voice-recipe': choiceKey(choice) },
     HostConfig: { Binds: [`${VOLUME}:/voice`], NetworkMode: networkMode,
@@ -110,16 +103,15 @@ async function ensureContainer(script: string, choice: VoiceChoice, plan: Plan) 
     // A card that is asked for and is not the one it has makes it another container, so that Start moves it.
     const onCard = !usesGpu(choice) || !plan.card || holds(heldCard(existing.body.HostConfig?.DeviceRequests), plan.card);
     const current = labels['pithagoras.voice-network'] === 'shared-v1' && existing.body.HostConfig?.NetworkMode === networkMode && sameChoice(choiceFromKey(labels['pithagoras.voice-recipe']), choice) && onCard;
-    if (current) { await checked('POST', `/containers/${CONTAINER}/start`); return; }
+    if (current) { await containerAction(CONTAINER, 'start'); return; }
     // Container config is immutable. Retain /voice and the cached model/build
     // files while replacing the old published-port container, a stale namespace
     // or one built for other engines.
-    if (existing.body.State?.Running) await checked('POST', `/containers/${CONTAINER}/stop?t=10`);
-    await checked('DELETE', `/containers/${CONTAINER}`);
+    await containerAction(CONTAINER, 'remove');
   }
   await checked('POST', '/volumes/create', { Name: VOLUME });
   await checked('POST', `/containers/create?name=${CONTAINER}`, containerSpec(script, networkMode, choice, plan));
-  await checked('POST', `/containers/${CONTAINER}/start`);
+  await containerAction(CONTAINER, 'start');
 }
 
 /** The managed container as far as a recreation has to keep it: its engines and the card it was given. None when there is no managed container. */
@@ -130,16 +122,8 @@ async function installedContainer(): Promise<{ choice: VoiceChoice; card?: Card;
   return { choice: choiceFromKey(labels['pithagoras.voice-recipe']), card: heldCard(found.body.HostConfig?.DeviceRequests), running: Boolean(found.body.State?.Running) };
 }
 
-/** The image is there, or is downloaded; `timeoutMs` stops waiting for a download that does not come, which then goes on without being waited for. */
-async function ensureImage(image: string, onProgress: (line: string) => void = () => {}, timeoutMs?: number) {
-  if (await imagePresent(image)) return;
-  const pull = pullImage(image, onProgress);
-  if (!timeoutMs) return pull;
-  pull.catch(() => {});
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try { await Promise.race([pull, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${image} was not downloaded in time`)), timeoutMs); })]); }
-  finally { clearTimeout(timer); }
-}
+/** The image of a setup, with what the download says shown on the page; what is said before the first line comes is not worth showing over what was there. */
+const downloadImage = (image: string) => ensureImage(image, state => { if (state.active && state.line !== PULL_STARTING) progress = state.line; });
 
 /**
  * nvidia-smi inside a short-lived container, for a portal that runs in a container itself and has no GPU
@@ -151,7 +135,7 @@ const dockerProbe: Probe = {
   name: 'docker',
   async run() {
     if (!dockerAvailable()) throw new NoGpu('Docker is unavailable');
-    await ensureImage(BASE_IMAGE, () => {}, 120000).catch(unanswered);
+    await ensureImage(BASE_IMAGE, undefined, 120000).catch(unanswered);
     const created = await checked<{ Id: string }>('POST', '/containers/create', { Image: BASE_IMAGE, Tty: true, Cmd: ['nvidia-smi', ...SMI_ARGS],
       // nvidia-smi is a utility of the driver: the image says nothing of it, so it is asked for.
       Env: ['NVIDIA_DRIVER_CAPABILITIES=utility'], Labels: { 'pithagoras.addon': 'voice-probe' }, HostConfig: { DeviceRequests: [{ Driver: 'nvidia', Count: -1, Capabilities: [['gpu']] }] } }).catch(unanswered);
@@ -229,7 +213,7 @@ export const hostReader = { read: (): Host => readHost() };
 
 /**
  * What the GPU check finds, and what it would suggest, for the page to show before anything is installed.
- * `cpuOnly` is that the check found there is no GPU: what is suggested is then recognition alone on the CPU.
+ * `cpuOnly` is that the check found there is no GPU: what is suggested is then Kokoro on the CPU, or recognition alone on the CPU where the host is too small for it.
  * `selected` is the card it would use: the one asked for, by the choice on the page (`chosen`, a UUID) or by `VOICE_GPU`; else, with a container,
  * the one it is on and not the one with the most room, as the memory the service holds is what makes its own card look full.
  */
@@ -273,7 +257,7 @@ export async function install(requested?: VoiceChoice) {
         // The running container is about to be replaced. Left up, the memory it holds would count as used by other programs,
         // and the card with the most room could be another one than its own.
         const stopped = existing?.running;
-        if (stopped) await checked('POST', `/containers/${CONTAINER}/stop?t=10`);
+        if (stopped) await containerAction(CONTAINER, 'stop');
         try {
           progress = 'Checking the GPU';
           // Read after the stop, not from a check of the page that began while the service still held its memory.
@@ -285,7 +269,7 @@ export async function install(requested?: VoiceChoice) {
           // With one card Docker's own pick is the card; only a choice among several needs naming. A choice with nothing on the GPU names none.
           plan = { card: !usesGpu(choice) ? undefined : found.gpus.length > 1 ? decision.gpu : found.gpus.length ? undefined : asked, note: decision.summary };
           progress = decision.summary;
-          await ensureImage(imageFor(choice), line => { progress = line; });
+          await downloadImage(imageFor(choice));
         } catch (e) {
           // Refused, or the image did not come: the service that was running goes on running.
           if (stopped) await request('POST', `/containers/${CONTAINER}/start`).catch(() => {});
@@ -299,11 +283,11 @@ export async function install(requested?: VoiceChoice) {
           const target = moveTo(existing, gpus, askedCard(gpus, chosenGpu, preferredGpu()));
           if (target) plan = { card: target };
         }
-        await ensureImage(imageFor(existing.choice), line => { progress = line; });
+        await downloadImage(imageFor(existing.choice));
       }
       const final = choice ?? DEFAULT_CHOICE;
-      // Recognition on the CPU gets the threads the host has, up to the ones its speeds were measured on; what is on the GPU keeps its four.
-      if (!usesGpu(final) || (final.asr === 'qwen3-asr' && asrDevice(final) === 'cpu')) plan.threads = cpuThreads(hostReader.read().threads);
+      // What runs on the CPU gets the threads the host has, up to the ones its speeds were measured on; what is on the GPU keeps its four.
+      if (!usesGpu(final) || (final.asr === 'qwen3-asr' && asrDevice(final) === 'cpu') || ttsDevice(final) === 'cpu') plan.threads = cpuThreads(hostReader.read().threads);
       await ensureContainer(script, final, plan);
     } catch (e) { error = explain((e as Error).message); }
     finally { pending = false; }
@@ -314,7 +298,7 @@ export async function start() {
 }
 export async function stop() {
   if (pending) throw new Error('Wait for the image download to finish before stopping');
-  await checked('POST', `/containers/${CONTAINER}/stop?t=10`);
+  await containerAction(CONTAINER, 'stop');
   error = '';
 }
 
@@ -336,8 +320,7 @@ export async function uninstall(removeData = false) {
     if (found.status !== 404) {
       if (found.status >= 400) throw new Error(`Cannot inspect voice container: Docker ${found.status}`);
       if (found.body.Config?.Labels?.['pithagoras.addon'] !== 'voice') throw new Error('The pithagoras-voice container is not a managed voice add-on, so it is left alone.');
-      if (found.body.State?.Running) await checked('POST', `/containers/${CONTAINER}/stop?t=10`);
-      await checked('DELETE', `/containers/${CONTAINER}`);
+      await containerAction(CONTAINER, 'remove');
     }
     if (removeData) {
       progress = 'Removing the downloaded engines and models';
@@ -347,8 +330,9 @@ export async function uninstall(removeData = false) {
   } finally { pending = false; }
 }
 
-export async function modelAction(action:'load'|'unload', engine: TtsEngine = 'breeze') {
+/** `port` is the audio.cpp process the engine is in: the GPU one, unless speech is put on the CPU. */
+export async function modelAction(action:'load'|'unload', engine: TtsEngine = 'breeze', port = SPEECH_PORT) {
   const model = ttsModel(engine);
-  const response=await fetch(`http://127.0.0.1:${SPEECH_PORT}/v1/models/${action}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(action==='load'?model:{id:model.id}),signal:AbortSignal.timeout(120000)});
+  const response=await fetch(`http://127.0.0.1:${port}/v1/models/${action}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(action==='load'?model:{id:model.id}),signal:AbortSignal.timeout(120000)});
   if(!response.ok)throw new Error(`Voice model ${action} failed (${response.status}): ${(await response.text()).slice(0,300)}`);
 }

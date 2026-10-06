@@ -5,7 +5,8 @@ import { failureReason, pictureCall } from "../picture-call";
 import { shownPictureId } from "../chat-pictures";
 import { stripAnsi, type Item } from "../transcript";
 import { t } from "../i18n";
-import { Collapse, ToolArgs, useNow } from "./ChatActivity";
+import { Collapse, ToolArgs } from "./ChatActivity";
+import { useNow } from "../use-now";
 import { ImagePreview, type PreviewState } from "./ImagePreview";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;

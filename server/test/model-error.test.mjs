@@ -1,19 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
+import { inProcessHome } from "./server-harness.mjs";
 
-const home = mkdtempSync(path.join(tmpdir(), "pithagoras-model-error-"));
-process.env.DATA_DIR = home;
-process.env.WORKSPACE_ROOT = path.join(home, "ws");
-process.env.PI_CODING_AGENT_DIR = path.join(home, "agent");
-process.env.SESSION_DIR = path.join(home, "sessions");
-mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
+const home = inProcessHome("pithagoras-model-error-");
 
 const { createSession, eventsSince } = await import("../dist/db.js");
-const { ModelErrors } = await import("../dist/model-errors.js");
+const { ModelErrors, plainFailure } = await import("../dist/model-errors.js");
 const { SdkPiClient } = await import("../dist/pi/sdk-client.js");
 const { sessions } = await import("../dist/session-manager.js");
 
@@ -204,4 +198,14 @@ test("a failure followed by a queued message is noted before the next run starts
 
   const types = transcript("queued").map((r) => r.type).filter((t) => t === "portal_notice" || t === "agent_start");
   assert.deepEqual(types, ["agent_start", "portal_notice", "agent_start"]);
+});
+
+test("pi's texts for a chat with no model to answer it lose their pointers to /login and to files of pi's", () => {
+  const help = "\n\nUse /login to log into a provider via OAuth or API key. See:\n  /srv/node_modules/pi/docs/providers.md";
+  for (const text of ["No API key found for the selected model." + help, "No models available. Use /login to log in.", "No model selected." + help]) {
+    assert.match(plainFailure(text), /^There is no model to answer with.*Settings → Models\.$/, text);
+  }
+  assert.equal(plainFailure("No API key found for example." + help), "example has no API key. Add one in Settings → Models, or pick another model.");
+  // What is not about that is left as it is.
+  for (const text of ["Connection error.", "Model error: 404 not found", "No API key for example/model"]) assert.equal(plainFailure(text), text);
 });

@@ -15,6 +15,10 @@ adapter reads several files in precedence order; this is the pi-global one, so
 it applies to every session in the portal. A project-local `.mcp.json` would
 only reach one workspace, which is the wrong shape here.
 
+The file holds the servers' keys, and the token the portal made for its own
+memory, so it is readable by the account the portal runs as and no other. It is
+written whole or not at all: a full disk leaves the file as it was.
+
 Changes are read when a session starts. A session already running keeps the
 servers it connected with, so restart it to pick up a new one.
 
@@ -37,9 +41,14 @@ object:
 }
 ```
 
+A server in the snippet whose name you already have is not imported over it: it
+is listed as skipped, and the one you have stays as it is.
+
 **The form.** Name, transport, then the fields for that transport. A server is
 `stdio` (a local process), `http` (a URL), or a Unix socket — exactly one of
 them.
+A name that another server has is refused, whether the server is new or renamed:
+it would replace that one, with everything the form does not show.
 
 **The file.** "Edit the file directly" at the bottom of the panel, for anything
 the form does not cover: OAuth blocks, tracing, per-server timeouts. The form
@@ -76,6 +85,7 @@ keep a large server from crowding the prompt.
 
 The toggle on each row sets `disabled: true` — the server stays configured and
 visible but is never connected. Better than deleting a server you are debugging.
+Deleting one, or renaming it, also takes its tools out of the Tools list.
 
 ::: tip The adapter has its own commands
 `/mcp` opens its status panel, `/mcp tools` lists what is available, and

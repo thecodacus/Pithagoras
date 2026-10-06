@@ -12,3 +12,6 @@ for (const [base, files] of [
 ]) {
   for (const file of files) await copyFile(resolve(base, file), resolve(output, file));
 }
+// The licences of those files travel with them. Not copying them breaks the build,
+// so a missing notice cannot ship unseen.
+await copyFile(resolve(import.meta.dirname, '../../THIRD_PARTY_NOTICES.md'), resolve(output, 'THIRD_PARTY_NOTICES.md'));

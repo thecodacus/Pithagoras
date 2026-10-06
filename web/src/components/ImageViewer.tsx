@@ -10,7 +10,7 @@ import { linked, stepped, type Size, type ViewerPicture } from "../image-viewer"
 import { t } from "../i18n";
 
 /** Wide enough for a finger on a phone, and for the pointer beside it. */
-const iconButton = "grid h-10 w-10 shrink-0 place-items-center rounded-lg text-fg-muted transition hover:bg-fg/10 hover:text-fg disabled:pointer-events-none disabled:opacity-35 sm:h-9 sm:w-9";
+export const iconButton = "grid h-10 w-10 shrink-0 place-items-center rounded-lg text-fg-muted transition hover:bg-fg/10 hover:text-fg disabled:pointer-events-none disabled:opacity-35 sm:h-9 sm:w-9";
 const textButton = "inline-flex h-10 min-w-10 shrink-0 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs text-fg-muted transition hover:bg-fg/10 hover:text-fg sm:h-9";
 
 /** What can take the keyboard: the viewer's own buttons, and what a page puts in `actions`. */

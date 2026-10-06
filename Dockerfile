@@ -1,7 +1,7 @@
 # pi requires Node >= 22.19
 FROM node:22-slim AS build
 WORKDIR /app
-COPY package.json package-lock.json* ./
+COPY package.json package-lock.json ./
 COPY server/package.json server/
 COPY web/package.json web/
 # better-sqlite3 ships a binding.gyp, and npm defaults to node-gyp for any
@@ -10,9 +10,13 @@ COPY web/package.json web/
 # as its author intended.
 RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
-RUN npm install
+# npm ci takes exactly what package-lock.json says, and stops when it and a
+# package.json disagree, where npm install would quietly resolve the difference.
+RUN npm ci
 COPY server server
 COPY web web
+# The web build copies it next to the voice files it covers (web/scripts/copy-vad-assets.mjs).
+COPY THIRD_PARTY_NOTICES.md ./
 RUN npm run build
 
 FROM node:22-slim
@@ -34,14 +38,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # data volume. Pinned so a rebuild does not silently change the toolchain.
 COPY --from=ghcr.io/astral-sh/uv:0.12.1 /uv /uvx /usr/local/bin/
 
-RUN npm install -g @earendil-works/pi-coding-agent@latest
-
-COPY package.json package-lock.json* ./
+COPY package.json package-lock.json ./
 COPY server/package.json server/
 # No toolchain here, and none needed: better-sqlite3 ships prebuilt binaries
 # and resolves them at require time. Skipping install scripts keeps the runtime
 # image slim instead of carrying a compiler for a binary that already exists.
-RUN npm install --omit=dev -w server --ignore-scripts
+# The cache goes in the same layer, or its tarballs stay in the image.
+RUN npm ci --omit=dev -w server --ignore-scripts \
+    && npm cache clean --force
+
+# The pi on PATH is the one the portal's sessions run, from the lock, so that
+# `pi install` and the chats are one version and a rebuild cannot bring in a
+# release nobody has looked at.
+RUN ln -s /app/node_modules/@earendil-works/pi-coding-agent/dist/cli.js /usr/local/bin/pi \
+    && chmod +x /app/node_modules/@earendil-works/pi-coding-agent/dist/cli.js
 
 COPY --from=build /app/server/dist server/dist
 COPY --from=build /app/web/dist web/dist
@@ -65,8 +75,9 @@ COPY deploy/voice deploy/voice
 # /data/bin is the escape hatch: anything dropped there is on PATH for pi and
 # every tool it launches, and survives an image rebuild. Installing a CLI into
 # the image filesystem instead looks like it worked — it survives a restart —
-# and then vanishes on the next deploy, which rebuilds.
-ENV PATH=/data/bin:$PATH
+# and then vanishes on the next deploy, which rebuilds. It comes last, so a
+# file there adds a tool and never stands in for node, git, docker or pi.
+ENV PATH=$PATH:/data/bin
 ENV NODE_ENV=production \
     PORT=4100 \
     DATA_DIR=/data \
@@ -78,4 +89,4 @@ ENV NODE_ENV=production \
 RUN mkdir -p /data/home /data/bin
 EXPOSE 4100
 VOLUME /data
-CMD ["node", "server/dist/index.js"]
+CMD ["/usr/local/bin/node", "server/dist/index.js"]

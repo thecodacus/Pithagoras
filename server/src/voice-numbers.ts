@@ -51,7 +51,8 @@ const PACKS: Record<string, NumberPack> = {
         "elf", "zwölf", "dreizehn", "vierzehn", "fünfzehn", "sechzehn", "siebzehn", "achtzehn", "neunzehn"],
       ["", "", "zwanzig", "dreißig", "vierzig", "fünfzig", "sechzig", "siebzig", "achtzig", "neunzig"],
       { tensOnes: (tens, ones) => `${ones}und${tens}`, hundred: (count, rest) => `${count}hundert${rest}`,
-        thousand: (count, rest) => `${count}tausend${rest}`, one: "ein" }),
+        // The count is a number of its own: "einhunderteins" thousand is "einhundertein" thousand.
+        thousand: (count, rest) => `${count.replace(/eins$/, "ein")}tausend${rest}`, one: "ein" }),
     decimal: "Komma", decimalChar: ",", groupChar: ".", percent: "Prozent",
   },
   en: {
@@ -72,9 +73,11 @@ export const NUMBER_PACK_LANGUAGES = Object.keys(PACKS);
  * A digit run with the separators it carries, so "1.999,99" and "16.09.2026"
  * each arrive whole rather than as the pieces between their dots. Anything
  * glued to letters or an underscore (Q8_0, v2) is skipped: it reads as an
- * identifier rather than a quantity.
+ * identifier rather than a quantity. So is what follows such an identifier
+ * after a separator, whose digits would otherwise be taken apart from it:
+ * the "11" of "v20.11".
  */
-const NUMERIC = /(?<![\p{L}\d_])\d(?:[\d.,:/-]*\d)?(?![\p{L}\d_])/gu;
+const NUMERIC = /(?<![\p{L}\d_]|[\p{L}\d_][.,:/-])\d(?:[\d.,:/-]*\d)?(?![\p{L}\d_])/gu;
 
 /** The digits of a whole part, or undefined when its grouping is not a number. */
 function wholeDigits(whole: string, groupChar: string): string | undefined {

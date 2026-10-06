@@ -4,9 +4,9 @@ A routine is a standing instruction and a schedule. When it fires the agent is
 given the instruction, does the work, and goes quiet again — nobody is waiting
 on the other end, so a run may take as long as it takes.
 
-Routines live in the sidebar next to Sessions and Agent. By default they run in the
-agent's home directory and share the agent's memory; **Runs in** gives one a project
-instead, and its runs work in that folder. Each place keeps its own session, so
+Routines live in the sidebar next to Sessions and Agents. By default they run in the
+first agent's home directory and share its memory; **Runs in** gives one another
+[agent's](/guide/agents) home or a project instead, and its runs work in that folder. Each place keeps its own session, so
 moving a routine back picks up where it left off. If the folder is later removed,
 the routine says so and its runs fail until another place is chosen.
 
@@ -26,9 +26,28 @@ A one-off catches up: if its moment passed while the portal was down, it still
 runs when the portal comes back. A recurring one does not — it simply waits for
 its next slot, because ten missed hourly runs firing at once helps nobody.
 
+A run that a restart cuts off — an update, a crash — is listed as **interrupted**,
+with a note saying so, instead of staying "running". A recurring routine carries
+on with its next slot. A one-off is switched off and is **not** run again by
+itself: the run may have done part of what it was asked, and doing that twice
+can be worse than not finishing. Look at what it did, then run it again by hand
+or give it a new time.
+
+A run that you stop with Stop in its chat is listed as **stopped**, with the note
+"Stopped before it finished." and what the agent had written by then, not as a
+success with half an answer. A recurring routine carries on with its next slot;
+a one-off is switched off and does not count as done, as after a restart.
+
 By default a routine keeps one session, so a run can see what the last one did —
 "nothing new since yesterday" needs yesterday. **Fresh session each run** gives
-each one a clean start instead, for work where history is only noise.
+each one a clean start instead, for work where history is only noise. Its agent is
+let go when the run ends, unless a build or a server it started in the background
+is still running: the agent is kept until that is over, as for an idle chat (see
+[Extensions](/guide/extensions)).
+
+A run that is still going after an hour is listed as an error. In a fresh session
+it is stopped then, as pressing Stop in its chat would; in the session a routine
+keeps, it carries on there.
 
 ## Reporting back
 
@@ -41,13 +60,13 @@ cannot start messaging somewhere it was never pointed at.
 
 Two places to set it:
 
-- **Settings → General → Routine reports** is the portal-wide default. Every
+- **Settings → Defaults → Routine reports** is the portal-wide default. Every
   routine inherits it, including one the agent creates for itself from a chat.
 - **A routine's own page** overrides that: a different conversation, or *Never
   report* for one that should stay quiet whatever the default is.
 
 A destination is a conversation that already exists — you pick "telegram —
-Anirban Kar", not a chat id. Only channels that can start a conversation appear;
+Sam Rivera", not a chat id. Only channels that can start a conversation appear;
 a webhook cannot, because it only ever answers a request that is already open.
 
 A routine created from a chat reports back **into that chat** — asking for a
@@ -92,11 +111,20 @@ agent to read it. Exempt the routine that needs it, leave the rest alone, and
 read the audit occasionally.
 :::
 
+## The browser
+
+**Browser** on a routine's page lets its runs drive the agent's
+[browser](/guide/browser), which is signed into the agent's own accounts. It is
+off by default, and every page a run opens is recorded in
+[Audit](/guide/sessions#audit).
+
 ## Letting the agent manage them
 
 Sessions reached through a channel get `routines_list`, `routine_create`,
 `routine_update` and `routine_run`, so "remind me every morning to check the
-backups" writes the routine instead of telling you where the button is.
+backups" writes the routine instead of telling you where the button is. They are
+for you: a routine runs as you, so a colleague or a guest cannot make, change or
+run one through the agent, whatever is [allowed](/people/rules) for them.
 
 Task sessions do not get them — a session working inside your repository has no
 business rescheduling anything. Neither does a routine run: a routine that can

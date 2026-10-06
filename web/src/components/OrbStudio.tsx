@@ -3,8 +3,10 @@ import { LuCheck, LuPalette, LuRefreshCw, LuRotateCcw } from "react-icons/lu";
 import { Modal } from "./Modal";
 import { api } from "../api";
 import { msg, t } from "../i18n";
-import { DEFAULT_ORB, ORB_PALETTES, itemColor, type OrbEyes, type OrbHat, type OrbPersonality, type OrbProp, type OrbState, type OrbStyle } from "../../../server/src/orb-style";
+import { tabKeys } from "../tab-keys";
+import { DEFAULT_ORB, ORB_PALETTES, itemColor, type OrbEyes, type OrbFinish, type OrbHat, type OrbPattern, type OrbPersonality, type OrbProp, type OrbState, type OrbStyle } from "../../../server/src/orb-style";
 import { ORB_STYLE_EVENT, VoiceOrb, type VoiceLevels } from "./VoiceOrb";
+import { VoicePicker } from "./AgentVoice";
 
 const PERSONALITIES: [OrbPersonality, string, string][] = [
   ["balanced", msg("Balanced"), msg("The orb as it has always been")],
@@ -33,6 +35,21 @@ const PROPS: [OrbProp, string][] = [
   ["catears", msg("Cat ears")], ["sprout", msg("Sprout")], ["flower", msg("Flower")],
 ];
 
+const FINISHES: [OrbFinish, string, string][] = [
+  ["glossy", msg("Glossy"), msg("A bright highlight and rim")],
+  ["plush", msg("Plush"), msg("Soft and fuzzy, like a stuffed toy")],
+];
+
+const PATTERNS: [OrbPattern, string][] = [
+  ["ribbons", msg("Ribbons")], ["bands", msg("Bands")], ["spots", msg("Spots")], ["swirl", msg("Swirl")],
+  ["stars", msg("Stars")], ["globe", msg("Globe")], ["none", msg("None")],
+];
+
+type Tab = "personality" | "colours" | "surface" | "face" | "wear";
+const TABS: [Tab, string][] = [
+  ["personality", msg("Personality")], ["colours", msg("Colours")], ["surface", msg("Surface")], ["face", msg("Face")], ["wear", msg("Wear")],
+];
+
 const STATES: [OrbState, string][] = [
   ["idle", msg("Idle")], ["input", msg("Listening")], ["output", msg("Speaking")], ["muted", msg("Muted")],
 ];
@@ -44,25 +61,27 @@ const SLIDERS: ["speed" | "reactivity" | "glow", string, number, number, string]
 ];
 
 /**
- * The voice-mode orb's personality and look, with a live preview.
+ * The agent's avatar, as an agent's page shows it in its hero, with a button on it
+ * that opens the customizer: the voice-mode orb's personality and look, with
+ * a live preview.
  *
  * The preview speaks with a made-up voice level so the motion can be judged
  * without starting voice mode; saved, the style reaches every open voice stage.
  */
-export function OrbStudio() {
-  const [saved, setSaved] = useState<OrbStyle | null>(null);
-  const [draft, setDraft] = useState<OrbStyle>(DEFAULT_ORB);
+export function OrbStudio({ agent, orb, voice, onSaved }: { agent: string; orb: OrbStyle; voice: string; onSaved: () => void }) {
+  const [saved, setSaved] = useState<OrbStyle>(orb);
+  const [draft, setDraft] = useState<OrbStyle>(orb);
+  // The voice it speaks with, saved with the look: see VoicePicker.
+  const [savedVoice, setSavedVoice] = useState(voice);
+  const [voiceDraft, setVoiceDraft] = useState(voice);
   const [state, setState] = useState<OrbState>("output");
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState("");
   const [open, setOpen] = useState(false);
+  const [tab, setTab] = useState<Tab>("personality");
   const levels = useRef<VoiceLevels>({ input: 0, output: 0 });
   const still = useRef<VoiceLevels>({ input: 0, output: 0 });
-
-  useEffect(() => {
-    api.agentOrb().then((s) => { setSaved(s); setDraft(s); }).catch((e) => setError((e as Error).message));
-  }, []);
 
   // Syllables rising and falling inside slower phrases, like the meter during
   // speech. Only while the customizer is open: the card's orb stays idle.
@@ -81,25 +100,27 @@ export function OrbStudio() {
   }, [state, open]);
 
   // Closing without saving puts the saved orb back.
-  const close = () => { setOpen(false); if (saved) setDraft(saved); setError(""); setDone(false); };
-  const shown = saved ?? DEFAULT_ORB;
+  const close = () => { setOpen(false); setDraft(saved); setVoiceDraft(savedVoice); setError(""); setDone(false); };
   const name = <T extends string>(list: [T, string, ...unknown[]][], value: T) => t(list.find(([v]) => v === value)?.[1] ?? value);
   const summary = [
-    name(PERSONALITIES, shown.personality),
-    shown.eyes !== "none" && name(EYES, shown.eyes),
-    shown.hat !== "none" && name(HATS, shown.hat),
-    shown.prop !== "none" && name(PROPS, shown.prop),
+    name(PERSONALITIES, saved.personality),
+    saved.eyes !== "none" && name(EYES, saved.eyes),
+    saved.hat !== "none" && name(HATS, saved.hat),
+    saved.prop !== "none" && name(PROPS, saved.prop),
   ].filter(Boolean).join(" · ");
 
   const change = (patch: Partial<OrbStyle>) => { setDraft((d) => ({ ...d, ...patch })); setDone(false); };
-  const dirty = saved !== null && JSON.stringify(draft) !== JSON.stringify(saved);
+  const dirty = JSON.stringify(draft) !== JSON.stringify(saved) || voiceDraft !== savedVoice;
 
   const save = async () => {
     setBusy(true); setError("");
     try {
-      const next = await api.setAgentOrb(draft);
-      setSaved(next); setDraft(next); setDone(true);
-      window.dispatchEvent(new CustomEvent(ORB_STYLE_EVENT, { detail: next }));
+      const next = await api.setAgentOrb(agent, draft);
+      setSaved(next); setDraft(next);
+      if (voiceDraft !== savedVoice) setSavedVoice((await api.setAgentVoice(agent, voiceDraft)).voice);
+      setDone(true);
+      window.dispatchEvent(new CustomEvent(ORB_STYLE_EVENT));
+      onSaved();
       setTimeout(() => setDone(false), 2000);
     } catch (e) {
       setError((e as Error).message);
@@ -107,6 +128,66 @@ export function OrbStudio() {
       setBusy(false);
     }
   };
+
+  /** The sliders of `keys`, in the order SLIDERS lists them. */
+  const sliders = (keys: (typeof SLIDERS)[number][0][]) =>
+    SLIDERS.filter(([key]) => keys.includes(key)).map(([key, label, min, max, help]) => (
+      <label key={key} className="block text-xs text-fg-muted">
+        <span className="flex justify-between gap-3">
+          <span>{t(label)}</span>
+          <span className="tabular-nums text-accent">{draft[key].toFixed(2)}×</span>
+        </span>
+        <input
+          type="range"
+          className="mt-1.5 w-full accent-current"
+          min={min}
+          max={max}
+          step={0.05}
+          value={draft[key]}
+          onChange={(e) => change({ [key]: Number(e.target.value) } as Partial<OrbStyle>)}
+        />
+        <span className="mt-0.5 block text-[11px] text-fg-faint">{t(help)}</span>
+      </label>
+    ));
+
+  /** One choice of what is on or worn by the orb: its options, and its colour once one is picked. */
+  const itemRow = <K extends "eyes" | "hat" | "prop">(key: K, colorKey: "eyeColor" | "hatColor" | "propColor", title: string, options: readonly (readonly [OrbStyle[K], string])[]) => (
+    <div key={key}>
+      <p className="text-xs text-fg-muted">{t(title)}</p>
+      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+        {options.map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            aria-pressed={draft[key] === value}
+            onClick={() => change({ [key]: value } as Partial<OrbStyle>)}
+            className={`rounded-lg border px-2.5 py-1 text-[11px] transition ${
+              draft[key] === value ? "border-accent/50 bg-accent/10 text-fg" : "border-line text-fg-muted hover:bg-fg/5"
+            }`}
+          >
+            {t(label)}
+          </button>
+        ))}
+        {draft[key] !== "none" && (
+          <label className="ml-1 flex items-center gap-1.5 text-[11px] text-fg-muted">
+            <input
+              type="color"
+              aria-label={t("Colour")}
+              // Hats and props show their own colour until one is picked.
+              value={key === "eyes" ? draft.eyeColor : itemColor(draft[key] as Exclude<OrbHat | OrbProp, "none">, draft[colorKey])}
+              onChange={(e) => change({ [colorKey]: e.target.value } as Partial<OrbStyle>)}
+              className="h-6 w-8 cursor-pointer rounded border border-line bg-transparent"
+            />
+            {key !== "eyes" && draft[colorKey] !== "auto" && (
+              <button type="button" onClick={() => change({ [colorKey]: "auto" } as Partial<OrbStyle>)} className="rounded px-1.5 py-0.5 text-[11px] text-fg-muted hover:bg-fg/5">
+                {t("Auto")}
+              </button>
+            )}
+          </label>
+        )}
+      </div>
+    </div>
+  );
 
   const footer = (
     <div className="flex items-center justify-end gap-2">
@@ -131,27 +212,27 @@ export function OrbStudio() {
   );
 
   return (
-    <section className="mt-6 flex items-center gap-4 rounded-xl border border-line bg-surface/50 p-4">
-      <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-xl bg-[#0b1220]">
-        <div className="voice-avatar w-[60%]">
-          <VoiceOrb mode="idle" levels={still} look={shown} />
+    <>
+      {/* The avatar itself, with the way to change it on it. */}
+      <div className="relative h-16 w-16 shrink-0" title={summary}>
+        <div className="flex h-full w-full items-center justify-center rounded-2xl bg-[#0b1220] ring-1 ring-inset ring-accent/15">
+          <div className="voice-avatar w-[66%]">
+            <VoiceOrb mode="idle" levels={still} look={saved} />
+          </div>
         </div>
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          title={t("Customize")}
+          aria-label={t("Customize the avatar")}
+          className="absolute -bottom-1.5 -right-1.5 grid h-7 w-7 place-items-center rounded-full border border-line bg-surface text-fg-muted shadow-pop transition hover:border-accent/40 hover:text-accent"
+        >
+          <LuPalette className="h-3.5 w-3.5" />
+        </button>
       </div>
-      <div className="min-w-0 flex-1">
-        <h3 className="text-sm font-medium">{t("Avatar")}</h3>
-        <p className="mt-0.5 truncate text-xs text-fg-muted">{summary}</p>
-      </div>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-accent/12 px-3 py-1.5 text-sm text-accent ring-1 ring-inset ring-accent/25 transition hover:bg-accent/20"
-      >
-        <LuPalette className="h-4 w-4" />
-        {t("Customize")}
-      </button>
 
       {open && (
-      <Modal title={t("Avatar")} subtitle={t("How the agent looks and moves in voice mode.")} wide onClose={close} footer={footer}>
+      <Modal title={t("Avatar")} subtitle={t("How the agent looks, moves and sounds in voice mode.")} wide onClose={close} footer={footer} unsaved={dirty && !busy}>
       <div className="grid gap-5 sm:grid-cols-[220px_1fr]">
         {/* Stays in view while the options scroll past, so a change is seen as it is made. */}
         <div className="sm:sticky sm:top-0 sm:self-start">
@@ -173,9 +254,35 @@ export function OrbStudio() {
               </button>
             ))}
           </div>
+          <VoicePicker value={voiceDraft} onChange={(v) => { setVoiceDraft(v); setDone(false); }} />
         </div>
 
-        <div className="space-y-4">
+        <div className="min-w-0">
+          <div
+            role="tablist"
+            aria-label={t("Avatar sections")}
+            className="flex gap-1 overflow-x-auto border-b border-line"
+            onKeyDown={tabKeys}
+          >
+            {TABS.map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                role="tab"
+                aria-selected={tab === id}
+                tabIndex={tab === id ? 0 : -1}
+                onClick={() => setTab(id)}
+                className={`-mb-px shrink-0 border-b-2 px-3 py-1.5 text-xs transition ${
+                  tab === id ? "border-accent text-fg" : "border-transparent text-fg-muted hover:text-fg"
+                }`}
+              >
+                {t(label)}
+              </button>
+            ))}
+          </div>
+
+          <div role="tabpanel" aria-label={t(TABS.find(([id]) => id === tab)![1])} className="space-y-4 pt-4">
+          {tab === "personality" && <>
           <div>
             <p className="text-xs text-fg-muted">{t("Personality")}</p>
             <div className="mt-1.5 grid gap-1.5 sm:grid-cols-2">
@@ -196,6 +303,10 @@ export function OrbStudio() {
             </div>
           </div>
 
+          {sliders(["speed", "reactivity"])}
+
+          </>}
+          {tab === "colours" && <>
           <div>
             <p className="text-xs text-fg-muted">{t("Colours")}</p>
             <div className="mt-1.5 flex flex-wrap gap-1.5">
@@ -236,73 +347,65 @@ export function OrbStudio() {
             </div>
           </div>
 
-          {([["eyes", "eyeColor", msg("Eyes"), EYES], ["hat", "hatColor", msg("Hat"), HATS], ["prop", "propColor", msg("Props"), PROPS]] as const).map(([key, colorKey, title, options]) => (
-            <div key={key}>
-              <p className="text-xs text-fg-muted">{t(title)}</p>
-              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                {options.map(([value, label]) => (
-                  <button
-                    key={value}
-                    type="button"
-                    aria-pressed={draft[key] === value}
-                    onClick={() => change({ [key]: value } as Partial<OrbStyle>)}
-                    className={`rounded-lg border px-2.5 py-1 text-[11px] transition ${
-                      draft[key] === value ? "border-accent/50 bg-accent/10 text-fg" : "border-line text-fg-muted hover:bg-fg/5"
-                    }`}
-                  >
-                    {t(label)}
-                  </button>
-                ))}
-                {draft[key] !== "none" && (
-                  <label className="ml-1 flex items-center gap-1.5 text-[11px] text-fg-muted">
-                    <input
-                      type="color"
-                      aria-label={t("Colour")}
-                      // Hats and props show their own colour until one is picked.
-                      value={key === "eyes" ? draft.eyeColor : itemColor(draft[key] as Exclude<OrbHat | OrbProp, "none">, draft[colorKey])}
-                      onChange={(e) => change({ [colorKey]: e.target.value } as Partial<OrbStyle>)}
-                      className="h-6 w-8 cursor-pointer rounded border border-line bg-transparent"
-                    />
-                    {key !== "eyes" && draft[colorKey] !== "auto" && (
-                      <button type="button" onClick={() => change({ [colorKey]: "auto" } as Partial<OrbStyle>)} className="rounded px-1.5 py-0.5 text-[11px] text-fg-muted hover:bg-fg/5">
-                        {t("Auto")}
-                      </button>
-                    )}
-                  </label>
-                )}
-              </div>
+          </>}
+          {tab === "surface" && <>
+          <div>
+            <p className="text-xs text-fg-muted">{t("Finish")}</p>
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {FINISHES.map(([value, label, hint]) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={draft.finish === value}
+                  onClick={() => change({ finish: value })}
+                  title={t(hint)}
+                  className={`rounded-lg border px-2.5 py-1 text-[11px] transition ${
+                    draft.finish === value ? "border-accent/50 bg-accent/10 text-fg" : "border-line text-fg-muted hover:bg-fg/5"
+                  }`}
+                >
+                  {t(label)}
+                </button>
+              ))}
             </div>
-          ))}
+          </div>
+          <div>
+            <p className="text-xs text-fg-muted">{t("Pattern")}</p>
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {PATTERNS.map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={draft.pattern === value}
+                  onClick={() => change({ pattern: value })}
+                  
+                  className={`rounded-lg border px-2.5 py-1 text-[11px] transition ${
+                    draft.pattern === value ? "border-accent/50 bg-accent/10 text-fg" : "border-line text-fg-muted hover:bg-fg/5"
+                  }`}
+                >
+                  {t(label)}
+                </button>
+              ))}
+            </div>
+          </div>
+          {sliders(["glow"])}
 
-          {SLIDERS.map(([key, label, min, max, help]) => (
-            <label key={key} className="block text-xs text-fg-muted">
-              <span className="flex justify-between gap-3">
-                <span>{t(label)}</span>
-                <span className="tabular-nums text-accent">{draft[key].toFixed(2)}×</span>
-              </span>
-              <input
-                type="range"
-                className="mt-1.5 w-full accent-current"
-                min={min}
-                max={max}
-                step={0.05}
-                value={draft[key]}
-                onChange={(e) => change({ [key]: Number(e.target.value) } as Partial<OrbStyle>)}
-              />
-              <span className="mt-0.5 block text-[11px] text-fg-faint">{t(help)}</span>
-            </label>
-          ))}
+          </>}
+          {tab === "face" && <>
+          {itemRow("eyes", "eyeColor", msg("Eyes"), EYES)}
 
-          <label className="flex items-center gap-2 text-xs text-fg-muted">
-            <input type="checkbox" checked={draft.ribbons} onChange={(e) => change({ ribbons: e.target.checked })} />
-            {t("Ribbons of light inside the orb")}
-          </label>
+          </>}
+          {tab === "wear" && <>
+          {itemRow("hat", "hatColor", msg("Hat"), HATS)}
+          {itemRow("prop", "propColor", msg("Props"), PROPS)}
+
+          </>}
+          </div>
         </div>
       </div>
 
       {error && <p role="alert" className="mt-3 text-xs text-danger">{error}</p>}
       </Modal>
       )}
-    </section>
+    </>
   );
 }

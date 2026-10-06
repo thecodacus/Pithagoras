@@ -1,4 +1,4 @@
-import {test,expect} from '@playwright/test';
+import { test, expect } from './portal-mock';
 import path from 'node:path';
 test('upload a voice reference, select it, save settings, and delete it',async({page})=>{
  let config={enabled:true,voice:'design',whisperUrl:'http://localhost/a',breezeUrl:'http://localhost/b',instruction:'Clear',cfgScale:4};
@@ -22,7 +22,6 @@ test('upload a voice reference, select it, save settings, and delete it',async({
  await expect(page.getByLabel('Voice reference preview')).toBeVisible();
  await page.getByRole('button',{name:'Save voice settings',exact:true}).click();
  expect(config.voice).toBe('voice-test');
- await page.screenshot({path:'/tmp/pithagoras-voice-library.png',fullPage:true});
  // The page draws the portal's own dialog, as the app does, not the browser's.
  await page.getByRole('button',{name:'Delete voice',exact:true}).click();
  await page.getByRole('alertdialog').getByRole('button',{name:'Delete',exact:true}).click();

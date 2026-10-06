@@ -20,9 +20,10 @@
 :is(.image-preview-making, .image-preview-loading) > svg { width: 22px; height: 22px; stroke-width: 1.6; color: rgb(var(--ip-accent)); }
 .image-preview-loading > svg { color: rgb(var(--ip-fg)); }
 .image-preview.is-compact :is(.image-preview-making, .image-preview-loading) > svg { width: 16px; height: 16px; }
-.image-preview-making > small { font-size: 11px; color: rgb(var(--fg-faint)); }
-/* Over an edit's original the words sit on a plate of their own, to be read on any picture. */
-.image-preview-frame.has-before :is(.image-preview-making, .image-preview-loading) > span { padding: 2px 10px; border-radius: 999px; background: rgb(var(--surface) / .82); color: rgb(var(--fg)); }
+.image-preview-making > small { font-size: 11px; color: var(--ip-fg); }
+/* Over an edit's original the words and the seconds each sit on a plate of their own, to be read on any picture, bright or dark: a surface of the theme, nearly opaque, with the theme's own text on it. */
+.image-preview-frame.has-before :is(.image-preview-making, .image-preview-loading) > :is(span, small) { padding: 2px 10px; border-radius: 999px; background: rgb(var(--surface) / .88); color: rgb(var(--fg)); }
+.image-preview-frame.has-before .image-preview-making > small { padding: 1px 8px; }
 /* Laid over the frame as layers that are only ever moved (motion.css), never redrawn. The sheen waits outside the frame. */
 .image-preview-making::before, .image-preview-making::after { content: ""; position: absolute; z-index: -1; pointer-events: none; }
 .image-preview-making::before { inset: -30%; background: radial-gradient(closest-side at 30% 35%, rgb(var(--ip-accent) / .2), transparent), radial-gradient(closest-side at 72% 68%, rgb(var(--ip-accent) / .13), transparent); }

@@ -1,4 +1,5 @@
-import { test, expect, type Page } from '@playwright/test';
+import { type Page } from '@playwright/test';
+import { test, expect } from './portal-mock';
 
 type Unsaved = { changed: number; unpushed: number; stashes: number; unknown?: true };
 
@@ -151,4 +152,64 @@ test('a folder opened while its delete was asked, and gone after it, is left for
   await expect(page.getByRole('button', { name: 'Delete notes.md' })).toBeAttached();
   await expect(page.getByRole('button', { name: 'Delete api' })).toHaveCount(0);
   await expect(page.getByText('There is no such folder')).toHaveCount(0);
+});
+
+test('cancelling a delete gives focus back to the row\'s Delete button, whether the question was the first or the second', async ({ page }) => {
+  // The button is marked busy from the click, while the question is open as well: a disabled one would keep no focus.
+  await files(page, { unsaved: null, found: { changed: 2, unpushed: 0, stashes: 0 } });
+  for (const name of ['notes.md', 'api']) {
+    const button = page.getByRole('button', { name: `Delete ${name}` });
+    await button.focus();
+    await page.keyboard.press('Enter');
+    await expect(dialog(page)).toContainText(`Delete "${name}"?`);
+    await page.keyboard.press('Escape');
+    await expect(dialog(page)).toHaveCount(0);
+    await expect(button).toBeFocused();
+  }
+
+  // The folder holds work the first question did not know of: the server refuses, and the second question starts from the button too.
+  const folder = page.getByRole('button', { name: 'Delete api' });
+  await folder.focus();
+  await page.keyboard.press('Enter');
+  await dialog(page).getByRole('button', { name: 'Delete', exact: true }).click();
+  await expect(dialog(page)).toContainText('and its unsaved work?');
+  await dialog(page).getByRole('button', { name: 'Cancel' }).click();
+  await expect(dialog(page)).toHaveCount(0);
+  await expect(folder).toBeFocused();
+});
+
+test('two questions that came one after the other keep focus in the second, and the last answer gives it back to the row that was asked first', async ({ page }) => {
+  let release!: () => void;
+  const hold = new Promise<void>((r) => (release = r));
+  await files(page, { unsaved: { changed: 0, unpushed: 0, stashes: 0 }, hold });
+  // The folder's check is still out when a file is deleted: its question comes up while the file's is open.
+  await page.getByRole('button', { name: 'Delete api' }).focus();
+  await page.keyboard.press('Enter');
+  await page.getByRole('button', { name: 'Delete notes.md' }).focus();
+  await page.keyboard.press('Enter');
+  await expect(dialog(page)).toContainText('Delete "notes.md"?');
+  // Until the folder's check has answered, and the page has had its frames to put the question behind the file's.
+  const answered = page.waitForEvent('requestfinished', (r) => r.url().includes('/unsaved?'));
+  release();
+  await answered;
+  await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
+  await page.keyboard.press('Escape');
+  await expect(dialog(page)).toContainText('Delete "api"?');
+  // Not sent back behind the backdrop to the row the first question came from.
+  await expect(dialog(page).getByRole('button', { name: 'Cancel' })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(dialog(page)).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Delete notes.md' })).toBeFocused();
+});
+
+test('clicking beside a delete question answers no and gives focus back to the row, like Escape', async ({ page }) => {
+  await files(page, { unsaved: null });
+  const button = page.getByRole('button', { name: 'Delete notes.md' });
+  await button.focus();
+  await page.keyboard.press('Enter');
+  await expect(dialog(page)).toContainText('Delete "notes.md"?');
+  // The backdrop, as the press that follows would otherwise clear the focus that was just given back.
+  await page.mouse.click(3, 3);
+  await expect(dialog(page)).toHaveCount(0);
+  await expect(button).toBeFocused();
 });

@@ -1,11 +1,12 @@
-import type { GalleryPicture, PictureJob, PictureKind, PictureOrigin } from "./api";
+import type { GalleryPicture, OutputFormat, PictureJob, PictureKind, PictureOrigin, PictureSettingsBody } from "./api";
 import type { ViewerPicture } from "./image-viewer";
+import { COMPRESSIBLE as COMPRESSIBLE_FORMATS, LIMITS, OUTPUT_FORMATS } from "../../server/src/image-settings";
 
 /**
  * What the Images page (components/ImagesPage.tsx) works out without a page:
  * which pictures are drawn and in what order, how a page that was asked for
  * again joins the ones already there, what the viewer is given, and the form's
- * extra fields and what it remembers.
+ * settings and what it remembers.
  */
 
 export interface Filter {
@@ -146,53 +147,152 @@ export function madeButNotListed(jobs: PictureJob[], have: ReadonlySet<string>, 
 }
 
 /**
- * The extra fields of a request as typed, one `name=value` to a line, or what
- * is wrong with them. The values are text: the portal reads `true`, `false` and
- * plain numbers as such, and a value in double quotes is text whatever it looks
- * like (see parseExtra on the server).
+ * What a picture was made with by an older version of the page, which let the
+ * person type fields of their own: `name=value`, one to a line, as the details
+ * show them. They are not sent any more (see image-settings.ts on the server),
+ * and a picture that has them still says so. A value that is text but looks like
+ * a number or a switch is in quotes, so that it reads as it was.
  */
-export function parseFields(text: string): { fields: Record<string, string> } | { error: string; line: number } {
-  // Without a prototype, so that no name is special: `__proto__` is a field like another, and the portal says it is not a name there can be.
-  const fields: Record<string, string> = Object.create(null);
-  const lines = text.split(/\r?\n/);
-  for (const [i, raw] of lines.entries()) {
-    const line = raw.trim();
-    if (!line) continue;
-    const at = line.indexOf("=");
-    const name = at < 0 ? "" : line.slice(0, at).trim();
-    if (!name) return { error: "missing", line: i + 1 };
-    if (Object.hasOwn(fields, name)) return { error: "twice", line: i + 1 };
-    fields[name] = line.slice(at + 1).trim();
-  }
-  return { fields: { ...fields } };
-}
-
-/** A value of an extra field as it is typed, so that it reads back as it was: text that looks like a number or a switch is put in quotes. */
-export const typed = (value: string | number | boolean): string =>
-  typeof value === "string" && (value === "true" || value === "false" || /^-?\d+(\.\d+)?$/.test(value)) ? `"${value}"` : String(value);
-
-/** The extra fields a picture was made with, as a request says them again. */
-export const fieldsOf = (extra: Record<string, string | number | boolean> | undefined): Record<string, string> =>
-  Object.fromEntries(Object.entries(extra ?? {}).map(([name, value]) => [name, typed(value)]));
-
-/** The same, one to a line as the form shows them. */
 export const fieldsText = (extra: Record<string, string | number | boolean> | undefined): string =>
-  Object.entries(fieldsOf(extra))
-    .map(([name, value]) => `${name}=${value}`)
+  Object.entries(extra ?? {})
+    .map(([name, value]) => `${name}=${typeof value === "string" && (value === "true" || value === "false" || /^-?\d+(\.\d+)?$/.test(value)) ? `"${value}"` : value}`)
     .join("\n");
 
-/** What the form keeps between visits: the settings of a request, not its words. */
-export interface FormMemory {
+/**
+ * What a picture may be asked for is the portal's own (server/src/image-settings.ts),
+ * not a copy of it: the form says what is wrong before it asks, and never of
+ * something the portal takes.
+ */
+export { LIMITS, OUTPUT_FORMATS };
+/** The formats that have a compression to set, for a format as it is typed. */
+export const COMPRESSIBLE: readonly string[] = COMPRESSIBLE_FORMATS;
+
+/** What the form asks for one picture with, as typed: nothing typed is nothing sent. */
+export interface Fields {
   model: string;
-  size: string;
+  width: string;
+  height: string;
+  negativePrompt: string;
+  /** Empty is the endpoint's own. */
+  outputFormat: "" | OutputFormat;
+  outputCompression: string;
+  seed: string;
+  sampleSteps: string;
+  /** For a change only. */
+  strength: string;
+  /** For a change only: start from noise, with the pictures as references, instead of from the first picture. Not kept: the next visit starts from the picture. */
+  fromNoise: boolean;
+}
+
+export type FieldName = keyof Fields;
+
+/** What is wrong with a setting, as a code that the form says in words. */
+export type Problem = "size-pair" | "size-range" | "compression-range" | "seed" | "steps" | "strength" | "negative-long";
+
+const WHOLE = /^[+-]?\d+$/;
+
+/** A whole number as typed, or undefined when it is not one in the range. */
+function whole(text: string, min: number, max?: number): number | undefined {
+  if (!WHOLE.test(text)) return undefined;
+  const n = Number(text);
+  return Number.isSafeInteger(n) && n >= min && (max === undefined || n <= max) ? n : undefined;
+}
+
+/**
+ * The settings the form has, ready to send, or the first one that is wrong.
+ * What is empty is left out; a size is both sides or none; a compression goes
+ * only with a format that has one (the field is off for the others). The ones
+ * that only stable-diffusion.cpp reads (`sd`) are looked at only while the
+ * switch for them is on: off, whatever is in the fields is neither checked nor
+ * sent, and stays where it is. A strength is for a change only, and not one
+ * that starts from noise.
+ */
+export function settingsBody(fields: Fields, edit: boolean, sd: boolean): { body: PictureSettingsBody } | { field: FieldName; problem: Problem } {
+  const body: PictureSettingsBody = {};
+  const model = fields.model.trim();
+  if (model) body.model = model;
+
+  const width = fields.width.trim();
+  const height = fields.height.trim();
+  if (width || height) {
+    if (!width || !height) return { field: width ? "height" : "width", problem: "size-pair" };
+    const w = whole(width, LIMITS.side.min, LIMITS.side.max);
+    if (w === undefined) return { field: "width", problem: "size-range" };
+    const h = whole(height, LIMITS.side.min, LIMITS.side.max);
+    if (h === undefined) return { field: "height", problem: "size-range" };
+    body.size = `${w}x${h}`;
+  }
+
+  if (fields.outputFormat) {
+    body.outputFormat = fields.outputFormat;
+    const compression = fields.outputCompression.trim();
+    if (compression && COMPRESSIBLE.includes(fields.outputFormat)) {
+      const n = whole(compression, LIMITS.compression.min, LIMITS.compression.max);
+      if (n === undefined) return { field: "outputCompression", problem: "compression-range" };
+      body.outputCompression = n;
+    }
+  }
+
+  if (!sd) return { body };
+
+  const negative = fields.negativePrompt.trim();
+  if (negative.length > LIMITS.negativePrompt) return { field: "negativePrompt", problem: "negative-long" };
+  if (negative) body.negativePrompt = negative;
+
+  const seed = fields.seed.trim();
+  if (seed) {
+    const n = whole(seed, LIMITS.seed.min);
+    if (n === undefined) return { field: "seed", problem: "seed" };
+    body.seed = n;
+  }
+  const steps = fields.sampleSteps.trim();
+  if (steps) {
+    const n = whole(steps, LIMITS.steps.min, LIMITS.steps.max);
+    if (n === undefined) return { field: "sampleSteps", problem: "steps" };
+    body.sampleSteps = n;
+  }
+  if (edit && fields.fromNoise) body.fromNoise = true;
+  const strength = fields.strength.trim();
+  // A strength is how far the result may go from the first picture, and from noise there is none.
+  if (edit && !fields.fromNoise && strength) {
+    // A comma is a decimal point where the person writes one.
+    const text = strength.replace(",", ".");
+    const n = /^(\d+(\.\d+)?|\.\d+)$/.test(text) ? Number(text) : NaN;
+    if (!(n >= LIMITS.strength.min && n <= LIMITS.strength.max)) return { field: "strength", problem: "strength" };
+    body.strength = n;
+  }
+  return { body };
+}
+
+/** What the form keeps between visits: the settings of a request, not its words. Making and changing each have their own, since the defaults of one are not the other's. */
+export interface FormMemory {
+  make: Fields;
+  edit: Fields;
   count: number;
-  extra: string;
+  /** The less usual settings are shown. */
   open: boolean;
 }
 
 export const FORM_KEY = "imagesForm";
 
 const text = (v: unknown, max: number): string => (typeof v === "string" ? v.slice(0, max) : "");
+
+/** The fields as they were kept. A seed is not: it would make every picture the same one, the next day too. */
+function readFields(raw: unknown): Fields {
+  const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  return {
+    model: text(r.model, 200),
+    width: text(r.width, 5),
+    height: text(r.height, 5),
+    negativePrompt: text(r.negativePrompt, LIMITS.negativePrompt),
+    outputFormat: OUTPUT_FORMATS.includes(r.outputFormat as OutputFormat) ? (r.outputFormat as OutputFormat) : "",
+    outputCompression: text(r.outputCompression, 3),
+    seed: "",
+    sampleSteps: text(r.sampleSteps, 3),
+    strength: text(r.strength, 6),
+    fromNoise: false,
+  };
+}
 
 /** What was kept, as far as it still makes sense: storage is the person's to change and the page's to survive. */
 export function readForm(stored: string | null, most: number): FormMemory {
@@ -203,12 +303,25 @@ export function readForm(stored: string | null, most: number): FormMemory {
   } catch {
     // Unreadable is as good as nothing kept.
   }
+  const make = readFields(raw.make);
+  // What an older page kept, one model and one size for making: still the ones for making. Its free extra fields are gone.
+  if (!raw.make) {
+    make.model = text(raw.model, 200);
+    const old = /^(\d{1,5})x(\d{1,5})$/.exec(text(raw.size, 20));
+    if (old) [, make.width, make.height] = old;
+  }
   const count = Number(raw.count);
   return {
-    model: text(raw.model, 200),
-    size: text(raw.size, 20),
+    make,
+    edit: readFields(raw.edit),
     count: Number.isInteger(count) && count >= 1 ? Math.min(count, Math.max(1, most)) : 1,
-    extra: text(raw.extra, 2000),
     open: raw.open === true,
   };
+}
+
+/** The sides of a size as the add-on has it, `1024x1024`, for the fields to show as what is used when they are empty. `auto` is both. */
+export function sizeParts(size: string): { width: string; height: string } {
+  const both = /^(\d+)x(\d+)$/.exec(size);
+  if (both) return { width: both[1], height: both[2] };
+  return size === "auto" ? { width: "auto", height: "auto" } : { width: "", height: "" };
 }

@@ -1,15 +1,13 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { inProcessHome } from './server-harness.mjs';
 
-const dataDir = mkdtempSync(join(tmpdir(), 'pithagoras-ctx-'));
-process.env.DATA_DIR = dataDir;
+const dataDir = inProcessHome('pithagoras-ctx-');
 const { getContextLimit, setContextLimit, getDefaultContextLimit, setDefaultContextLimit, contextWindowFor, contextLimitProblem, getDb } =
   await import('../dist/db.js');
 const { SdkPiClient } = await import('../dist/pi/sdk-client.js');
-test.after(() => { getDb().close(); rmSync(dataDir, { recursive: true, force: true }); });
+test.after(() => getDb().close());
 
 /** A client around a stand-in session: only what applyContextLimit touches. */
 function clientFor(model, declared) {

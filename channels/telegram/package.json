@@ -4,5 +4,6 @@
   "description": "Reach the agent from a Telegram bot",
   "type": "module",
   "main": "index.js",
+  "license": "Apache-2.0",
   "pithagoras": { "channel": true }
 }

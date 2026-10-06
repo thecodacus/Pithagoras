@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import ts from "typescript";
-import { addLocale, ENGLISH, formatDate, formatDateTime, formatsFor, formatTime, labelOf, languages, resolve, setLanguage, t, tc, tp, tx, type Locale, type Plural } from "../web/src/i18n.ts";
+import { addLocale, ENGLISH, formatDate, formatDateTime, formatsFor, formatTime, labelOf, languages, loadLanguage, offerLocale, resolve, selfName, setLanguage, t, tc, tp, tx, type Locale, type Plural } from "../web/src/i18n.ts";
 
 const SRC = path.resolve(import.meta.dirname, "../web/src");
 const LOCALES = path.join(SRC, "locales");
@@ -90,6 +90,13 @@ test("a translation fills in the same words, and a count's has every form", asyn
       }
     }
   }
+});
+
+test("German says Kanal for a channel, and not the English word beside it", async () => {
+  const { strings } = await load("de.ts");
+  const said = Object.entries(strings).flatMap(([key, text]) => (typeof text === "string" ? [[key, text]] : Object.values(text as Plural).map((form) => [key, form ?? ""])));
+  const english = said.filter(([, text]) => /\bChannels?\b/.test(text.replace(/\{\w+\}/g, "")));
+  assert.deepEqual(english.map(([key]) => key), []);
 });
 
 test("English is what the code says; another language where it has the text", () => {
@@ -187,5 +194,49 @@ test("the same English word with two meanings is told apart by what it is", () =
     assert.equal(tc("Closed", "state"), "Closed", "one the language lacks is the English");
   } finally {
     setLanguage("system");
+  }
+});
+
+test("a language that is only offered is fetched once, when it is chosen, and the page waits for it", async () => {
+  let fetched = 0;
+  offerLocale("qq", async () => (fetched++, { code: "qq", name: "Qq", strings: { Hello: "Hallo" } }));
+  try {
+    assert.ok(languages().some((l) => l.code === "qq"), "offered with its name, before its text is here");
+    setLanguage("en");
+    await loadLanguage();
+    assert.equal(fetched, 0, "not fetched while another language is in use");
+    setLanguage("qq");
+    assert.equal(t("Hello"), "Hello", "English until the text has come, not a blank or a key");
+    await Promise.all([loadLanguage(), loadLanguage()]);
+    assert.equal(t("Hello"), "Hallo");
+    assert.equal(fetched, 1, "once, however many ask");
+    setLanguage("en");
+    setLanguage("qq");
+    assert.equal(t("Hello"), "Hallo", "kept, not fetched again");
+    assert.equal(fetched, 1);
+  } finally {
+    setLanguage("system");
+  }
+});
+
+test("a language that cannot be fetched leaves the page as it was", async () => {
+  offerLocale("rr", async () => {
+    throw new Error("offline");
+  });
+  try {
+    setLanguage("en");
+    setLanguage("rr");
+    await loadLanguage();
+    assert.equal(t("Hello"), "Hello");
+  } finally {
+    setLanguage("system");
+  }
+});
+
+test("each language is offered, before it is fetched, by the code its file is named for and the name it gives itself", async () => {
+  for (const file of localeFiles()) {
+    const locale = await load(file);
+    assert.equal(file, `${locale.code}.ts`, "the file is named by the code: that is how it is found without being read");
+    assert.equal(selfName(locale.code), locale.name);
   }
 });

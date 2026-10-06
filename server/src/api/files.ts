@@ -39,7 +39,8 @@ const STATUS = { invalid: 400, missing: 404, conflict: 409, exists: 409, too_lar
 export function fail(res: Response, e: unknown) {
   // Told apart from the other 409s by its code, so that the page can ask about it instead of showing an error.
   if (e instanceof FileError && e.unsaved) return res.status(STATUS[e.code]).json(unsavedRefusal(e.unsaved));
-  if (e instanceof FileError) return res.status(STATUS[e.code]).json({ error: e.message });
+  // With its code: the page tells a conflict from "exists" (both 409) by that, not by the sentence.
+  if (e instanceof FileError) return res.status(STATUS[e.code]).json({ error: e.message, code: e.code });
   console.error("[portal] files:", e);
   res.status(500).json({ error: "Could not read or change the files" });
 }

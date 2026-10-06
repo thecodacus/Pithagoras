@@ -21,7 +21,7 @@ export function placeWindows(open: Partial<Record<VoiceWindow, boolean>>): { mai
 }
 
 /** The orb and its buttons, standing on their own, need about this much width. */
-export const PRESENCE_WIDTH = 280;
+const PRESENCE_WIDTH = 280;
 
 /**
  * The widest stretch across the stage that no window covers, when the orb

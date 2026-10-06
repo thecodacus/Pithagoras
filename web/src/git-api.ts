@@ -140,6 +140,9 @@ export interface Check {
 
 export interface PullDetail extends PullSummary {
   body: string;
+  /** Whether its branch is in another repository, a fork: then `headRefName` is a name there, not here. */
+  isCrossRepository?: boolean;
+  headRepositoryOwner?: { login: string };
   mergeable?: string;
   mergeStateStatus?: string;
   statusCheckRollup?: Check[];

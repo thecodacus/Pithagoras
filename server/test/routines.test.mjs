@@ -1,15 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { inProcessHome } from "./server-harness.mjs";
 
-const home = mkdtempSync(path.join(tmpdir(), "pithagoras-routines-"));
-process.env.DATA_DIR = home;
-process.env.WORKSPACE_ROOT = path.join(home, "ws");
-process.env.AGENT_HOME = path.join(home, "agent-home");
-process.env.PI_CODING_AGENT_DIR = path.join(home, "agent");
-mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
+const home = inProcessHome("pithagoras-routines-");
 
 const { default: express } = await import("express");
 const { parseCron, nextRun } = await import("../dist/routines/cron.js");

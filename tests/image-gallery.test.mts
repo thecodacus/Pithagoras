@@ -1,24 +1,19 @@
 import { test, after, mock } from "node:test";
 import assert from "node:assert/strict";
-import { createServer, get, type IncomingMessage, type ServerResponse, type Server } from "node:http";
+import { createServer, get } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
+import { inProcessHome } from "./helpers.mts";
 
-const temp = mkdtempSync(path.join(tmpdir(), "pitha-gallery-"));
-// What it made is not left in the temporary folder, run after run.
-after(() => rmSync(temp, { recursive: true, force: true }));
-process.env.DATA_DIR = temp;
-process.env.SESSION_DIR = path.join(temp, "sessions");
-process.env.PI_CODING_AGENT_DIR = path.join(temp, "agent");
-process.env.AGENT_HOME = path.join(temp, "agent-home");
+const temp = inProcessHome("pitha-gallery-");
 
 const express = (await import("express")).default;
 const gen = await import("../server/src/image-generation.ts");
 const gallery = await import("../server/src/image-gallery.ts");
 const { imagesRouter } = await import("../server/src/api/images.ts");
 const { featuresRouter } = await import("../server/src/api/features.ts");
-const { GenerateImageTool, GENERATED_DIR } = await import("../server/src/pi/generate-image-tool.ts");
+const { GenerateImageTool } = await import("../server/src/pi/generate-image-tool.ts");
+const { GENERATED_DIR } = gallery;
 const { EditImageTool } = await import("../server/src/pi/edit-image-tool.ts");
 const { MAX_RUNNING } = await import("../server/src/image-jobs.ts");
 const { createSession, deleteSession, getDb } = await import("../server/src/db.ts");
@@ -113,37 +108,65 @@ async function clearJobs() {
   for (const job of (await call("GET", "/images/jobs")).body.jobs) await call("DELETE", `/images/jobs/${job.id}`);
 }
 const settings = (more: Partial<ReturnType<typeof gen.imageGenerationConfig>> = {}) =>
-  gen.saveImageGeneration({ enabled: true, model: "image-model", size: "", apiKey: KEY, editEnabled: false, editBaseUrl: "", editModel: "", editApiKey: "", editMultiple: false, ...more });
-const gone = () => gen.saveImageGeneration({ enabled: false, editEnabled: false });
+  gen.saveImageGeneration({ enabled: true, model: "image-model", size: "", apiKey: KEY, editEnabled: false, editBaseUrl: "", editModel: "", editApiKey: "", editMultiple: false, sdExtras: false, ...more });
+const gone = () => gen.saveImageGeneration({ enabled: false, editEnabled: false, sdExtras: false });
 /** A chat with a folder of its own. */
 function chat(id: string, title = "A chat") {
   const folder = mkdtempSync(path.join(temp, "chat-"));
   createSession({ id, title, workspace: folder, executor: "host" });
   return folder;
 }
+/** Settings that are refused, each for its own reason: a request with one makes nothing. */
+const BAD_SETTINGS = [
+  { size: "63x512" },
+  { outputFormat: "gif" },
+  { outputCompression: 50 },
+  { outputFormat: "png", outputCompression: 50 },
+  { outputFormat: "jpeg", outputCompression: 101 },
+  { seed: 1.5 },
+  { seed: -2 },
+  { sampleSteps: 0 },
+  { sampleSteps: 101 },
+  { negativePrompt: 5 },
+].map((setting) => ({ prompt: "x", ...setting }));
 const listed = async (query = "") => (await call("GET", `/images${query}`)).body;
 const dir = path.join(temp, "images");
 
-test("extra fields are checked: names and values a form can send, never the four the request is made of", () => {
-  assert.deepEqual(gen.parseExtra(undefined), {});
-  assert.deepEqual(gen.parseExtra({ quality: "high", seed: "7", hd: "true", soft: "false", ratio: "1.5", plain: '"42"', n2: 3, ok: false }), { quality: "high", seed: 7, hd: true, soft: false, ratio: 1.5, plain: "42", n2: 3, ok: false });
-  for (const name of ["model", "prompt", "n", "size"]) assert.match(String(gen.parseExtra({ [name]: "x" })), /set by the form itself/, name);
-  for (const bad of ["", "9lives", "with space", "a/b", "x".repeat(41)]) assert.equal(typeof gen.parseExtra({ [bad]: "x" }), "string", bad);
-  assert.equal(typeof gen.parseExtra({ a: "x".repeat(201) }), "string");
-  assert.equal(typeof gen.parseExtra({ a: { nested: 1 } }), "string");
-  assert.equal(typeof gen.parseExtra(["a"]), "string");
-  assert.equal(typeof gen.parseExtra(Object.fromEntries(Array.from({ length: 13 }, (_, i) => [`f${i}`, "x"]))), "string");
-});
+/** What the OpenAI image format has for a request to make a picture, and for one to change a picture. Nothing else is a field. */
+const OPENAI_GENERATE = ["model", "prompt", "n", "size", "output_format", "output_compression"];
+const OPENAI_EDIT = ["image", "image[]", "mask", "prompt", "model", "n", "size", "output_format", "output_compression"];
+/** The block as stable-diffusion.cpp's server cuts it out of a prompt: the description, and what the block says. */
+const cutOut = (prompt: string): { prompt: string; args?: unknown } => {
+  const found = /<sd_cpp_extra_args>(.*?)<\/sd_cpp_extra_args>/.exec(prompt);
+  return found ? { prompt: prompt.replace(found[0], "").trim(), args: JSON.parse(found[1]) } : { prompt };
+};
 
-test("a request has a model and extra fields of its own, and the form's four fields cannot be taken over", async () => {
+test("a request has the fields of the OpenAI image format, and what that format does not have goes in the prompt, only when it is set", async () => {
   const { origin, seen, server } = await answering();
   try {
     const config = gen.imageGenerationConfig();
-    const base = { ...config, enabled: true, baseUrl: origin, model: "saved-model", size: "1024x1024", apiKey: KEY };
-    await gen.generateImage(base, { prompt: "a", model: "other", size: "512x512", extra: { quality: "high", seed: 7, n: 9, model: "sneaky", prompt: "sneaky", size: "1x1" } });
-    assert.deepEqual(seen[0].body, { quality: "high", seed: 7, model: "other", prompt: "a", n: 1, size: "512x512" });
+    const base = { ...config, enabled: true, baseUrl: origin, model: "saved-model", size: "1024x1024", apiKey: KEY, sdExtras: true };
+    await gen.generateImage(base, {
+      prompt: "a",
+      model: "other",
+      size: "512x512",
+      outputFormat: "jpeg",
+      outputCompression: 70,
+      native: { negativePrompt: 'no "text"\nor logos', seed: 7, sampleSteps: 20 },
+    });
+    const first = seen[0].body;
+    assert.deepEqual(Object.keys(first).sort(), [...OPENAI_GENERATE].sort(), "the fields of the format, every one of them");
+    assert.deepEqual({ ...first, prompt: undefined }, { model: "other", n: 1, size: "512x512", output_format: "jpeg", output_compression: 70, prompt: undefined });
+    assert.deepEqual(cutOut(first.prompt), { prompt: "a", args: { negative_prompt: 'no "text"\nor logos', seed: 7, sample_params: { sample_steps: 20 } } });
+
     await gen.generateImage(base, { prompt: "b" });
-    assert.deepEqual(seen[1].body, { model: "saved-model", prompt: "b", n: 1, size: "1024x1024" }, "without them, what the tool sends");
+    assert.deepEqual(seen[1].body, { model: "saved-model", prompt: "b", n: 1, size: "1024x1024" }, "without settings, what the tool sends: the prompt as it is, and no block");
+    // Set but empty is not set, whatever the caller left in the object.
+    await gen.generateImage(base, { prompt: "c", native: { negativePrompt: "", seed: undefined, sampleSteps: undefined, strength: undefined } });
+    assert.equal(seen[2].body.prompt, "c");
+    // With the switch for them off, nothing that only stable-diffusion.cpp reads is sent, whatever the request holds; the rest of it is.
+    await gen.generateImage({ ...base, sdExtras: false }, { prompt: "d", outputFormat: "png", native: { negativePrompt: "blurry", seed: 7, sampleSteps: 20, strength: 0.5, fromNoise: true } });
+    assert.deepEqual(seen[3].body, { model: "saved-model", prompt: "d", n: 1, size: "1024x1024", output_format: "png" }, "the prompt as it was typed, and no block");
   } finally {
     server.close();
   }
@@ -153,15 +176,26 @@ test("a picture is made without any chat: a job, a picture in the gallery that i
   const { origin, seen, server } = await answering();
   await clearJobs();
   try {
-    settings({ baseUrl: origin });
-    const start = await call("POST", "/images/generate", { prompt: "  a lighthouse at dusk  ", size: "512x512", model: "other-model", extra: { quality: "high", seed: "7", hd: "true" } });
+    settings({ baseUrl: origin, sdExtras: true });
+    const start = await call("POST", "/images/generate", {
+      prompt: "  a lighthouse at dusk  ",
+      size: "512x512",
+      model: "other-model",
+      outputFormat: "webp",
+      outputCompression: 60,
+      negativePrompt: "blurry",
+      seed: 7,
+      sampleSteps: 25,
+    });
     assert.equal(start.status, 202, "answered at once, without waiting for the endpoint");
     assert.equal(start.body.jobs.length, 1);
     assert.equal(start.body.jobs[0].kind, "generate");
     assert.equal(start.body.jobs[0].size, "512x512");
     const [job] = await settled();
     assert.equal(job.state, "done");
-    assert.deepEqual(seen[0].body, { quality: "high", seed: 7, hd: true, model: "other-model", prompt: "a lighthouse at dusk", n: 1, size: "512x512" });
+    assert.deepEqual(Object.keys(seen[0].body).sort(), [...OPENAI_GENERATE].sort(), "nothing that is not in the format is a field of the request");
+    assert.deepEqual({ ...seen[0].body, prompt: undefined }, { model: "other-model", n: 1, size: "512x512", output_format: "webp", output_compression: 60, prompt: undefined });
+    assert.deepEqual(cutOut(seen[0].body.prompt), { prompt: "a lighthouse at dusk", args: { negative_prompt: "blurry", seed: 7, sample_params: { sample_steps: 25 } } });
     assert.equal(seen[0].auth, `Bearer ${KEY}`);
     assert.match(seen[0].url!, /\/images\/generations$/);
 
@@ -170,7 +204,7 @@ test("a picture is made without any chat: a job, a picture in the gallery that i
     assert.ok(picture, "the picture is in the gallery");
     assert.deepEqual({ ...picture, createdAt: 0, bytes: 0, fileName: "" }, {
       id: job.pictureId, origin: "page", chat: null, folder: null, kind: "generated", prompt: "a lighthouse at dusk",
-      params: { model: "other-model", size: "512x512", extra: { quality: "high", seed: 7, hd: true } },
+      params: { model: "other-model", size: "512x512", outputFormat: "webp", outputCompression: 60, negativePrompt: "blurry", seed: 7, sampleSteps: 25 },
       from: null, createdAt: 0, bytes: 0, fileName: "",
     });
     assert.match(picture.fileName, /^image-\d{8}-\d{6}-[0-9a-f]{4}\.png$/);
@@ -309,7 +343,7 @@ test("nothing is made while the add-on is off, and a request is checked before i
     assert.match(off.body.error, /Settings → Agent → Images/);
     assert.equal((await call("POST", "/images/edit", { prompt: "x", sources: ["0123456789ab"] })).status, 409);
     settings({ baseUrl: origin });
-    for (const bad of [{}, { prompt: "   " }, { prompt: "x".repeat(gen.MAX_PROMPT + 1) }, { prompt: "x", size: "huge" }, { prompt: "x", model: "m".repeat(201) }, { prompt: "x", extra: { n: 4 } }, { prompt: "x", extra: [1] }, { prompt: "x", count: 1.5 }, { prompt: "x", count: "2" }]) {
+    for (const bad of [{}, { prompt: "   " }, { prompt: "x".repeat(gen.MAX_PROMPT + 1) }, { prompt: "x", size: "huge" }, { prompt: "x", model: "m".repeat(201) }, { prompt: "x", extra: { n: 4 } }, { prompt: "x", extra: [1] }, { prompt: "x", count: 1.5 }, { prompt: "x", count: "2" }, ...BAD_SETTINGS]) {
       assert.equal((await call("POST", "/images/generate", bad)).status, 400, JSON.stringify(bad).slice(0, 60));
     }
     assert.equal(seen.length, 0, "nothing went to the endpoint");
@@ -413,6 +447,217 @@ test("an edit is made from pictures of the gallery, with a mask if one is given,
     assert.match(none.body.error, /no such picture/);
   } finally {
     server.close();
+    gone();
+  }
+});
+
+test("an edit has the settings of the form: the OpenAI ones as fields, the strength and the rest in the prompt, and each picture of several its own seed", async () => {
+  const { origin, seen, server } = await answering(png("edited"));
+  await clearJobs();
+  try {
+    const source = (await call("POST", "/images/upload?name=a.png", undefined, { raw: png("one") })).body.picture;
+    settings({ baseUrl: origin, size: "1024x1024", editEnabled: true, editModel: "edit-model", sdExtras: true });
+    const started = await call("POST", "/images/edit", {
+      prompt: "make it night",
+      sources: [source.id],
+      model: "other-edit-model",
+      size: "640x480",
+      outputFormat: "jpeg",
+      outputCompression: 85,
+      negativePrompt: "blurry\nnoisy",
+      seed: 100,
+      sampleSteps: 12,
+      strength: 0.6,
+      count: 2,
+    });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    assert.equal(started.body.jobs.length, 2, "one change each, as pictures are made");
+    const jobs = await settled();
+    assert.ok(jobs.every((j) => j.state === "done"), JSON.stringify(jobs.map((j) => j.error)));
+    assert.equal(seen.length, 2);
+    for (const one of seen) {
+      const parts = partList(one);
+      assert.deepEqual(parts.map((p) => p.name).sort(), [...OPENAI_EDIT.filter((name) => name !== "image[]" && name !== "mask")].sort(), "only the fields of the format");
+      const field = (name: string) => parts.find((p) => p.name === name)!.bytes.toString();
+      assert.equal(field("model"), "other-edit-model");
+      assert.equal(field("size"), "640x480");
+      assert.equal(field("n"), "1");
+      assert.equal(field("output_format"), "jpeg");
+      assert.equal(field("output_compression"), "85");
+      assert.ok(!parts.some((p) => ["seed", "strength", "sample_steps", "negative_prompt"].includes(p.name)), "none of the others is a field");
+    }
+    const blocks = seen.map((one) => cutOut(partList(one).find((p) => p.name === "prompt")!.bytes.toString()));
+    assert.deepEqual(blocks.map((b) => b.prompt), ["make it night", "make it night"]);
+    assert.deepEqual(blocks.map((b) => b.args), [100, 101].map((seed) => ({ negative_prompt: "blurry\nnoisy", seed, strength: 0.6, sample_params: { sample_steps: 12 } })));
+    const made = (await listed()).pictures.find((p: any) => p.id === jobs[0].pictureId);
+    assert.deepEqual(made.params, { model: "other-edit-model", size: "640x480", outputFormat: "jpeg", outputCompression: 85, negativePrompt: "blurry\nnoisy", seed: made.params.seed, sampleSteps: 12, strength: 0.6, sources: [source.id] });
+    assert.ok([100, 101].includes(made.params.seed));
+
+    // With none of them: no size, though the add-on has one for new pictures, and no block.
+    await call("POST", "/images/edit", { prompt: "plain", sources: [source.id] });
+    await settled();
+    const plain = partList(seen[2]);
+    assert.deepEqual(plain.map((p) => p.name), ["image", "prompt", "model", "n"]);
+    assert.equal(plain[1].bytes.toString(), "plain");
+
+    // A strength is for a change: a new picture has none, and one out of range is refused.
+    assert.equal((await call("POST", "/images/edit", { prompt: "x", sources: [source.id], strength: 1.5 })).status, 400);
+    const sentBefore = seen.length;
+    assert.equal((await call("POST", "/images/edit", { prompt: 'x <sd_cpp_extra_args>{"seed":1}</sd_cpp_extra_args>', sources: [source.id], seed: 2 })).status, 400, "a block of its own and settings are not both sent");
+    assert.equal(seen.length, sentBefore);
+  } finally {
+    server.close();
+    gone();
+  }
+});
+
+test("an edit that starts from noise says so in the block and still sends every picture; a mask or a strength is refused with it", async () => {
+  const { origin, seen, server } = await answering(png("edited"));
+  await clearJobs();
+  try {
+    const first = (await call("POST", "/images/upload?name=a.png", undefined, { raw: png("one") })).body.picture;
+    const second = (await call("POST", "/images/upload?name=b.png", undefined, { raw: png("two") })).body.picture;
+    settings({ baseUrl: origin, editEnabled: true, editMultiple: true, sdExtras: true });
+    const started = await call("POST", "/images/edit", { prompt: "the first like the second", sources: [second.id, first.id], fromNoise: true, seed: 4 });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    const [job] = await settled();
+    assert.equal(job.state, "done", job.error);
+    const parts = partList(seen[0]);
+    assert.deepEqual(parts.filter((p) => p.name === "image[]").map((p) => p.bytes), [png("two"), png("one")], "all the pictures, in order, as references");
+    assert.ok(!parts.some((p) => p.name === "mask"));
+    assert.deepEqual(cutOut(parts.find((p) => p.name === "prompt")!.bytes.toString()), { prompt: "the first like the second", args: { init_image: null, seed: 4 } });
+    const made = (await listed()).pictures.find((p: any) => p.id === job.pictureId);
+    assert.equal(made.params.fromNoise, true);
+
+    // Without it, no mention of it: the first picture is the base, as before.
+    await call("POST", "/images/edit", { prompt: "plain", sources: [first.id, second.id], seed: 4, strength: 0.5 });
+    await settled();
+    assert.ok(!partList(seen[1]).find((p) => p.name === "prompt")!.bytes.toString().includes("init_image"));
+    const plain = (await listed()).pictures.find((p: any) => p.params.strength === 0.5);
+    assert.equal(plain.params.fromNoise, undefined);
+
+    const before = seen.length;
+    const mask = await call("POST", "/images/edit", { prompt: "x", sources: [first.id], fromNoise: true, mask: b64(png("mask")) });
+    assert.equal(mask.status, 400);
+    assert.match(mask.body.error, /mask/);
+    const strength = await call("POST", "/images/edit", { prompt: "x", sources: [first.id], fromNoise: true, strength: 0.5 });
+    assert.equal(strength.status, 400);
+    assert.match(strength.body.error, /strength/);
+    assert.equal(seen.length, before, "nothing was sent");
+  } finally {
+    server.close();
+    gone();
+  }
+});
+
+test("while the Stable Diffusion switch is off, nothing that only stable-diffusion.cpp reads is sent: a request that has any is refused, and the rest is made as it was", async () => {
+  const { origin, seen, server } = await answering(png("edited"));
+  await clearJobs();
+  try {
+    const source = (await call("POST", "/images/upload?name=a.png", undefined, { raw: png("one") })).body.picture;
+    settings({ baseUrl: origin, editEnabled: true });
+    assert.equal(gen.imageGenerationConfig().sdExtras, false, "off unless it was switched on");
+    assert.equal((await call("GET", "/features/images")).body.images.sdExtras, false, "the page is told");
+    const before = (await listed()).total;
+    for (const sd of [{ negativePrompt: "blurry" }, { seed: 3 }, { sampleSteps: 10 }, { negativePrompt: "x", seed: 0 }]) {
+      const refused = await call("POST", "/images/generate", { prompt: "a", ...sd });
+      assert.equal(refused.status, 409, JSON.stringify(sd));
+      assert.match(refused.body.error, /Stable Diffusion extra settings are switched off/);
+    }
+    for (const sd of [{ strength: 0.5 }, { fromNoise: true }, { seed: 3 }]) {
+      const refused = await call("POST", "/images/edit", { prompt: "a", sources: [source.id], ...sd });
+      assert.equal(refused.status, 409, JSON.stringify(sd));
+    }
+    assert.equal(seen.length, 0, "nothing was sent");
+    assert.equal((await listed()).total, before);
+
+    // What the OpenAI format has is not held back by it.
+    assert.equal((await call("POST", "/images/generate", { prompt: "a", size: "512x512", outputFormat: "jpeg", outputCompression: 50 })).status, 202);
+    assert.equal((await call("POST", "/images/edit", { prompt: "a", sources: [source.id], size: "512x512", outputFormat: "png" })).status, 202);
+    await settled();
+    assert.equal(seen.length, 2);
+    assert.deepEqual({ ...seen[0].body, model: undefined }, { model: undefined, prompt: "a", n: 1, size: "512x512", output_format: "jpeg", output_compression: 50 });
+    assert.equal(partList(seen[1]).find((p) => p.name === "prompt")!.bytes.toString(), "a", "no block");
+
+    // On, they are sent; and the setting is the person's to change, and is kept as a boolean.
+    assert.match(String(gen.parseImageGenerationPatch({ sdExtras: "yes" })), /sdExtras must be true or false/);
+    settings({ baseUrl: origin, sdExtras: true });
+    assert.equal((await call("POST", "/images/generate", { prompt: "a", seed: 3 })).status, 202);
+    await settled();
+    assert.deepEqual(cutOut(seen[2].body.prompt).args, { seed: 3 });
+  } finally {
+    server.close();
+    gone();
+  }
+});
+
+test("pictures made at once with a seed each have the next one, and settings that are refused make nothing", async () => {
+  const { origin, seen, server } = await answering();
+  await clearJobs();
+  try {
+    settings({ baseUrl: origin, sdExtras: true });
+    assert.equal((await call("POST", "/images/generate", { prompt: "three", count: 3, seed: 10, sampleSteps: 8 })).status, 202);
+    await settled();
+    const seeds = seen.map((one) => (cutOut(one.body.prompt).args as { seed: number }).seed).sort();
+    assert.deepEqual(seeds, [10, 11, 12]);
+    for (const one of seen) assert.equal(one.body.n, 1);
+    await clearJobs();
+
+    const before = seen.length;
+    const own = await call("POST", "/images/generate", { prompt: 'a <sd_cpp_extra_args>{"seed":1}</sd_cpp_extra_args>', negativePrompt: "x" });
+    assert.equal(own.status, 400);
+    assert.match(own.body.error, /block of its own/);
+    // The same description alone is the person's own business: nothing is added to it.
+    assert.equal((await call("POST", "/images/generate", { prompt: 'a <sd_cpp_extra_args>{"seed":1}</sd_cpp_extra_args>' })).status, 202);
+    await settled();
+    assert.equal(seen.length, before + 1);
+    assert.equal(seen[before].body.prompt, 'a <sd_cpp_extra_args>{"seed":1}</sd_cpp_extra_args>');
+    const old = await call("POST", "/images/generate", { prompt: "x", extra: { quality: "high" } });
+    assert.equal(old.status, 400, "free fields are not sent any more, and not ignored either");
+    assert.match(old.body.error, /Free extra fields are not sent any more/);
+  } finally {
+    server.close();
+    gone();
+  }
+});
+
+/** A picture of this many pixels, as far as its header says: the rest is padding. */
+const pngOf = (w: number, h: number) => {
+  const dim = (n: number) => Buffer.from([n >>> 24, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff]);
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]), Buffer.from("IHDR"), dim(w), dim(h), Buffer.alloc(16)]);
+};
+
+test("an edit of several pictures from the page holds each one to the maximum size, says which is over, and sends nothing", async () => {
+  const { origin, seen, server } = await answering(png("edited"));
+  await clearJobs();
+  try {
+    const small = (await call("POST", "/images/upload?name=small.png", undefined, { raw: pngOf(512, 512) })).body.picture;
+    const wide = (await call("POST", "/images/upload?name=wide.png", undefined, { raw: pngOf(4000, 500) })).body.picture;
+    const fine = (await call("POST", "/images/upload?name=fine.png", undefined, { raw: pngOf(1024, 768) })).body.picture;
+    settings({ baseUrl: origin, editEnabled: true, editMultiple: true, editMaxSize: "2048x2048" });
+
+    // The second of three is over: the job fails with its place, and no request is made.
+    const started = await call("POST", "/images/edit", { prompt: "the first, in the style of the second", sources: [small.id, wide.id, fine.id] });
+    assert.equal(started.status, 202);
+    const [refused] = await settled();
+    assert.equal(refused.state, "failed");
+    assert.match(refused.error, /^Picture 2 is 4000x500 pixels, which is over the maximum of 2048x2048 for an edit\. Nothing was sent\./);
+    // The way to the limit is where the person finds it: Settings → Agent → Images, not a page that is not there.
+    assert.match(refused.error, /the limit is set in Settings → Agent → Images\.$/);
+    assert.equal(seen.length, 0, "none of the three was sent");
+
+    // Raised, the same three go in one request, in the order given.
+    settings({ baseUrl: origin, editEnabled: true, editMultiple: true, editMaxSize: "4096x4096" });
+    await clearJobs();
+    await call("POST", "/images/edit", { prompt: "the first, in the style of the second", sources: [small.id, wide.id, fine.id] });
+    const [done] = await settled();
+    assert.equal(done.state, "done", done.error);
+    assert.equal(seen.length, 1);
+    assert.deepEqual(partList(seen[0]).filter((part) => part.name === "image[]").map((part) => part.bytes.length), [pngOf(512, 512).length, pngOf(4000, 500).length, pngOf(1024, 768).length]);
+  } finally {
+    server.close();
+    // The maximum is the setting of every test after this one, too.
+    gen.saveImageGeneration({ editMaxSize: "", editMultiple: false });
     gone();
   }
 });
@@ -843,6 +1088,7 @@ test("the sidebar is told whether the page is there: on while an address is set 
   assert.deepEqual((await call("GET", "/features/flags")).body.images, { enabled: true }, "only changing is set up");
   const state = (await call("GET", "/features/images")).body.images;
   assert.equal(state.enabled, false);
+  assert.equal(state.ready, false, "nothing to make pictures with: only changing is set up");
   assert.equal(state.editReady, true);
   gen.saveImageGeneration({ editEnabled: false });
   assert.deepEqual((await call("GET", "/features/flags")).body.images, { enabled: false }, "an address for changes that is switched off is not a page");

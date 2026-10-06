@@ -1,15 +1,20 @@
 # Agent and channels
 
-Sessions are per-task: one workspace, one job, its own conversation. The **agent**
-is the opposite — a single long-lived pi session rooted at a fixed directory,
-`agentHome`, that you talk to continuously.
+Sessions are per-task: one workspace, one job, its own conversation. An
+**agent** is the opposite — a character with a home directory and a memory that
+you talk to continuously. The portal starts with one, and [more](/guide/agents)
+can be added, each with a home of its own.
 
-Chats you start with **New** in the portal work in `agentHome` too, so the agent's
-SOUL.md, PrimaryUser.md and MEMORY.md are there in those as well. Chats in a
+Chats you start with **New** in the portal work in the first agent's home, so its
+SOUL.md, PrimaryUser.md and MEMORY.md are there in those as well; a chat started
+on another agent's page works in that agent's home. Chats in a
 [project](/guide/projects) are ordinary per-task sessions and have none of them.
 
-A **channel** is a two-way link into that agent. Messages arrive through it and
-the agent's replies go back out the same way.
+A **channel** is a two-way link into an agent. Messages arrive through it and
+the agent's replies go back out the same way. A channel talks as the first agent
+unless you pick another under **Talks as** on its page: the agent that answers
+there, with its own character and memory. Moved to another agent, a channel
+starts new conversations there; moved back, it picks up the ones it had.
 
 ## One session per conversation
 
@@ -19,7 +24,7 @@ they should not share a memory.
 
 So the channel package supplies a **session key** for every message — whatever
 identifies a conversation on that platform — and the portal turns each key into
-its own isolated session, all rooted at `agentHome`.
+its own isolated session, all rooted at the home of the agent the channel talks as.
 
 ```
 Telegram ─┬─ chat:-100987  ──▶  session  "Engineering"
@@ -38,8 +43,9 @@ same one picks its conversations back up, and choosing a different one is a
 deliberate fresh start. It also reads better: `my-bot:chat:999`.
 
 Removing a channel keeps its conversations rather than deleting them. They show
-on the Agent tab marked "no channel" until something claims that slug again. They are ordinary sessions — same transcript,
-same replay, same model handling — and they are listed on the **Agent** tab,
+on the [Agents page](/guide/agents) marked "no channel" until something claims
+that slug again. They are ordinary sessions — same transcript, same replay, same
+model handling — and each agent's **Conversations** tab lists them by channel,
 where clicking one opens it in the normal chat view.
 
 From that list a conversation can be renamed or deleted. Deleting one does not
@@ -64,6 +70,12 @@ Four ship in the repo, between them covering every shape a transport takes:
 | `pithagoras-channel-slack` | WebSocket | Socket Mode, which exists so an app needs no public URL. |
 | `pithagoras-channel-discord` | WebSocket | The Gateway, with the heartbeat it demands. |
 | `pithagoras-channel-webhook` | A listener | POST a message, the reply comes back in the response. |
+
+Slack sends a mention in a channel the app also reads twice, once as a message
+and once as a mention, and the agent answers it once. People joining, and
+messages being edited or deleted, are not said to the agent. The webhook, when
+it is disabled or edited while a request is open, answers that request with a 503
+rather than waiting for the agent to finish.
 
 None of them needs a dependency: `fetch` and `WebSocket` are both globals on
 Node 22, which the portal requires anyway.
@@ -97,8 +109,8 @@ alongside its **instructions**.
 
 ## Per-channel instructions
 
-Each channel can carry standing instructions, appended to the agent's system
-prompt for every message that arrives through that door and no other. The agent
+Each channel can carry standing instructions, appended to every message that
+arrives through that door and no other, in a `<channel-instructions>` block. The agent
 is one conversation with one memory, but who is on the other end differs by
 channel, and so should the way it answers.
 
@@ -137,6 +149,14 @@ Each channel shows its real state on its page: `running`, `starting`,
 A channel enabled with a package that has no `start()` reports that rather than
 looking healthy.
 
+A restart can cut a conversation off: the run that was answering is gone, and a
+message sent into it never reached the agent. The platform has acknowledged those
+messages and will not send them again, so once the channels are up again the
+portal writes to each such conversation — *The portal restarted while I was
+working on this, so my answer was cut off. Please send your message again.* —
+through the channel's `send()`. A channel that cannot speak first is not written
+to.
+
 A channel whose `start()` fails — the network was not up yet when the portal
 booted, the platform had a bad minute — is tried again on its own: after 30
 seconds, then twice as long each time, up to every fifteen minutes. Saving it
@@ -145,11 +165,13 @@ before its package was there starts when the package arrives.
 
 ### What happens to a message
 
-1. The package receives it and calls `ctx.ask(text, { session, title })`.
+1. The package receives it and calls `ctx.ask(text, { session, title, from })`.
 2. The key is prefixed with the channel's slug and resolved to a session,
    created on first sight.
 3. The channel's [instructions](#per-channel-instructions) are appended to the
-   message in a `<channel-instructions>` block.
+   message in a `<channel-instructions>` block. For anybody but the primary user
+   the portal's note about who is speaking goes in front of their words; what they
+   wrote cannot make a block of its own.
 4. The session is prompted, and `ask` **waits** — unlike the portal's own
    prompting, which returns immediately, because somebody is sitting in a chat
    expecting an answer.
@@ -168,16 +190,16 @@ Telegram probably wants less than a war-room Slack channel does.
 
 ### Questions from extensions
 
-An extension command can stop and ask something — `/models` from `pi-llama-cpp`
-opens a menu. In the portal that draws a modal. In a chat there is nowhere to
+An extension command can stop and ask something — a model picker from a
+provider package, say — and opens a menu. In the portal that draws a modal. In a chat there is nowhere to
 draw one, so the question is sent as a message and the next reply answers it:
 
 ```
-Llama.cpp models:
-1. qwen36-35b-a3b-mtp
-2. ornith-1.0-35b
+Models:
+1. model-a
+2. model-b
 
-Reply with a number, or "cancel".
+Reply with a number. Anything else cancels.
 ```
 
 Numbers work, so does typing the option. `confirm` takes yes or no; `input` and
@@ -189,6 +211,16 @@ something else gets the same prompt back.
 
 The answer jumps the queue — the run is stopped waiting for it, so it cannot be
 made to wait its turn behind itself.
+
+Only the person whose message raised the question, or the primary user, can
+answer it. In a group the next message is anybody's, and a question that asks the
+owner to confirm something is not for a guest to say yes to: theirs is answered
+with a note saying whom it waits for, and is not taken as the answer. Telegram's
+buttons check the person who pressed them in the same way.
+
+Slash commands are the primary user's alone. What anybody else writes reaches
+the agent after the portal's note about who they are, so `/bg ...` in a colleague's
+message is words, not a command.
 
 Questions are relayed whatever the progress toggles say. They are not chatter:
 the command hangs until somebody answers, and staying quiet would just leave it

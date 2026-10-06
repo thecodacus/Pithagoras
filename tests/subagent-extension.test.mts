@@ -1,12 +1,14 @@
-import {test} from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import {chmodSync, mkdirSync, mkdtempSync, writeFileSync} from 'node:fs';
-import {tmpdir} from 'node:os';
+import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import subagent, {childModel, subagentLimit} from '../extensions/subagent/index.ts';
+import { scratch } from "./helpers.mts";
 // A child pi in RPC mode, as far as the extension can tell. `retry`: its first run fails and is retried. `hang`: it works until stopped.
-const dir=mkdtempSync(path.join(tmpdir(),'subagent-'));
+const dir=scratch('subagent-');
 const bin=path.join(dir,'pi');
+// What the deaf child writes once it has closed its input: the test sends it a message after that, not after a guess.
+const deafFlag=path.join(dir,'deaf');
 writeFileSync(bin,`#!/usr/bin/env node
 const out=e=>process.stdout.write(JSON.stringify(e)+'\\n');
 const say=t=>out({type:'message_end',message:{role:'assistant',content:[{type:'text',text:t}]}});
@@ -19,7 +21,7 @@ if(process.env.FAKE==='childenv'){require('node:readline').createInterface({inpu
 else if(process.env.FAKE==='argv'){require('node:readline').createInterface({input:process.stdin}).on('line',l=>{if(JSON.parse(l).type==='prompt'){out({type:'agent_start'});say(process.argv.slice(2).join(' '));out({type:'agent_end'});out({type:'agent_settled'});}});}
 else
 // Its input closed, still running: what the portal sends it next finds no reader.
-if(process.env.FAKE==='deaf'){require('node:fs').closeSync(0);setTimeout(()=>process.exit(1),800);}
+if(process.env.FAKE==='deaf'){require('node:fs').closeSync(0);require('node:fs').writeFileSync(${JSON.stringify(deafFlag)},'');setTimeout(()=>process.exit(1),800);}
 else
 require('node:readline').createInterface({input:process.stdin}).on('line',l=>{const c=JSON.parse(l);
  if(c.type==='prompt'&&process.env.FAKE==='refuse'){out({type:'response',command:'prompt',success:false,error:'No API key for the model'});return;}
@@ -52,6 +54,8 @@ function load(){
  return {tool,events,ends,sent,seen,hooks};
 }
 const until=async(ok:()=>boolean)=>{for(let i=0;i<200&&!ok();i++)await new Promise(r=>setTimeout(r,20));assert.ok(ok());};
+// The ids of the children that have said something: one that has is running and reading, which is what a stop that wants its words has to wait for.
+const spoken=(events:any)=>{const ids:string[]=[];events.on('subagent:v1:event',(d:any)=>d.event?.type==='message_end'&&ids.push(d.id));return ids;};
 test('a subagent whose run is retried answers with what it said at the end, not before the retry',async()=>{
  delete process.env.FAKE;
  const {tool,ends}=load();
@@ -71,12 +75,12 @@ test('a child that dies at once fails the subagent, and what is sent to it after
  process.env.FAKE='die';
  const {tool,events,ends}=load();
  let id='';events.on('subagent:v1:start',d=>id=d.id);
- const failed=assert.rejects(tool.execute('c3',{task:'Look into it'},undefined,undefined,{cwd:dir}));
- await new Promise(r=>setTimeout(r,200));
+ // It has gone when the call is over.
+ await assert.rejects(tool.execute('c3',{task:'Look into it'},undefined,undefined,{cwd:dir}));
  // The person types to it, and stops it, after it has gone.
  events.emit('subagent:v1:input',{id,text:'and also this'});
  events.emit('subagent:v1:stop',{id});
- await failed;
+ // What goes wrong with a write to a pipe nobody reads comes some turns of the loop later, and nothing is to come of it: only waiting shows that.
  await new Promise(r=>setTimeout(r,100));
  assert.equal(ends[0].status,'error');
 });
@@ -94,10 +98,11 @@ test('a child that refuses the task fails the subagent with its reason, rather t
 });
 test('a message for a child that no longer reads cannot bring down the portal',{timeout:5000},async()=>{
  process.env.FAKE='deaf';
+ rmSync(deafFlag,{force:true});
  const {tool,events,ends}=load();
  let id='';events.on('subagent:v1:start',d=>id=d.id);
  const done=tool.execute('c6',{task:'Look into it'},undefined,undefined,{cwd:dir}).catch(()=>undefined);
- await new Promise(r=>setTimeout(r,300));
+ await until(()=>existsSync(deafFlag));
  events.emit('subagent:v1:input',{id,text:'x'.repeat(200_000)});
  events.emit('subagent:v1:stop',{id});
  await done;
@@ -130,9 +135,10 @@ test('a background subagent says it is detached, and stopping it waits for the p
  process.env.FAKE='hang';mode('background');
  const {tool,events,sent}=load();
  let start:any;events.on('subagent:v1:start',d=>start=d);
+ const said=spoken(events);
  await tool.execute('c8',{task:'Look into it'},undefined,undefined,{cwd:dir});
  assert.equal(start.detached,true);
- await new Promise(r=>setTimeout(r,200));
+ await until(()=>said.length===1);
  events.emit('subagent:v1:stop',{id:start.id});
  await until(()=>sent.length===1);
  assert.match(sent[0].message.content,/was stopped before it finished\. What it had so far:\n\nhalf of it/);
@@ -141,9 +147,10 @@ test('a background subagent says it is detached, and stopping it waits for the p
 });
 test('background subagents end with the session that started them',{timeout:5000},async()=>{
  process.env.FAKE='hang';mode('background');
- const {tool,ends,hooks}=load();
+ const {tool,events,ends,hooks}=load();
+ const said=spoken(events);
  await tool.execute('c9',{task:'Look into it'},undefined,undefined,{cwd:dir});
- await new Promise(r=>setTimeout(r,200));
+ await until(()=>said.length===1);
  hooks.get('session_shutdown')!();
  await until(()=>ends.length===1);
  assert.equal(ends[0].status,'stopped');
@@ -179,12 +186,14 @@ test('in the background, one past the limit is queued and starts when the runnin
 });
 test('a subagent still waiting for a slot does not start once its session has ended',{timeout:5000},async()=>{
  process.env.FAKE='hang';mode('background');
- const {tool,seen,hooks,ends}=load();
+ const {tool,events,seen,hooks,ends}=load();
+ const said=spoken(events);
  await tool.execute('a',{task:'one'},undefined,undefined,{cwd:dir});
  await tool.execute('b',{task:'two'},undefined,undefined,{cwd:dir});
- await new Promise(r=>setTimeout(r,150));
+ await until(()=>said.length===1);
  hooks.get('session_shutdown')!();
  await until(()=>ends.length===2);
+ // The one that waited is not to start now that both are over, which only waiting shows.
  await new Promise(r=>setTimeout(r,200));
  assert.deepEqual(seen,['start a','start b','end','end'],'announced while waiting, ended without starting');
  assert.deepEqual(ends.map((e:any)=>e.status).sort(),['stopped','stopped']);
@@ -232,7 +241,8 @@ test('an interrupt subagent waiting for a slot gives up when its parent is stopp
  const stop=new AbortController();
  const phases:string[]=[];
  const second=tool.execute('b',{task:'two'},stop.signal,(u:any)=>phases.push(u.details.phase),{cwd:dir});
- await new Promise(r=>setTimeout(r,150));
+ // It says it is waiting as it takes its place, with the listener on the signal.
+ await until(()=>phases.length===1);
  stop.abort();
  assert.deepEqual((await second).details,{phase:'stopped'});
  assert.deepEqual(phases,['waiting for another subagent to finish']);
@@ -252,19 +262,19 @@ test('the limit holds across conversations: two chats share it',{timeout:5000},a
 test('a child runs on the model its parent is on, unless the chat or the settings say another',{timeout:5000},async()=>{
  process.env.FAKE='argv';mode();
  const {tool,events}=load();
- const parent={cwd:dir,model:{provider:'llama-swap',id:'qwen3.8'}};
+ const parent={cwd:dir,model:{provider:'llama-swap',id:'model-b'}};
  let started:any;events.on('subagent:v1:start',d=>started=d);
- assert.equal((await tool.execute('a',{task:'x'},undefined,undefined,parent)).content[0].text,'--mode rpc --no-session --provider llama-swap --model qwen3.8');
- assert.equal(started.detail,'Starting on llama-swap/qwen3.8');
+ assert.equal((await tool.execute('a',{task:'x'},undefined,undefined,parent)).content[0].text,'--mode rpc --no-session --provider llama-swap --model model-b');
+ assert.equal(started.detail,'Starting on llama-swap/model-b');
  // The chat's own choice, answered on the bus.
- const off=events.on('subagent:v1:config',(d:any)=>d.reply({model:'vllm/Qwen-Coder'}));
- assert.equal((await tool.execute('b',{task:'x'},undefined,undefined,parent)).content[0].text,'--mode rpc --no-session --provider vllm --model Qwen-Coder');
+ const off=events.on('subagent:v1:config',(d:any)=>d.reply({model:'vllm/model-c'}));
+ assert.equal((await tool.execute('b',{task:'x'},undefined,undefined,parent)).content[0].text,'--mode rpc --no-session --provider vllm --model model-c');
  off();
  // The settings' choice, and auto there is the parent's again.
  mode(undefined,{subagentModel:'openrouter/deepseek/deepseek-chat'});
  assert.equal((await tool.execute('c',{task:'x'},undefined,undefined,parent)).content[0].text,'--mode rpc --no-session --provider openrouter --model deepseek/deepseek-chat');
  mode(undefined,{subagentModel:'auto'});
- assert.match((await tool.execute('d',{task:'x'},undefined,undefined,parent)).content[0].text,/--model qwen3\.8$/);
+ assert.match((await tool.execute('d',{task:'x'},undefined,undefined,parent)).content[0].text,/--model model-b$/);
  // No model known at all: pi's own default.
  assert.equal((await tool.execute('e',{task:'x'},undefined,undefined,{cwd:dir})).content[0].text,'--mode rpc --no-session');
  mode();
@@ -297,9 +307,10 @@ test('a background subagent\'s answer names the id it was announced under',{time
 test('a background subagent that will not stop is killed when its session ends, and its slot freed',{timeout:10000},async()=>{
  process.env.FAKE='stubborn';process.env.PI_SUBAGENT_GRACE_MS='300';mode('background');
  try{
-  const {tool,hooks,ends}=load();
+  const {tool,events,hooks,ends}=load();
+  const said=spoken(events);
   await tool.execute('a',{task:'x'},undefined,undefined,{cwd:dir});
-  await new Promise(r=>setTimeout(r,200));
+  await until(()=>said.length===1);
   hooks.get('session_shutdown')!();
   await until(()=>ends.length===1);
   assert.equal(ends[0].status,'stopped');
@@ -323,15 +334,17 @@ test('waiting for a slot leaves no listener behind on the parent\'s signal, nor 
  process.env.FAKE='hang';mode();
  const {tool,events}=load();
  let first='';events.on('subagent:v1:start',(d:any)=>first||=d.id);
+ const said=spoken(events);
  const running=tool.execute('a',{task:'one'},undefined,undefined,{cwd:dir});
- await new Promise(r=>setTimeout(r,100));
+ await until(()=>said.length===1);
  const stop=new AbortController();
  let listeners=0;
+ const phases:string[]=[];
  const add=stop.signal.addEventListener.bind(stop.signal),remove=stop.signal.removeEventListener.bind(stop.signal);
  (stop.signal as any).addEventListener=(t:string,f:any,o:any)=>{listeners++;add(t,f,o);};
  (stop.signal as any).removeEventListener=(t:string,f:any)=>{listeners--;remove(t,f);};
- const waiting=tool.execute('b',{task:'two'},stop.signal,undefined,{cwd:dir});
- await new Promise(r=>setTimeout(r,100));
+ const waiting=tool.execute('b',{task:'two'},stop.signal,(u:any)=>phases.push(u.details.phase),{cwd:dir});
+ await until(()=>phases.length===1);
  stop.abort();
  await waiting;
  assert.equal(listeners,0);

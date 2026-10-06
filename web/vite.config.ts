@@ -8,8 +8,11 @@ export default defineConfig({
     rollupOptions: {
       output: {
         // Streamdown carries a syntax highlighter and a diagram renderer. They
-        // belong in their own chunk: the shell should paint without waiting on
-        // either, and they change far less often than the app does.
+        // belong in their own chunk because they change far less often than the
+        // app does: a deploy that changes only the app leaves this file cached.
+        // The chat draws markdown, so the chunk is fetched with the entry, not
+        // after it; what loads later are the pages (see App.tsx) and the diagram
+        // parts, which come when a diagram does.
         manualChunks: {
           markdown: ["streamdown"],
         },
@@ -33,5 +36,7 @@ export default defineConfig({
       });
     },
   }],
-  server: { port: 5190, proxy: { "/api": "http://localhost:4100" } },
+  // The portal's default port. A test run points it at a dead one (PITHAGORAS_API), so that a request no test
+  // answered cannot reach a portal that happens to run on this machine.
+  server: { port: 5190, proxy: { "/api": process.env.PITHAGORAS_API ?? "http://localhost:4100" } },
 });

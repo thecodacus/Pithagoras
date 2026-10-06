@@ -72,7 +72,7 @@ A skill with broken frontmatter does not announce itself in conversation. Check
 after writing:
 
 ```bash
-head -5 "$HOME/.pi/agent/skills/<name>/SKILL.md"
+head -5 "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/skills/<name>/SKILL.md"
 ```
 
 The portal's Skills tab also lists anything it could not parse, flagged, with

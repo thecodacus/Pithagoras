@@ -1,0 +1,11 @@
+<!doctype html><html data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1" />
+<script>
+// How often each orb was drawn: it clears its whole canvas once per frame, so this counts the frames.
+window.frames = {};
+const clear = CanvasRenderingContext2D.prototype.clearRect;
+CanvasRenderingContext2D.prototype.clearRect = function (x, y, w, h) {
+  const id = this.canvas.classList.contains('voice-orb') && this.canvas.closest('[id]').id;
+  if (id) window.frames[id] = (window.frames[id] || 0) + 1;
+  return clear.call(this, x, y, w, h);
+};
+</script></head><body><div id="root"></div><script type="module" src="/tests/orb.tsx"></script></body></html>

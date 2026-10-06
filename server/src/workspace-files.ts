@@ -19,6 +19,7 @@ import {
   unlinkSync,
   writeSync,
 } from "node:fs";
+import { rm } from "node:fs/promises";
 import path from "node:path";
 import { holdsWork, unsavedIn, unsavedRefusal, type Unsaved } from "./git.js";
 import { pictureType } from "./prompt-images.js";
@@ -424,17 +425,18 @@ export function writeText(
 }
 
 /**
- * The place `rel` names, for taking it away: its folder followed and checked,
- * its last name not, so that a link there is what goes, not what it leads to.
- * The folder itself is not something in it.
+ * The place `rel` names, for taking it away or giving it another name: its
+ * folder followed and checked, its last name not, so that a link there is what
+ * is changed, not what it leads to. The folder itself is not something in it.
+ * One check for both, because what one lets through the other must not.
  */
-function removable(base: string, rel: unknown): string {
+function entryPlace(base: string, rel: unknown, verb: "removed" | "renamed"): string {
   const text = String(rel ?? "");
   if (text.includes("\0")) throw new FileError("invalid", "That is not a valid path");
   const lexical = path.resolve(base, text.replace(/^[/\\]+/, ""));
   const under = pathBelow(base, lexical);
   if (under === undefined) throw new FileError("invalid", "That path leads outside the folder");
-  if (under === "") throw new FileError("invalid", "The folder itself is not removed from here");
+  if (under === "") throw new FileError("invalid", `The folder itself is not ${verb} from here`);
   const parent = resolveInside(base, path.relative(base, path.dirname(lexical)));
   const target = path.join(parent, path.basename(lexical));
   if (!lexists(target)) throw new FileError("missing", "There is no such file or folder");
@@ -447,7 +449,7 @@ function removable(base: string, rel: unknown): string {
  * it can say so.
  */
 export async function unsavedAt(base: string, rel: unknown): Promise<Unsaved | null> {
-  return unsavedIn(base, removable(base, rel));
+  return unsavedIn(base, entryPlace(base, rel, "removed"));
 }
 
 /**
@@ -460,14 +462,15 @@ export async function unsavedAt(base: string, rel: unknown): Promise<Unsaved | n
  * refused, with what it holds, unless `discard` says that is meant.
  */
 export async function removeEntry(base: string, rel: unknown, discard = false): Promise<void> {
-  const target = removable(base, rel);
+  const target = entryPlace(base, rel, "removed");
   if (!discard) {
     const unsaved = await unsavedIn(base, target);
     if (unsaved && holdsWork(unsaved)) throw new FileError("unsaved", unsavedRefusal(unsaved).error, unsaved);
   }
   try {
+    // Not rmSync: a folder with many files is seconds on the thread that serves every chat.
     // A file that has gone since it was looked for is what was asked for.
-    rmSync(target, { recursive: true, force: true });
+    await rm(target, { recursive: true, force: true });
   } catch (e) {
     throw ioFailure(e, "It could not be deleted", "Nothing more was changed.");
   }
@@ -489,17 +492,8 @@ function checkName(name: unknown): string {
  */
 export function renameEntry(base: string, rel: unknown, newName: unknown): string {
   const name = checkName(newName);
-  const text = String(rel ?? "");
-  if (text.includes("\0")) throw new FileError("invalid", "That is not a valid path");
-  const lexical = path.resolve(base, text.replace(/^[/\\]+/, ""));
-  const under = pathBelow(base, lexical);
-  if (under === undefined) throw new FileError("invalid", "That path leads outside the folder");
-  if (under === "") throw new FileError("invalid", "The folder itself is not renamed from here");
-  // The parent is followed and checked; the last name is not, so that a link
-  // is renamed and not what it leads to.
-  const parent = resolveInside(base, path.relative(base, path.dirname(lexical)));
-  const from = path.join(parent, path.basename(lexical));
-  if (!lexists(from)) throw new FileError("missing", "There is no such file or folder");
+  const from = entryPlace(base, rel, "renamed");
+  const parent = path.dirname(from);
   const to = path.join(parent, name);
   if (to === from) return path.relative(base, to);
   if (lexists(to)) throw new FileError("exists", `There is already something called "${name}" here`);

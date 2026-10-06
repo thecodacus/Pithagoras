@@ -3,8 +3,9 @@ import { LuArchive, LuArchiveRestore, LuExternalLink, LuMinus, LuPlus, LuTrash2,
 import { gitApi, type ChangedFile, type Stash } from "../../git-api";
 import { isEnter } from "../../shortcuts";
 import { confirmDialog } from "../ConfirmDialog";
-import { ago, Counts, IconButton, Letter, LETTER_NAME, Quiet, SectionHead, splitPath, TextButton } from "./bits";
+import { ago, Counts, ErrorNote, IconButton, Letter, LETTER_NAME, Quiet, SectionHead, splitPath, TextButton } from "./bits";
 import { useGit } from "./context";
+import { useGitDraft } from "./draft";
 import { msg, t, tp } from "../../i18n";
 
 type Side = "staged" | "unstaged" | "conflict";
@@ -12,8 +13,11 @@ type Side = "staged" | "unstaged" | "conflict";
 /** What changed since the last commit: staged, not staged, in conflict — and the commit box. */
 export function Changes() {
   const { id, repo, act, busy } = useGit();
-  const [message, setMessage] = useState("");
-  const [amend, setAmend] = useState(false);
+  // Kept while a diff is open over the tab, and across a reload: both unmount the box.
+  const [message, setMessage] = useGitDraft(`${id}:commit`);
+  const [amended, setAmended] = useGitDraft(`${id}:amend`);
+  const amend = amended === "1";
+  const setAmend = (on: boolean) => setAmended(on ? "1" : "");
 
   const conflicts = repo.files.filter((f) => f.kind === "conflict");
   const staged = repo.files.filter((f) => f.kind !== "conflict" && f.kind !== "untracked" && f.x !== ".");
@@ -208,25 +212,33 @@ function Stashes({ count }: { count: number }) {
   const { id, repo, act, busy, show } = useGit();
   const [open, setOpen] = useState(false);
   const [list, setList] = useState<Stash[] | null>(null);
+  // Not an empty list: "no stashes" is a fact, and a failed read is not one.
+  const [error, setError] = useState<string | null>(null);
+  const [again, setAgain] = useState(0);
   useEffect(() => {
     if (!open) return;
     let gone = false;
     gitApi
       .stashes(id)
-      .then((r) => !gone && setList(r.stashes))
-      .catch(() => !gone && setList([]));
+      .then((r) => {
+        if (gone) return;
+        setList(r.stashes);
+        setError(null);
+      })
+      .catch((e) => !gone && setError((e as Error).message));
     return () => {
       gone = true;
     };
     // Again whenever the tree may have moved: the stashes can change without their count doing so.
-  }, [open, id, count, repo.head, repo.files.length]);
+  }, [open, id, count, repo.head, repo.files.length, again]);
   return (
     <div className="mt-2 border-t border-line">
       <button type="button" aria-expanded={open} onClick={() => setOpen((v) => !v)} className="flex w-full items-center gap-1 px-3 py-1.5 text-left text-[11px] text-fg-subtle hover:text-fg">
         <LuArchiveRestore aria-hidden className="h-3.5 w-3.5" />
-        {count} {count === 1 ? t("stash") : t("stashes")}
+        {tp(count, "{n} stash", "{n} stashes")}
         <span className="ml-auto text-fg-faint">{open ? t("hide") : t("show")}</span>
       </button>
+      {open && error && <ErrorNote onRetry={() => setAgain((n) => n + 1)}>{error}</ErrorNote>}
       {open &&
         (list ?? []).map((s) => (
           <div key={s.ref} className="group flex items-center gap-1 px-2 transition hover:bg-fg/5">

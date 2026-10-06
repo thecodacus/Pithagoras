@@ -1,0 +1,21 @@
+<!doctype html><html data-theme="dark"><head><meta name="viewport" content="width=device-width, initial-scale=1" />
+<script>
+// React tells a hook of this name about every commit (as its devtools are told): this one counts the draws of two components.
+// `watched` is filled by the page once it has them: the portal's markdown and Streamdown inside it.
+window.watched = {};
+window.drawn = { markdown: 0, streamdown: 0 };
+window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = {
+  supportsFiber: true, isDisabled: false, renderers: new Map(),
+  inject() { return 1; }, checkDCE() {}, onScheduleFiberRoot() {}, onCommitFiberUnmount() {},
+  onCommitFiberRoot(_id, root) {
+    const walk = (fiber) => {
+      for (; fiber; fiber = fiber.sibling) {
+        // Bit 1 is "performed work": the component ran, rather than being skipped as unchanged.
+        if (fiber.flags & 1) for (const name in window.watched) if (fiber.type === window.watched[name]) window.drawn[name]++;
+        walk(fiber.child);
+      }
+    };
+    walk(root.current);
+  },
+};
+</script></head><body><div id="root"></div><script type="module" src="/tests/markdown.tsx"></script></body></html>

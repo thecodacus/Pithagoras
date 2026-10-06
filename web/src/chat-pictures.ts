@@ -1,5 +1,6 @@
 import type { Item } from "./transcript";
 import { insideFolder } from "./file-activity";
+import { pictureCall } from "./picture-call";
 import type { ViewerPicture } from "./image-viewer";
 import { t } from "./i18n";
 
@@ -35,7 +36,7 @@ export function chatPictures(items: Item[], folder: string, urls: PictureUrls): 
     } else if (item.kind === "tool" && item.picture) {
       const { path, title } = item.picture;
       const id = shownPictureId(item.id);
-      const changed = item.name === "edit_image" ? editedPath(item.args, folder) : undefined;
+      const changed = item.name === "edit_image" ? pictureCall(item.name, item.args, folder).original : undefined;
       const from = changed && latestByPath.get(changed);
       list.push({
         id,
@@ -51,14 +52,4 @@ export function chatPictures(items: Item[], folder: string, urls: PictureUrls): 
     }
   }
   return list;
-}
-
-/**
- * The picture an edit_image call was given, as a path in the chat's folder: its one
- * path, or the first of a list, which is the one the result is named after.
- */
-function editedPath(args: unknown, folder: string): string | undefined {
-  const { path, paths } = (args ?? {}) as { path?: unknown; paths?: unknown };
-  const given = Array.isArray(paths) ? paths[0] : path;
-  return typeof given === "string" ? insideFolder(folder, given) : undefined;
 }

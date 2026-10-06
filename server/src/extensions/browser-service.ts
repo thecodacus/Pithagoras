@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
-import { getStoredSettings, getDb } from "../db.js";
-import { containerState, dockerAvailable, imagePresent, pullImage, request } from "./docker.js";
+import { browserCdp } from "../api/mcp.js";
+import { getSetting, putSetting } from "../db.js";
+import { containerAction, containerState, dockerAvailable, ensureImage, imagePresent, request, type PullState } from "./docker.js";
 import * as local from "./browser-local.js";
 
 /**
@@ -33,19 +34,15 @@ export interface BrowserConfig {
  * upgrading from it should not have to retype anything.
  */
 export function config(): BrowserConfig {
-  const s = getStoredSettings() as Record<string, string>;
   return {
-    user: s.browser_user || process.env.BROWSER_USER || "agent",
-    password: s.browser_password || process.env.BROWSER_PASSWORD || "",
-    port: s.browser_port || process.env.BROWSER_PORT || "3010",
-    httpsPort: s.browser_https_port || process.env.BROWSER_HTTPS_PORT || "3011",
+    user: getSetting("browser_user") || process.env.BROWSER_USER || "agent",
+    password: getSetting("browser_password") || process.env.BROWSER_PASSWORD || "",
+    port: getSetting("browser_port") || process.env.BROWSER_PORT || "3010",
+    httpsPort: getSetting("browser_https_port") || process.env.BROWSER_HTTPS_PORT || "3011",
   };
 }
 
 export function saveConfig(patch: Partial<BrowserConfig>): BrowserConfig {
-  const upsert = getDb().prepare(
-    "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
-  );
   const map: Record<keyof BrowserConfig, string> = {
     user: "browser_user",
     password: "browser_password",
@@ -53,13 +50,13 @@ export function saveConfig(patch: Partial<BrowserConfig>): BrowserConfig {
     httpsPort: "browser_https_port",
   };
   for (const [k, v] of Object.entries(patch)) {
-    if (typeof v === "string" && v) upsert.run(map[k as keyof BrowserConfig], v);
+    if (typeof v === "string" && v) putSetting(map[k as keyof BrowserConfig], v);
   }
   return config();
 }
 
 /** Progress of a pull in flight, so a multi-gigabyte download is not silence. */
-let pulling: { active: boolean; line: string; error?: string } = { active: false, line: "" };
+let pulling: PullState = { active: false, line: "" };
 export const pullState = () => pulling;
 
 /**
@@ -74,7 +71,7 @@ export async function status() {
   if (process.env.BROWSER_EXTERNAL === 'true') {
     let running = false;
     try {
-      const response = await fetch(`${process.env.BROWSER_CDP_URL || 'http://127.0.0.1:9222'}/json/version`, {signal: AbortSignal.timeout(4000)});
+      const response = await fetch(`${browserCdp()}/json/version`, {signal: AbortSignal.timeout(4000)});
       running = response.ok && typeof (await response.json() as {Browser?:string}).Browser === 'string';
     } catch { /* An externally managed browser can be stopped independently. */ }
     return {available:false, mode:'external' as const, image:true, container:running ? 'running' as const : 'stopped' as const, pulling};
@@ -141,8 +138,24 @@ function spec(cfg: BrowserConfig) {
   };
 }
 
+export const ALREADY_INSTALLING = 'The browser is already being installed';
+
+/** An install that is on its way: a second one would pull the same image and create the same container, or remove the first's. */
+let installing = false;
+export const installInFlight = () => installing;
+
 export async function install(): Promise<void> {
   if (process.env.BROWSER_EXTERNAL === 'true') throw new Error('This browser is managed outside the portal');
+  if (installing) throw new Error(ALREADY_INSTALLING);
+  installing = true;
+  try {
+    await installNow();
+  } finally {
+    installing = false;
+  }
+}
+
+async function installNow(): Promise<void> {
   // Nothing to install without Docker: the local runner uses a browser that is
   // already there, so installing is just starting it.
   if (!dockerAvailable()) return local.start();
@@ -154,16 +167,7 @@ export async function install(): Promise<void> {
     throw new Error("Set a password before installing — it guards a browser holding live logins");
   }
 
-  if (!(await imagePresent(IMAGE))) {
-    pulling = { active: true, line: "starting" };
-    try {
-      await pullImage(IMAGE, (line) => (pulling = { active: true, line }));
-      pulling = { active: false, line: "done" };
-    } catch (e) {
-      pulling = { active: false, line: "", error: (e as Error).message };
-      throw e;
-    }
-  }
+  await ensureImage(IMAGE, (state) => (pulling = state));
 
   await request("POST", `/volumes/create`, { Name: VOLUME });
 
@@ -182,31 +186,20 @@ export async function install(): Promise<void> {
 export async function start(): Promise<void> {
   if (process.env.BROWSER_EXTERNAL === 'true') throw new Error('This browser is managed outside the portal');
   if (!dockerAvailable()) return local.start();
-  const res = await request<{ message?: string }>("POST", `/containers/${CONTAINER}/start`);
-  // 304 is "already running", which is the state being asked for.
-  if (res.status >= 400 && res.status !== 304) {
-    throw new Error(res.body?.message || `Start failed (${res.status})`);
-  }
+  await containerAction(CONTAINER, "start");
 }
 
 export async function stop(): Promise<void> {
   if (process.env.BROWSER_EXTERNAL === 'true') throw new Error('This browser is managed outside the portal');
   if (!dockerAvailable()) return local.stop();
-  const res = await request<{ message?: string }>("POST", `/containers/${CONTAINER}/stop?t=10`);
-  if (res.status >= 400 && res.status !== 304) {
-    throw new Error(res.body?.message || `Stop failed (${res.status})`);
-  }
+  await containerAction(CONTAINER, "stop");
 }
 
 /** Removes the container. The profile volume is left alone — that is the logins. */
 export async function remove(): Promise<void> {
   if (process.env.BROWSER_EXTERNAL === 'true') throw new Error('This browser is managed outside the portal');
   if (!dockerAvailable()) return local.stop();
-  await request("POST", `/containers/${CONTAINER}/stop?t=10`).catch(() => {});
-  const res = await request<{ message?: string }>("DELETE", `/containers/${CONTAINER}?force=true`);
-  if (res.status >= 400 && res.status !== 404) {
-    throw new Error(res.body?.message || `Remove failed (${res.status})`);
-  }
+  await containerAction(CONTAINER, "remove");
 }
 
 /** Forgets the logins as well. Separate on purpose, and not undoable. */

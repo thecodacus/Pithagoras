@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { api } from "./api";
 import { pollWhileVisible } from "./poll";
 import { local } from "./safe-storage";
-import { moveFolder, readFolderOrder, readFolderSort, readOpenFolders, type FolderSort, type Places } from "./session-folders";
+import { reconcile } from "./reconcile";
+import { moveFolder, readFolderOrder, readFolderSort, readOpenFolders, type FolderSort, type PlaceAgent, type Places } from "./session-folders";
 
 /**
  * How the chats are listed — gathered by folder, or as one list with the
@@ -93,16 +94,22 @@ export function useOpenFolders(key: string, byDefault: (folder: string) => boole
   return { isOpen, set, toggle };
 }
 
+/** The agents in an answer or in storage, those that are whole. */
+const agentsFrom = (raw: unknown) =>
+  (Array.isArray(raw) ? raw : []).filter(
+    (a): a is PlaceAgent => typeof a?.id === "string" && typeof a?.name === "string" && typeof a?.home === "string" && a.home !== "",
+  ).map((a) => ({ id: a.id, name: a.name, home: a.home }));
+
 /** Places as they were last known, so that the chats are gathered from the start rather than once they are asked for. */
 function knownPlaces(): Places | undefined {
   try {
-    const p = JSON.parse(local.get("knownPlaces") ?? "") as { home?: unknown; projects?: unknown };
+    const p = JSON.parse(local.get("knownPlaces") ?? "") as { home?: unknown; agents?: unknown; projects?: unknown };
     if (typeof p?.home !== "string" || !Array.isArray(p.projects)) return undefined;
     // Only projects that are whole: one without its path would take the page down.
     const projects = p.projects.filter(
       (x): x is { name: string; path: string } => typeof x?.name === "string" && typeof x?.path === "string" && x.path !== "",
     );
-    return { home: p.home, projects };
+    return { home: p.home, agents: agentsFrom(p.agents), projects };
   } catch {
     return undefined;
   }
@@ -129,10 +136,12 @@ export function usePlaces(sessions: readonly { id: string; workspace: string }[]
         // Read as little as it says: an older server does not say where Home is.
         const now: Places = {
           home: typeof r.home === "string" ? r.home : "",
+          agents: agentsFrom(r.agents),
           projects: (Array.isArray(r.projects) ? r.projects : []).map((p) => ({ name: p.name, path: p.path })),
         };
         local.set("knownPlaces", JSON.stringify(now));
-        setPlaces(now);
+        // The one already held when it says the same: asked every half minute, it is rarely news.
+        setPlaces((known) => reconcile(known, now));
       },
       // What was known stays: a list that failed to load once has not changed.
       () => n === asked.current && setPlaces((known) => known ?? null),

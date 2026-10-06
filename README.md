@@ -9,9 +9,9 @@
 </p>
 
 <p align="center">
-  <a href="https://thecodacus.github.io/pithagoras/">Documentation</a> ·
-  <a href="https://thecodacus.github.io/pithagoras/guide/deploying">Deploying</a> ·
-  <a href="https://thecodacus.github.io/pithagoras/channels/writing-a-channel">Write a channel</a>
+  <a href="https://thecodacus.github.io/Pithagoras/">Documentation</a> ·
+  <a href="https://thecodacus.github.io/Pithagoras/guide/deploying">Deploying</a> ·
+  <a href="https://thecodacus.github.io/Pithagoras/channels/writing-a-channel">Write a channel</a>
 </p>
 
 ---
@@ -29,7 +29,7 @@ adds 150–300 tokens per tool.
 
 ```bash
 git clone https://github.com/thecodacus/pithagoras.git && cd pithagoras
-cp .env.example .env      # set PORTAL_PASSWORD, and WORKSPACES_DIR to where your repos are
+cp .env.example .env      # set PORTAL_PASSWORD (8+ characters, in single quotes if it has a $ or #; it will not start without), and uncomment WORKSPACES_DIR with the folder your repos are in
 docker compose up -d --build
 ```
 
@@ -41,7 +41,7 @@ The container uses host networking, so pi and its extensions reach services on t
 `127.0.0.1` — a llama.cpp server on `:8080`, for example — exactly as they would outside a
 container. It needs the Docker socket mount to install the Browser and Voice add-ons.
 Running from source, the Portainer stack and the full variable list are in
-[Deploying](https://thecodacus.github.io/pithagoras/guide/deploying).
+[Deploying](https://thecodacus.github.io/Pithagoras/guide/deploying).
 
 Browsers install the portal as an app (PWA) only over HTTPS or on `localhost`.
 
@@ -97,20 +97,21 @@ on Tailscale/LAN rather than the public internet.
 |---|---|---|
 | `PORTAL_PASSWORD` | — | **Required** (or `PORTAL_ALLOW_NO_PASSWORD=1` behind an authenticating proxy). |
 | `PORTAL_SECRET` | random | HMAC key for the auth cookie. Set it so logins survive restarts. |
-| `WORKSPACES_DIR` | `/root/repos` | Host directory mounted at `/workspaces` (Compose only). |
+| `WORKSPACES_DIR` | — (required) | Host directory mounted at `/workspaces` (Compose only; it will not start without one). |
 | `PORTAL_DATA_DIR` | named volume | Host directory for the data volume, instead of a Docker volume (Compose only). |
+| `TZ` | UTC | Time zone of the portal's clock, such as `Europe/Berlin`: an agent's quiet hours and repeating routines are read on it. |
 | `EXECUTOR` | `host` | `host` or `container`. |
 | `PI_PROVIDER` / `PI_MODEL` / `PI_THINKING_LEVEL` | inherit | Overrides only; pi's `settings.json` decides when unset. |
 | `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY` | — | Provider credentials, forwarded to pi. |
 | `TASK_MEMORY_MB` / `TASK_CPUS` / `TASK_PIDS_LIMIT` | `2048` / `2` / `512` | Per-task caps in `container` mode. |
 
-The rest is in [Configuration](https://thecodacus.github.io/pithagoras/reference/configuration).
+The rest is in [Configuration](https://thecodacus.github.io/Pithagoras/reference/configuration).
 
 ## Settings
 
 **Settings** (bottom of the sidebar) is the web equivalent of pi's slash commands:
-**Providers** and **Defaults** for models, **Tools**, **Skills**, **MCP** and **Extensions**
-for the agent, **Channels** and **People**, and **This browser**, **Add-ons**, **Shortcuts**,
+**Providers** and **Defaults** for models, **Tools**, **Images**, **Skills**, **MCP** and
+**Extensions** for the agent, **Channels** and **People**, and **This browser**, **Add-ons**, **Shortcuts**,
 **About** and **Advanced** for the portal. What a chat uses lives on the pills under its
 composer. Defaults you set apply to **newly started** sessions only.
 
@@ -142,3 +143,9 @@ Full docs live in `docs/` and are a VitePress site.
 npm run docs         # dev server
 npm run docs:build   # static build into docs/.vitepress/dist
 ```
+
+## License
+
+Pithagoras is licensed under the [Apache License 2.0](LICENSE) (see also [NOTICE](NOTICE)). The voice
+mode ships a voice activity model and a WebAssembly runtime from other projects, under their own
+licences: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

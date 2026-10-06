@@ -107,12 +107,9 @@ export const isValidCron = (input: string): string | null => {
   }
 };
 
-function matches(cron: Cron, at: Date): boolean {
-  const [minute, hour, dom, month, dow] = cron.fields;
-  if (!minute.values.has(at.getMinutes())) return false;
-  if (!hour.values.has(at.getHours())) return false;
-  if (!month.values.has(at.getMonth() + 1)) return false;
-
+/** Whether the day of `at` is one the schedule names. */
+function dayMatches(cron: Cron, at: Date): boolean {
+  const [, , dom, , dow] = cron.fields;
   // cron's long-standing oddity: with both day fields restricted, either one
   // matching is enough. Restricting only one means that one must match.
   const domAny = dom.values.size === 31;
@@ -126,21 +123,43 @@ function matches(cron: Cron, at: Date): boolean {
   return domHit || dowHit;
 }
 
+function matches(cron: Cron, at: Date): boolean {
+  const [minute, hour, , month] = cron.fields;
+  if (!minute.values.has(at.getMinutes())) return false;
+  if (!hour.values.has(at.getHours())) return false;
+  if (!month.values.has(at.getMonth() + 1)) return false;
+  return dayMatches(cron, at);
+}
+
 /**
  * The next firing strictly after `from`.
  *
- * Minute by minute rather than solving it arithmetically — a year of minutes is
- * half a million cheap comparisons, run once when a routine is saved.
+ * Steps forward by the biggest unit that cannot match: a month that is not
+ * named is skipped whole, then a day, then an hour, and only the minutes of an
+ * hour that fits are tried one by one. "@yearly" is a few dozen steps, not half
+ * a million.
  */
 export function nextRun(cron: Cron, from: Date = new Date()): Date | null {
+  const [minute, hour, , month] = cron.fields;
   const at = new Date(from.getTime());
   at.setSeconds(0, 0);
   at.setMinutes(at.getMinutes() + 1);
 
   const limit = new Date(at.getTime() + 366 * 24 * 60 * 60 * 1000);
   while (at <= limit) {
-    if (matches(cron, at)) return new Date(at.getTime());
-    at.setMinutes(at.getMinutes() + 1);
+    if (!month.values.has(at.getMonth() + 1)) {
+      at.setMonth(at.getMonth() + 1, 1);
+      at.setHours(0, 0, 0, 0);
+    } else if (!dayMatches(cron, at)) {
+      at.setDate(at.getDate() + 1);
+      at.setHours(0, 0, 0, 0);
+    } else if (!hour.values.has(at.getHours())) {
+      at.setHours(at.getHours() + 1, 0, 0, 0);
+    } else if (!minute.values.has(at.getMinutes())) {
+      at.setMinutes(at.getMinutes() + 1);
+    } else {
+      return new Date(at.getTime());
+    }
   }
   // A schedule like "30 2 30 2 *" — half past two on the 30th of February.
   return null;

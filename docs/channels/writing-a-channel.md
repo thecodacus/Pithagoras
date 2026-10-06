@@ -108,6 +108,7 @@ portal turns each key into an isolated session and keeps them apart.
 const reply = await ctx.ask(text, {
   session: `chat:${chatId}`,   // one conversation
   title: "Engineering",        // human label, used the first time only
+  from: { id: userId, name },  // who sent it: see Identity below
   chatId,                      // anything else you need to route the reply
 });
 ```
@@ -135,10 +136,12 @@ Pass `meta.onReply` and each stretch is handed to you as it completes, so the
 chat shows the agent working instead of going silent:
 
 ```js
-await ctx.ask(text, {
+const reply = await ctx.ask(text, {
   session: `chat:${chatId}`,
+  from: { id: userId, name },
   onReply: (body) => send(chatId, body),
 });
+if (reply) await send(chatId, reply);
 ```
 
 You also get a line for every tool as it starts, so the chat shows what the
@@ -157,7 +160,16 @@ When progress is on, `ask` resolves with `""` — the prose has already been giv
 to you, and returning it too would post everything twice. When it is off, only
 tool lines are relayed and `ask` resolves with the whole answer at the end. Both
 off and nothing is relayed at all. So the safe shape is: send everything
-`onReply` gives you, then send the return value if it is non-empty.
+`onReply` gives you, then send the return value if it is non-empty. The portal's
+own answers — `Stopped.`, `Nothing running.`, the refusal a stranger gets, the
+confirmation of an approval — are always the return value and never go through
+`onReply`, so a package that drops it posts nothing for them, and with
+**Progress** off nothing at all.
+
+A question an extension asks mid-run is relayed to you with the rest. If your
+transport answers it with buttons that any member of a group can press (as
+Telegram's do), the request you are given carries `canAnswer(senderId)`: check it
+with the id of whoever pressed, and ignore the press when it is false.
 
 ### Interrupting
 
@@ -196,12 +208,18 @@ package gets the feature without doing anything.
 work on a machine with no inbound route:
 
 ```js
+const handle = async (update) => {
+  const reply = await ctx.ask(update.text, {
+    session: `chat:${update.chatId}`,
+    from: { id: String(update.userId), name: update.userName },
+  });
+  await send(update.chatId, reply);
+};
+
 while (running && !ctx.signal.aborted) {
   const updates = await getUpdates({ offset, timeout: 50 }, ctx.signal);
-  for (const update of updates) {
-    const reply = await ctx.ask(update.text, { chatId: update.chatId });
-    await send(update.chatId, reply);
-  }
+  // Not awaited: see the box above.
+  for (const update of updates) void handle(update);
 }
 ```
 
@@ -215,8 +233,12 @@ const connect = () => {
   if (stopped || ctx.signal.aborted) return;
   const socket = new WebSocket(url);
   socket.addEventListener("message", async (frame) => {
-    const { text, channel } = parse(frame.data);
-    await send(channel, await ctx.ask(text, { channel }));
+    const { text, channel, user, userName } = parse(frame.data);
+    const reply = await ctx.ask(text, {
+      session: `channel:${channel}`,
+      from: { id: String(user), name: userName },
+    });
+    await send(channel, reply);
   });
   socket.addEventListener("close", () => {
     if (!stopped && !ctx.signal.aborted) setTimeout(connect, 3000);
@@ -231,7 +253,10 @@ authenticate every request:
 const server = createServer(async (req, res) => {
   if (!validSecret(req)) return unauthorized(res);
   const { message } = JSON.parse(await readBody(req));
-  const reply = await ctx.ask(message, { from: "webhook" });
+  const reply = await ctx.ask(message, {
+    session: "default",
+    from: { id: "ci", name: "CI" },   // who is speaking, never left out
+  });
   res.end(JSON.stringify({ reply }));
 });
 ```
@@ -270,7 +295,11 @@ see a change.
   quietly lumping everything into one conversation.
 - **Editing configuration restarts your channel.** `stop()` is called and
   `start()` runs again with the new values, so do not hold state that matters
-  outside them.
+  outside them. `stop()` has five seconds: a package that is still waiting by
+  then (say, for a request that is open for the length of an agent turn) is left
+  behind, with a line in the log, so that editing a channel and shutting the
+  portal down never wait on it. Answer what is open instead of waiting for it,
+  as the webhook does with a 503.
 - **`ask` waits for the agent.** It can take minutes on a real task; there is a
   15 minute ceiling after which it rejects.
 
@@ -325,15 +354,25 @@ and goes out with the reply to whatever is said next, so an answer is late
 rather than lost. The portal reports which happened, and tells whoever is
 waiting.
 
+The portal also speaks first, through `send`, after it has restarted in the middle
+of a conversation: the platform has acknowledged the messages it cut off and will
+not deliver them again, so the person is asked to send theirs once more. A
+channel without `send` is not written to for that, since the note would arrive
+with the answer to a message they have already repeated.
+
 A webhook can opt into being spoken to by taking a **callback URL**: the portal
 POSTs `{session, message}` there, and the conversation becomes two-way.
 
 ## Identity
 
 Pass `from: { id, name }` on `ctx.ask` — the platform's own id, never a display
-name. Without it every message is anonymous, which means it cannot be attributed
-to anybody in the [roster](/people/) and will be refused once a primary user is
-named.
+name. **`id` has to be a string**: where the platform gives a number, as
+Telegram's JSON does, write `String(user.id)`. Anything else counts as no
+sender at all. Without it every message is anonymous, which means it cannot be attributed
+to anybody in the [roster](/people/) and is refused once a primary user is
+named, with a reply saying the message did not name its sender. A package written
+without `from` stops answering the day somebody is named primary, which is the
+safe way round: it would otherwise run with a primary user's rights.
 
 A webhook can pin its identity in config instead, so the secret is one person's
 credential rather than a licence to claim any name.

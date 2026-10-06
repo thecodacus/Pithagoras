@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './portal-mock';
 
 test.beforeEach(async ({ page }) => {
   await page.setViewportSize({ width: 1300, height: 800 });

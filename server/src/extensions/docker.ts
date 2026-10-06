@@ -126,3 +126,69 @@ export async function containerState(
   if (status !== 200) return { exists: false, running: false };
   return { exists: true, running: Boolean(body?.State?.Running), id: body?.Id };
 }
+
+/**
+ * A call to the daemon that has to come out right: what Docker says when it does not.
+ * The one place a refusal is turned into an error, so that every add-on says it alike.
+ */
+export async function checked<T = unknown>(method: string, path: string, body?: unknown) {
+  const result = await request<T & { message?: string }>(method, path, body);
+  if (result.status >= 400) throw new Error(result.body?.message || `Docker returned ${result.status}`);
+  return result;
+}
+
+/** What a pull says before the daemon has said anything. */
+export const PULL_STARTING = "starting";
+
+/** How a pull is going, for the page that shows it: under way with what the daemon last said, or ended with or without a failure. */
+export interface PullState {
+  active: boolean;
+  line: string;
+  error?: string;
+}
+
+/**
+ * The image is there, or is pulled, with `onState` told as it goes. `timeoutMs`
+ * stops waiting for a download that does not come; it goes on without being
+ * waited for.
+ */
+export async function ensureImage(image: string, onState: (state: PullState) => void = () => {}, timeoutMs?: number): Promise<void> {
+  if (await imagePresent(image)) return;
+  onState({ active: true, line: PULL_STARTING });
+  const pull = pullImage(image, (line) => onState({ active: true, line })).then(
+    () => onState({ active: false, line: "done" }),
+    (e) => {
+      onState({ active: false, line: "", error: (e as Error).message });
+      throw e;
+    },
+  );
+  if (!timeoutMs) return pull;
+  pull.catch(() => {});
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([pull, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${image} was not downloaded in time`)), timeoutMs); })]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Starts, stops or removes a container, by name or id, with the answers that
+ * mean it is already as asked taken for done: a container that is running is
+ * what a start asks for (304), and one that is gone is what a stop and a remove
+ * ask for. Anything else Docker says is an error, in its own words.
+ */
+export async function containerAction(name: string, verb: "start" | "stop" | "remove"): Promise<void> {
+  if (verb === "remove") {
+    // A running one is stopped first, so that it ends what it was doing; one that will not stop is removed all the same.
+    if ((await containerState(name)).running) await request("POST", `/containers/${name}/stop?t=10`).catch(() => {});
+    const res = await request<{ message?: string }>("DELETE", `/containers/${name}?force=true`);
+    if (res.status >= 400 && res.status !== 404) throw new Error(res.body?.message || `Remove failed (${res.status})`);
+    return;
+  }
+  const res = await request<{ message?: string }>("POST", `/containers/${name}/${verb}${verb === "stop" ? "?t=10" : ""}`);
+  // 304 is Docker saying it is as asked already, and is no error to begin with.
+  if (res.status >= 400 && !(verb === "stop" && res.status === 404)) {
+    throw new Error(res.body?.message || `${verb === "start" ? "Start" : "Stop"} failed (${res.status})`);
+  }
+}

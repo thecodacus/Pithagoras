@@ -1,13 +1,13 @@
-import test from "node:test";
+import test, { mock } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { inProcessHome } from "./server-harness.mjs";
 
 // pi's catalogue, against an agent directory of its own, with an installed
-// extension that takes its time loading — as a package can after an install.
-const dir = mkdtempSync(path.join(tmpdir(), "pi-agent-levels-"));
-process.env.PI_CODING_AGENT_DIR = dir;
+// extension — the build runs its code.
+inProcessHome("pi-agent-levels-");
+const dir = process.env.PI_CODING_AGENT_DIR;
 const map = (on) => Object.fromEntries(["off", "minimal", "low", "medium", "high", "xhigh", "max"].map((l) => [l, on.includes(l) ? l : null]));
 writeFileSync(path.join(dir, "models.json"), JSON.stringify({
   providers: {
@@ -18,29 +18,52 @@ writeFileSync(path.join(dir, "models.json"), JSON.stringify({
   },
 }));
 mkdirSync(path.join(dir, "ext"), { recursive: true });
-writeFileSync(path.join(dir, "ext", "slow.js"), `await new Promise((r) => setTimeout(r, 1500));
-export default function () {}`);
-writeFileSync(path.join(dir, "settings.json"), JSON.stringify({ extensions: [path.join(dir, "ext", "slow.js")] }));
+writeFileSync(path.join(dir, "ext", "noop.js"), "export default function () {}");
+writeFileSync(path.join(dir, "settings.json"), JSON.stringify({ extensions: [path.join(dir, "ext", "noop.js")] }));
 
 const { modelLevels } = await import("../dist/api/providers.js");
-const home = mkdtempSync(path.join(tmpdir(), "agent-home-"));
-process.env.AGENT_HOME = home;
+const home = process.env.AGENT_HOME;
 
 test("a chat's levels do not wait for pi's catalogue to be built", async () => {
   // Opening an idle chat asks for them. Waiting for the build — every
   // extension's code, loaded — held the answer up to 1.5s after each start
   // or install, where the page has what it last saw to draw meanwhile.
-  const started = Date.now();
-  assert.deepEqual(await modelLevels("test-server", "switch"), []);
-  assert.ok(Date.now() - started < 1000, `answered after ${Date.now() - started}ms`);
-
-  // The build was started, and the next chat opened has them.
-  let levels = [];
-  for (let i = 0; i < 60 && !levels.length; i++) {
-    await new Promise((r) => setTimeout(r, 100));
-    levels = await modelLevels("test-server", "switch");
+  //
+  // The build is held on a promise of the test's own, and the clock is the
+  // test's too, so that how long anything takes is not what is measured. Once
+  // the wait the chat has is over, the answer is there although the build is
+  // still pending: it did not wait for it. One that waits for the build, or
+  // for longer than it is given, is not there, however slow the machine is.
+  const pi = await import("@earendil-works/pi-coding-agent");
+  const { modelRuntime } = await import("../dist/api/providers.js");
+  const create = pi.ModelRuntime.create;
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  let started = false;
+  pi.ModelRuntime.create = async (...args) => {
+    started = true;
+    await held;
+    return create.apply(pi.ModelRuntime, args);
+  };
+  // Only setTimeout, and only around the call: setImmediate stays real, to let what is ready run.
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    let answer;
+    modelLevels("test-server", "switch").then((levels) => { answer = levels; });
+    mock.timers.tick(150);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(answer, [], "the levels waited for the catalogue to be built, or for more than the wait they have");
+    // The build was started, and is still going: that is what was not waited for.
+    assert.equal(started, true, "the build was not started");
+  } finally {
+    mock.timers.reset();
+    release();
+    pi.ModelRuntime.create = create;
   }
-  assert.deepEqual(levels, ["off", "medium"]);
+
+  // Once it is built, the next chat opened has them.
+  await modelRuntime();
+  assert.deepEqual(await modelLevels("test-server", "switch"), ["off", "medium"]);
 });
 
 test("after a failed build, one made since is used at once", async () => {

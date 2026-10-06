@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { local } from "./safe-storage";
 import { toggleOpen } from "./tool-groups";
 
 const KEY = "toolGroupsOpen";
@@ -18,7 +19,7 @@ const KEY = "toolGroupsOpen";
 export function useOpenGroups() {
   const [open, setOpen] = useState<string[]>(() => {
     try {
-      const raw = JSON.parse(localStorage.getItem(KEY) || "[]");
+      const raw = JSON.parse(local.get(KEY) || "[]");
       return Array.isArray(raw) ? raw.filter((s) => typeof s === "string") : [];
     } catch {
       return [];
@@ -28,11 +29,8 @@ export function useOpenGroups() {
   const toggle = (source: string) =>
     setOpen((prev) => {
       const next = toggleOpen(prev, source);
-      try {
-        localStorage.setItem(KEY, JSON.stringify(next));
-      } catch {
-        // A browser that will not store it still opens and shuts them.
-      }
+      // A browser that will not store it still opens and shuts them.
+      local.set(KEY, JSON.stringify(next));
       return next;
     });
 

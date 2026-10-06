@@ -94,3 +94,18 @@ function lastAssistant(messages: unknown): any {
   }
   return undefined;
 }
+
+/**
+ * pi's texts for a chat that has no model to answer with, said as the portal has it. They end by sending
+ * the reader to pi's `/login` and to files inside node_modules, neither of which the portal has: what
+ * happens when the provider of the default model was removed (pi then cannot name the model), when
+ * none is set up, or when a provider has no key.
+ */
+export function plainFailure(text: string): string {
+  if (/^No API key found for the selected model\b|^No models available\b|^No model selected\b/.test(text)) {
+    return "There is no model to answer with: the provider of the model was removed, or none is set up. Pick a model in Settings → Models.";
+  }
+  const keyless = /^No API key found for ([^\s.]+)\./.exec(text);
+  if (keyless) return `${keyless[1]} has no API key. Add one in Settings → Models, or pick another model.`;
+  return text;
+}

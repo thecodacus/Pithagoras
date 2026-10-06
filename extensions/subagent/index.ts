@@ -190,8 +190,10 @@ export default function (pi: any) {
     return said;
   }
 
-  /** Starts a child for the task and hands over what watching it needs. */
-  /** `announced`: the id it was announced under while it waited for a slot. */
+  /**
+   * Starts a child for the task and hands over what watching it needs.
+   * `announced`: the id it was announced under while it waited for a slot.
+   */
   function start(task: string, label: string, toolCallId: string, ctx: any, background: boolean, onUpdate?: any, announced?: string): Run {
     const id = announced ?? randomUUID();
     const model = childModel(chatChoice(), ctx?.model);

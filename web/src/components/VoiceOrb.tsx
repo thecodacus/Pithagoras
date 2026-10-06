@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { api } from "../api";
-import { DEFAULT_ORB, ORB_PERSONALITIES, hexToRgb, itemColor, type OrbHat, type OrbProp, type OrbState, type OrbStyle } from "../../../server/src/orb-style";
+import { DEFAULT_ORB, ORB_PERSONALITIES, hexToRgb, itemColor, type OrbHat, type OrbPattern, type OrbProp, type OrbState, type OrbStyle } from "../../../server/src/orb-style";
 
 type Ctx = CanvasRenderingContext2D;
 
@@ -9,21 +9,27 @@ export interface VoiceLevels { input: number; output: number }
 /** Sent with the new style when it is saved, so an open voice stage changes with it. */
 export const ORB_STYLE_EVENT = "orb-style-changed";
 
-/** The portal's orb style: the default until the server answers, then whatever is saved. */
-export function useOrbStyle(): OrbStyle {
+/**
+ * The avatar of the agent a chat talks to: the default until the server
+ * answers, then whatever is saved. Asked again when an avatar is saved, since
+ * it can be this one.
+ */
+export function useOrbStyle(session: string): OrbStyle {
   const [style, setStyle] = useState<OrbStyle>(DEFAULT_ORB);
   useEffect(() => {
     let live = true;
-    api.agentOrb().then((s) => { if (live) setStyle(s); }).catch(() => {});
-    const changed = (e: Event) => setStyle((e as CustomEvent<OrbStyle>).detail);
-    window.addEventListener(ORB_STYLE_EVENT, changed);
-    return () => { live = false; window.removeEventListener(ORB_STYLE_EVENT, changed); };
-  }, []);
+    const load = () => api.chatOrb(session).then((s) => { if (live) setStyle(s); }).catch(() => {});
+    void load();
+    window.addEventListener(ORB_STYLE_EVENT, load);
+    return () => { live = false; window.removeEventListener(ORB_STYLE_EVENT, load); };
+  }, [session]);
   return style;
 }
 
 type Rgb = [number, number, number];
 const css = (c: Rgb, a = 1) => `rgba(${c.map(Math.round).join(",")},${a})`;
+/** "r,g,b", for building an rgba() with its own alpha. */
+const channels = (c: Rgb) => c.map(Math.round).join(",");
 const mix = (a: Rgb, b: Rgb, t: number): Rgb => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 /** Toward white for k > 0, toward black for k < 0. */
 const shade = (c: Rgb, k: number): Rgb => mix(c, k > 0 ? [255, 255, 255] : [0, 0, 0], Math.abs(k));
@@ -120,17 +126,166 @@ function grain(ctx: Ctx): Grain {
   return { dark: make("0,0,0", 3200, 220, 0.55), light: make("255,255,255", 1800, 120, 0.4) };
 }
 
+/**
+ * The plush orb's pile, drawn once and shared by every orb on the page: a very
+ * fine, short, even nap, as on a minky toy, in light only so it never reads as
+ * specks. Combed gently down and outward; softened by one blur over the whole.
+ * Scaled with the orb each frame, so its only cost after the first is one image.
+ */
+let pileCache: HTMLCanvasElement | undefined;
+function minkySprite(): HTMLCanvasElement {
+  if (pileCache) return pileCache;
+  const size = 640, c = size / 2, R = size / 2;
+  const raw = document.createElement("canvas");
+  raw.width = raw.height = size;
+  const g = raw.getContext("2d")!;
+  // Barely there: where the nap lies a little differently.
+  for (let i = 0; i < 120; i++) {
+    const d = Math.sqrt(Math.random()), a = Math.random() * Math.PI * 2, x = c + Math.cos(a) * d * R, y = c + Math.sin(a) * d * R, rad = 24 + Math.random() * 36;
+    const patch = g.createRadialGradient(x, y, 0, x, y, rad);
+    patch.addColorStop(0, "rgba(255,255,255,0.035)"); patch.addColorStop(1, "rgba(255,255,255,0)");
+    g.fillStyle = patch; g.fillRect(x - rad, y - rad, rad * 2, rad * 2);
+  }
+  const strands = [new Path2D(), new Path2D(), new Path2D()];
+  for (let i = 0; i < 36000; i++) {
+    const d = Math.sqrt(Math.random()), a = Math.random() * Math.PI * 2;
+    const u = Math.cos(a) * d, v = Math.sin(a) * d;
+    let dx = u * 0.5 + (Math.random() - 0.5) * 0.6, dy = v * 0.5 + 0.6 + (Math.random() - 0.5) * 0.6;
+    const n = Math.hypot(dx, dy) || 1; dx /= n; dy /= n;
+    const len = 2 + Math.random() * 2.5, x = c + u * R, y = c + v * R;
+    const path = strands[i % 3];
+    path.moveTo(x, y); path.lineTo(x + dx * len, y + dy * len);
+  }
+  g.lineCap = "round"; g.lineWidth = 1;
+  strands.forEach((path, i) => { g.strokeStyle = `rgba(255,255,255,${0.07 + i * 0.04})`; g.stroke(path); });
+  const soft = document.createElement("canvas");
+  soft.width = soft.height = size;
+  const sg = soft.getContext("2d")!;
+  sg.filter = "blur(0.9px)"; sg.drawImage(raw, 0, 0);
+  return (pileCache = soft);
+}
+
+/** A point of light for the starry pattern: where in the sphere (a unit disc), its size, its twinkle, and which layer it is in. */
+interface Sparkle { x: number; y: number; size: number; phase: number; back: boolean }
+
+/**
+ * What moves inside the sphere, one of its two layers: the back one dimmer and
+ * moving less as the face turns, the front one more, so the inside reads as a
+ * volume rather than a surface. Patterns that wrap the sphere (bands, spots,
+ * globe) are on its surface, and a solid ball hides its far side: they have
+ * only the half that faces you.
+ */
+function drawPattern(ctx: Ctx, kind: OrbPattern, back: boolean, r: number, t: number, level: number, color: Rgb, turn: Turn, sparkles: readonly Sparkle[]) {
+  if (kind === "none" || (back && (kind === "bands" || kind === "spots" || kind === "globe"))) return;
+  const depth = back ? 0.55 : 1;
+  const rgb = channels(color);
+  const lighter = channels(shade(color, 0.5)), darker = channels(shade(color, -0.45));
+  ctx.save();
+  ctx.translate(Math.sin(turn.yaw) * r * (back ? 0.06 : 0.28), Math.sin(turn.pitch) * r * (back ? 0.04 : 0.18));
+  // Latitude circles seen from a little above: the far half is the upper arc, the near half the lower.
+  const latitude = (y: number, width: number, style: string) => {
+    const half = Math.sqrt(Math.max(0, r * r - y * y)) * 1.04;
+    ctx.beginPath(); ctx.ellipse(0, y, half, half * 0.16, 0, back ? Math.PI : 0, back ? Math.PI * 2 : Math.PI);
+    ctx.lineWidth = width; ctx.strokeStyle = style; ctx.stroke();
+  };
+  switch (kind) {
+    case "ribbons":
+      // Translucent ribbons bend across the sphere rather than flat sine bars.
+      for (let band = back ? 0 : 1; band < 15; band += 2) {
+        const y = -r + band * r * 0.15;
+        const bend = Math.sin(t + band * 0.27) * 35 + level * 22;
+        ctx.beginPath(); ctx.moveTo(-r * 1.3, y);
+        ctx.bezierCurveTo(-r * 0.45, y - 60 + bend, r * 0.35, y + 65 + bend, r * 1.3, y - 20);
+        ctx.bezierCurveTo(r * 0.3, y + 85 + bend, -r * 0.4, y - 40 + bend, -r * 1.3, y + 9);
+        const ribbon = ctx.createLinearGradient(-r, -r, r, r);
+        ribbon.addColorStop(0, `rgba(231,255,255,${(0.04 + band * 0.003) * depth})`);
+        ribbon.addColorStop(0.45, `rgba(${rgb},${(0.24 + level * 0.12) * depth})`);
+        ribbon.addColorStop(1, "rgba(192,190,255,0.03)");
+        ctx.fillStyle = ribbon; ctx.fill();
+      }
+      break;
+    case "bands":
+      // A gas giant's belts, drifting and thickening with the voice.
+      for (let i = -4; i <= 4; i++) {
+        const y = i * r * 0.21 + Math.sin(t * 0.6 + i) * r * 0.03 * (1 + level);
+        latitude(y, r * (0.07 + level * 0.03), `rgba(${i % 2 ? lighter : darker},${0.3 * depth})`);
+      }
+      break;
+    case "spots": {
+      // Spots on a ball that rolls round as it looks about.
+      const spin = t * 0.35 + turn.yaw * 0.6;
+      for (const [row, lat] of [-0.95, -0.48, 0, 0.48, 0.95].entries()) {
+        for (let k = 0; k < 7; k++) {
+          const lon = spin + k * Math.PI * 2 / 7 + (row % 2) * 0.45;
+          const X = Math.cos(lat) * Math.sin(lon), Y = Math.sin(lat), Z = Math.cos(lat) * Math.cos(lon);
+          if ((Z < 0) !== back) continue;
+          const size = r * 0.09 * (1 + level * 0.3);
+          ctx.beginPath();
+          ctx.ellipse(X * r, Y * r, size * Math.sqrt(Math.max(0.05, 1 - X * X)), size * Math.sqrt(Math.max(0.05, 1 - Y * Y)), 0, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(${lighter},${(back ? 0.18 : 0.42) * (0.5 + 0.5 * Math.abs(Z))})`; ctx.fill();
+        }
+      }
+      break;
+    }
+    case "swirl":
+      // Three arms winding out from the middle; the back ones turn the other way.
+      ctx.lineCap = "round";
+      for (let arm = 0; arm < 3; arm++) {
+        ctx.beginPath();
+        for (let i = 0; i <= 40; i++) {
+          const f = i / 40, a = arm * Math.PI * 2 / 3 + f * 3.4 + t * 0.5 * (back ? -0.6 : 1);
+          const x = Math.cos(a) * f * r * 1.05, y = Math.sin(a) * f * r * 0.95;
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.lineWidth = r * (0.06 + level * 0.04) * (back ? 0.7 : 1);
+        ctx.strokeStyle = `rgba(${lighter},${0.28 * depth})`; ctx.stroke();
+      }
+      break;
+    case "stars":
+      // Points of light twinkling inside: small and faint at the back, larger in front.
+      for (const sp of sparkles) {
+        if (sp.back !== back) continue;
+        const tw = 0.5 + 0.5 * Math.sin(t * 4 + sp.phase);
+        const size = r * (back ? 0.014 : 0.026) * (0.6 + sp.size) * (0.7 + 0.6 * tw) * (1 + level * 0.5);
+        const x = sp.x * r * 0.95, y = sp.y * r * 0.95;
+        ctx.fillStyle = `rgba(${lighter},${(0.35 + 0.55 * tw) * depth})`;
+        ctx.shadowColor = `rgba(${lighter},0.8)`; ctx.shadowBlur = size * 2;
+        ctx.beginPath();
+        for (let i = 0; i < 8; i++) { const a = i * Math.PI / 4, d = i % 2 ? size * 0.3 : size; ctx.lineTo(x + Math.cos(a) * d, y + Math.sin(a) * d); }
+        ctx.closePath(); ctx.fill();
+      }
+      ctx.shadowBlur = 0;
+      break;
+    case "globe": {
+      // A wireframe of latitude and longitude, turning as it looks about.
+      const spin = t * 0.25 + turn.yaw * 0.6;
+      for (let i = -2; i <= 2; i++) latitude(i * r * 0.38, r * 0.012, `rgba(${lighter},${0.45 * depth})`);
+      for (let k = 0; k < 6; k++) {
+        const lon = spin + k * Math.PI / 6;
+        if ((Math.cos(lon) < 0) !== back) continue;
+        ctx.beginPath(); ctx.ellipse(0, 0, r * Math.abs(Math.sin(lon)), r, 0, 0, Math.PI * 2);
+        ctx.lineWidth = r * 0.012; ctx.strokeStyle = `rgba(${lighter},${0.45 * depth})`; ctx.stroke();
+      }
+      break;
+    }
+  }
+  ctx.restore();
+}
+
 /** Lifts a prop off the orb with a soft shadow below it. */
 function lift(ctx: Ctx, r: number) { ctx.shadowColor = "rgba(0,0,0,0.45)"; ctx.shadowBlur = r * 0.08; ctx.shadowOffsetY = r * 0.03; }
 function unlift(ctx: Ctx) { ctx.shadowColor = "transparent"; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0; }
 
+/** How far the face is into listening (`wide`) and into speaking (`talk`), each 0 to 1, eased from one state to the next. */
+interface Mood { wide: number; talk: number }
+
 /** Where the eyes sit and how big they are: widened and raised when listening, stretched by the voice when speaking. */
-function faceOf(r: number, mode: OrbState, level: number) {
+function faceOf(r: number, mood: Mood, level: number) {
   return {
     ex: r * 0.36,
-    ey: -r * 0.06 - (mode === "input" ? r * 0.04 : 0) - (mode === "output" ? level * r * 0.06 : 0),
-    es: r * 0.22 * (mode === "input" ? 1.18 : 1),
-    stretch: mode === "output" ? 1 + level * 0.32 : mode === "input" ? 1.08 : 1,
+    ey: -r * 0.06 - mood.wide * r * 0.04 - mood.talk * level * r * 0.06,
+    es: r * 0.22 * (1 + 0.18 * mood.wide),
+    stretch: 1 + mood.talk * level * 0.32 + mood.wide * 0.08,
   };
 }
 
@@ -171,8 +326,8 @@ function dome(ctx: Ctx, path: () => void, size: number) {
  * look, -1 to 1, and `turn` is how far the face has turned to look there.
  * Cartoon proportions on purpose: big, and moving with the voice.
  */
-function drawEyes(ctx: Ctx, look: OrbStyle, r: number, mode: OrbState, level: number, open: number, gx: number, gy: number, turn: Turn) {
-  const { ex, ey, es, stretch } = faceOf(r, mode, level);
+function drawEyes(ctx: Ctx, look: OrbStyle, r: number, mood: Mood, level: number, open: number, gx: number, gy: number, turn: Turn) {
+  const { ex, ey, es, stretch } = faceOf(r, mood, level);
   const color = look.eyeColor;
   // The pupils and glints are white; dark eyes get a faint light rim to stand
   // off the orb instead of a glow of their own colour.
@@ -255,7 +410,7 @@ function drawEyes(ctx: Ctx, look: OrbStyle, r: number, mode: OrbState, level: nu
  * object in the UI's own colours: neutral surfaces, with the accent only in
  * small lights.
  */
-function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t: number, level: number, mode: OrbState, turn: Turn, texture: Grain) {
+function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t: number, level: number, mood: Mood, turn: Turn, texture: Grain) {
   const base = tame(hexToRgb(color));
   ctx.save();
   ctx.lineCap = "round"; ctx.lineJoin = "round";
@@ -342,7 +497,7 @@ function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t:
       break;
     }
     case "glasses": {
-      const { ex, ey, es } = faceOf(r, mode, level);
+      const { ex, ey, es } = faceOf(r, mood, level);
       const h = es * 2;
       const lenses = [-1, 1].map((side) => { const p = eyePlace(r, ex, ey, side, turn); return { ...p, w: es * 2.4 * p.fx }; });
       const [left, right] = lenses;
@@ -499,10 +654,10 @@ function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t:
       break;
     }
     case "mustache": {
-      const { ey, es } = faceOf(r, mode, level);
+      const { ey, es } = faceOf(r, mood, level);
       ctx.translate(Math.sin(turn.yaw) * r, ey + es * 1.55 + Math.sin(turn.pitch) * r * 0.6);
       ctx.scale(Math.cos(turn.yaw), 1);
-      const wiggle = mode === "output" ? level * 0.15 : 0;
+      const wiggle = mood.talk * level * 0.15;
       lift(ctx, r);
       ctx.fillStyle = material(ctx, color, -r * 0.08, r * 0.1);
       for (const s of [-1, 1]) {
@@ -519,7 +674,7 @@ function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t:
       break;
     }
     case "monocle": {
-      const { ex, ey, es } = faceOf(r, mode, level);
+      const { ex, ey, es } = faceOf(r, mood, level);
       const p = eyePlace(r, ex, ey, 1, turn);
       const radius = es * 1.15;
       lift(ctx, r);
@@ -546,13 +701,21 @@ function drawWorn(ctx: Ctx, kind: OrbHat | OrbProp, color: string, r: number, t:
     ctx.fillStyle = pattern; ctx.fillRect(-r * 4, -r * 4, r * 8, r * 8);
   }
   ctx.restore();
+  // Then shadow from the orb's light, over the grain as well, in the orb's own space
+  // rather than the item's, so every part of what it wears is lit from the same side.
+  ctx.save();
+  ctx.globalCompositeOperation = "source-atop";
+  const away = ctx.createRadialGradient(-r * 0.35, -r * 0.6, r * 0.3, -r * 0.35, -r * 0.6, r * 2.1);
+  away.addColorStop(0, "rgba(4,6,14,0)"); away.addColorStop(0.5, "rgba(4,6,14,0.06)"); away.addColorStop(1, "rgba(4,6,14,0.45)");
+  ctx.fillStyle = away; ctx.fillRect(-r * 2.5, -r * 2.5, r * 5, r * 5);
+  ctx.restore();
 }
 
 /**
  * The shape follows real RMS audio levels; the slow drift only gives idle depth.
  *
  * The style is read on every frame rather than restarting the animation, so a
- * change in the Agent page's preview shows at once. With the balanced
+ * change in the avatar customizer's preview shows at once. With the balanced
  * personality and the default multipliers this draws the orb as it always was.
  */
 export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: MutableRefObject<VoiceLevels>; look: OrbStyle }) {
@@ -564,20 +727,39 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
     const ctx = element.getContext("2d");
     if (!ctx) return;
     const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    // The orb is laid out on a square of this many units, however many pixels it is drawn in: those follow the size
+    // it is shown at (`fit`). A fixed 1200 by 1200 was six full renders per frame for six thumbnails.
     const size = 600;
-    const ratio = Math.min(devicePixelRatio || 1, 2);
-    element.width = size * ratio; element.height = size * ratio;
-    ctx.scale(ratio, ratio);
     // What the orb wears is drawn on a layer of its own, so its grain lands on it alone.
     const layer = document.createElement("canvas");
-    layer.width = element.width; layer.height = element.height;
     const worn = layer.getContext("2d")!;
-    const texture = grain(worn);
-    let frame = 0, level = 0;
+    // Only an orb that wears something needs it.
+    let texture: Grain | undefined;
+    // Pixels across, to a unit, and whether it is shown as small as a thumbnail; set once it has a size.
+    let pixels = 0, scale = 0, small = false;
+    const fit = () => {
+      const shown = element.clientWidth;
+      if (!shown) return;
+      small = shown < 160;
+      const px = Math.min(size * 2, Math.max(96, Math.round(shown * Math.min(devicePixelRatio || 1, 2))));
+      if (px === pixels) return;
+      // Sized, a canvas is cleared and forgets its transform.
+      element.width = element.height = layer.width = layer.height = pixels = px;
+      scale = px / size;
+      ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    };
+    fit();
+    const sparkles: Sparkle[] = Array.from({ length: 46 }, () => {
+      const d = Math.sqrt(Math.random()), a = Math.random() * Math.PI * 2;
+      return { x: Math.cos(a) * d, y: Math.sin(a) * d, size: Math.random(), phase: Math.random() * Math.PI * 2, back: Math.random() < 0.55 };
+    });
+    let frame = 0, level = 0, last = -1e9, visible = true;
     let color: number[] = hexToRgb(style.current.colors[current.current]);
     // Blinks come at uneven intervals, as they do; the personality sets how often.
     let nextBlink = performance.now() + 2500, blinkAt = -1e9;
-    const render = (timestamp: number) => {
+    // Each state is eased into rather than switched to: eyes close slowly on mute and open again, the face widens into listening.
+    let lid = 1, wide = 0, talk = 0, roam = 0.9, up = 0;
+    const draw = (timestamp: number) => {
       const mode = current.current;
       const look = style.current;
       const motion = ORB_PERSONALITIES[look.personality];
@@ -589,71 +771,134 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
       const t = reduced ? 0 : timestamp * 0.00055 * look.speed * motion.drift;
       const swell = 1 + motion.bounce * Math.sin(t * 3);
       const r = (132 + level * (reduced ? 5 : 28)) * swell;
+      // Where the face looks: about while idle, up toward you while listening.
+      const ease = reduced ? 1 : 0.1;
+      lid += ((mode === "muted" ? 0 : 1) - lid) * ease;
+      wide += ((mode === "input" ? 1 : 0) - wide) * ease;
+      talk += ((mode === "output" ? 1 : 0) - talk) * ease;
+      roam += ((mode === "idle" ? 0.9 : 0.35) - roam) * ease * 0.5;
+      up += ((mode === "input" ? 1 : 0) - up) * ease;
+      const mood: Mood = { wide, talk };
+      const gx = reduced ? 0 : Math.sin(t * 0.9) * roam;
+      const gy = reduced ? 0 : Math.cos(t * 0.6) * 0.4 * (1 - up) - 0.45 * up;
+      const turn = { yaw: gx * 0.32, pitch: gy * 0.18 };
       ctx.clearRect(0, 0, size, size);
       ctx.save(); ctx.translate(size / 2, size / 2);
       const halo = ctx.createRadialGradient(0, 0, r * 0.65, 0, 0, r * 1.7);
       halo.addColorStop(0, `rgba(${rgb},${Math.min(1, (0.3 + level * 0.18) * look.glow)})`); halo.addColorStop(1, `rgba(${rgb},0)`);
       ctx.fillStyle = halo; ctx.fillRect(-size / 2, -size / 2, size, size);
+      // A soft shadow below, so the orb floats above its stage rather than being painted on it.
+      ctx.save(); ctx.translate(0, r * 1.3); ctx.scale(1, 0.16);
+      const floor = ctx.createRadialGradient(0, 0, 0, 0, 0, r * 0.8);
+      floor.addColorStop(0, "rgba(0,0,0,0.5)"); floor.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = floor; ctx.beginPath(); ctx.arc(0, 0, r * 0.8, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
       for (let ring = 0; ring < motion.rings; ring++) {
         ctx.beginPath();
         ctx.ellipse(0, 0, r + 20 + ring * 16 + level * 7, r + 18 + ring * 16, Math.sin(t) * motion.wobble, 0, Math.PI * 2);
         ctx.strokeStyle = `rgba(${rgb},${Math.max(0.04, 0.2 + level * 0.15 - ring * 0.05)})`; ctx.lineWidth = 1.2; ctx.stroke();
       }
-      ctx.beginPath();
       const [first, second] = motion.lobes;
+      // How far the edge is from the middle at an angle: the outline the sphere is filled, clipped and feathered by.
+      const edge = (a: number) => r + (Math.sin(a * first + t * 1.3) * (3 + level * 7) + Math.sin(a * second - t * 2) * level * 10) * motion.wave;
+      const outline = new Path2D();
       for (let i = 0; i <= 160; i++) {
-        const a = i / 160 * Math.PI * 2;
-        const wave = (Math.sin(a * first + t * 1.3) * (3 + level * 7) + Math.sin(a * second - t * 2) * level * 10) * motion.wave;
-        const x = Math.cos(a) * (r + wave), y = Math.sin(a) * (r + wave);
-        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        const a = i / 160 * Math.PI * 2, e = edge(a);
+        const x = Math.cos(a) * e, y = Math.sin(a) * e;
+        if (i === 0) outline.moveTo(x, y); else outline.lineTo(x, y);
       }
-      ctx.closePath();
+      outline.closePath();
       const sphere = ctx.createRadialGradient(-r * 0.32, -r * 0.45, 1, r * 0.12, r * 0.1, r * 1.32);
       sphere.addColorStop(0, `rgba(${rgb},0.98)`); sphere.addColorStop(0.32, `rgba(${rgb},0.95)`);
       sphere.addColorStop(0.7, `rgb(${color.map(v => Math.round(v * 0.62)).join(",")})`); sphere.addColorStop(1, `rgb(${color.map(v => Math.round(v * 0.34)).join(",")})`);
       ctx.shadowColor = `rgba(${rgb},0.65)`; ctx.shadowBlur = 22 * look.glow;
-      ctx.fillStyle = sphere; ctx.fill(); ctx.shadowBlur = 0;
-      ctx.strokeStyle = `rgba(${rgb},0.8)`; ctx.lineWidth = 1.8; ctx.stroke(); ctx.save(); ctx.clip();
-      // Translucent ribbons bend across the sphere rather than flat sine bars.
-      if (look.ribbons) for (let band = 0; band < 15; band++) {
-        const y = -r + band * r * 0.15;
-        const bend = Math.sin(t + band * 0.27) * 35 + level * 22;
-        ctx.beginPath(); ctx.moveTo(-r * 1.3, y);
-        ctx.bezierCurveTo(-r * 0.45, y - 60 + bend, r * 0.35, y + 65 + bend, r * 1.3, y - 20);
-        ctx.bezierCurveTo(r * 0.3, y + 85 + bend, -r * 0.4, y - 40 + bend, -r * 1.3, y + 9);
-        const ribbon = ctx.createLinearGradient(-r, -r, r, r);
-        ribbon.addColorStop(0, `rgba(231,255,255,${0.04 + band * 0.003})`);
-        ribbon.addColorStop(0.45, `rgba(${rgb},${0.24 + level * 0.12})`);
-        ribbon.addColorStop(1, "rgba(192,190,255,0.03)");
-        ctx.fillStyle = ribbon; ctx.fill();
+      ctx.fillStyle = sphere; ctx.fill(outline); ctx.shadowBlur = 0;
+      const plush = look.finish === "plush";
+      if (!plush) {
+        // Lit from the upper left, as the gradient is: brightest where the light meets the edge.
+        const rim = ctx.createLinearGradient(-r, -r, r, r);
+        rim.addColorStop(0, "rgba(255,255,255,0.7)"); rim.addColorStop(0.45, `rgba(${rgb},0.75)`); rim.addColorStop(1, `rgba(${rgb},0.3)`);
+        ctx.strokeStyle = rim; ctx.lineWidth = 1.8; ctx.stroke(outline);
       }
-      const shine = ctx.createRadialGradient(-r * 0.33, -r * 0.55, 0, -r * 0.33, -r * 0.55, r * 0.85);
-      shine.addColorStop(0, "rgba(238,255,255,0.45)"); shine.addColorStop(0.35, "rgba(233,253,255,0.08)"); shine.addColorStop(1, "rgba(255,255,255,0)");
-      ctx.fillStyle = shine; ctx.fillRect(-r, -r, 2 * r, 2 * r);
+      ctx.save(); ctx.clip(outline);
+      const tint = color as Rgb;
+      drawPattern(ctx, look.pattern, true, r, t, level, tint, turn, sparkles);
+      // A glowing core between the layers, drifting against the turn, as something deep inside would.
+      const cx = -r * 0.08 - Math.sin(turn.yaw) * r * 0.18, cy = -r * 0.1 - Math.sin(turn.pitch) * r * 0.18;
+      const core = ctx.createRadialGradient(cx, cy, 0, cx, cy, r * 0.62);
+      core.addColorStop(0, `rgba(${color.map((v) => Math.round(v + (255 - v) * 0.55)).join(",")},${0.3 + level * 0.25})`); core.addColorStop(1, `rgba(${rgb},0)`);
+      ctx.fillStyle = core; ctx.fillRect(-r, -r, 2 * r, 2 * r);
+      drawPattern(ctx, look.pattern, false, r, t, level, tint, turn, sparkles);
+      // Felt goes on before the shading, so the shadow side darkens it as it does the surface under it.
+      if (plush) {
+        // The pile over the whole body, scaled with the orb and riding a little with the turn.
+        const R = r * 1.04;
+        ctx.drawImage(minkySprite(), -R + Math.sin(turn.yaw) * r * 0.06, -R + Math.sin(turn.pitch) * r * 0.06, R * 2, R * 2);
+      }
+      // The side away from the light falls into shadow, and the underside darkens most.
+      const turned = ctx.createRadialGradient(-r * 0.35, -r * 0.45, r * 0.4, -r * 0.35, -r * 0.45, r * 1.9);
+      turned.addColorStop(0, "rgba(4,6,14,0)"); turned.addColorStop(0.55, "rgba(4,6,14,0.08)"); turned.addColorStop(1, "rgba(4,6,14,0.55)");
+      ctx.fillStyle = turned; ctx.fillRect(-r * 1.2, -r * 1.2, r * 2.4, r * 2.4);
+      const under = ctx.createLinearGradient(0, r * 0.25, 0, r);
+      under.addColorStop(0, "rgba(0,0,0,0)"); under.addColorStop(1, "rgba(0,0,0,0.22)");
+      ctx.fillStyle = under; ctx.fillRect(-r * 1.2, r * 0.25, r * 2.4, r);
+      if (plush) {
+        // Velvet catches light at its edges rather than in a spot: a soft brightening inside the rim, most where the light falls.
+        const sheen = ctx.createRadialGradient(r * 0.12, r * 0.15, r * 0.55, -r * 0.05, -r * 0.05, r * 1.05);
+        sheen.addColorStop(0, "rgba(255,255,255,0)"); sheen.addColorStop(0.7, "rgba(255,255,255,0.03)"); sheen.addColorStop(1, "rgba(255,255,255,0.1)");
+        ctx.fillStyle = sheen; ctx.fillRect(-r * 1.2, -r * 1.2, r * 2.4, r * 2.4);
+      } else {
+        // The highlight is light falling on the surface, so it goes on last.
+        const shine = ctx.createRadialGradient(-r * 0.33, -r * 0.55, 0, -r * 0.33, -r * 0.55, r * 0.85);
+        shine.addColorStop(0, "rgba(238,255,255,0.45)"); shine.addColorStop(0.35, "rgba(233,253,255,0.08)"); shine.addColorStop(1, "rgba(255,255,255,0)");
+        ctx.fillStyle = shine; ctx.fillRect(-r, -r, 2 * r, 2 * r);
+      }
       ctx.restore();
-      // Where the face looks: about while idle, up toward you while listening.
-      const gx = reduced ? 0 : Math.sin(t * 0.9) * (mode === "idle" ? 0.9 : 0.35);
-      const gy = reduced ? 0 : mode === "input" ? -0.45 : Math.cos(t * 0.6) * 0.4;
-      const turn = { yaw: gx * 0.32, pitch: gy * 0.18 };
+      if (plush) {
+        // A soft edge, as a minky toy's silhouette is: the orb's own colour feathering outward in a few wide, faint passes, and no lines.
+        const soft = color.map((v) => Math.round(v * 0.85)).join(",");
+        for (const [width, alpha] of [[r * 0.03, 0.22], [r * 0.06, 0.1], [r * 0.1, 0.04]] as const) {
+          ctx.lineWidth = width; ctx.strokeStyle = `rgba(${soft},${alpha})`; ctx.stroke(outline);
+        }
+      }
       if (look.eyes !== "none") {
         if (!reduced && timestamp > nextBlink) { blinkAt = timestamp; nextBlink = timestamp + (2200 + Math.random() * 3200) / motion.blink; }
         const blinking = timestamp - blinkAt < 160;
-        const open = mode === "muted" ? 0 : blinking ? Math.abs(Math.cos((timestamp - blinkAt) / 160 * Math.PI)) : 1;
-        drawEyes(ctx, look, r, mode, level, open, gx, gy, turn);
+        const open = lid * (blinking ? Math.abs(Math.cos((timestamp - blinkAt) / 160 * Math.PI)) : 1);
+        drawEyes(ctx, look, r, mood, level, open, gx, gy, turn);
       }
       const wear = (kind: OrbHat | OrbProp, tint: string) => {
         worn.setTransform(1, 0, 0, 1, 0, 0); worn.clearRect(0, 0, layer.width, layer.height);
-        worn.setTransform(ratio, 0, 0, ratio, 0, 0); worn.translate(size / 2, size / 2);
-        drawWorn(worn, kind, tint, r, t, level, mode, turn, texture);
+        worn.setTransform(scale, 0, 0, scale, 0, 0); worn.translate(size / 2, size / 2);
+        drawWorn(worn, kind, tint, r, t, level, mood, turn, (texture ??= grain(worn)));
         ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(layer, 0, 0); ctx.restore();
       };
       if (look.prop !== "none") wear(look.prop, itemColor(look.prop, look.propColor));
       if (look.hat !== "none") wear(look.hat, itemColor(look.hat, look.hatColor));
       ctx.restore();
-      frame = requestAnimationFrame(render);
     };
+    const render = (timestamp: number) => {
+      // Reduced motion, and an orb the size of a thumbnail, are drawn at about 15 frames a second: nobody sees more of it.
+      if (scale && !((reduced || small) && timestamp - last < 66)) {
+        last = timestamp;
+        draw(timestamp);
+      }
+      frame = visible ? requestAnimationFrame(render) : 0;
+    };
+    const resized = new ResizeObserver(fit);
+    resized.observe(element);
+    // Out of view (scrolled away, behind another page) there is nothing to draw for.
+    const seen = new IntersectionObserver((entries) => {
+      visible = entries[entries.length - 1].isIntersecting;
+      if (visible && !frame) frame = requestAnimationFrame(render);
+    });
+    seen.observe(element);
     frame = requestAnimationFrame(render);
-    return () => cancelAnimationFrame(frame);
+    return () => {
+      cancelAnimationFrame(frame);
+      resized.disconnect();
+      seen.disconnect();
+    };
   }, [levels]);
   return <canvas ref={canvas} aria-hidden="true" className="voice-orb" data-mode={mode} />;
 }

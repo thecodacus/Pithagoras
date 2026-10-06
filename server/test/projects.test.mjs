@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, linkSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
+import { scratch } from './server-harness.mjs';
 const P = await import('../dist/projects.js');
 
-const root = () => mkdtempSync(path.join(tmpdir(), 'projects-'));
+const root = () => scratch('projects-');
 const code = (fn) => { try { fn(); } catch (e) { return e instanceof P.ProjectError ? e.code : `other:${e.message}`; } return 'none'; };
 
 test('the projects are the folders under the root, by name, without hidden ones or files', () => {
@@ -13,7 +13,6 @@ test('the projects are the folders under the root, by name, without hidden ones 
   mkdirSync(path.join(r, 'zeta')); mkdirSync(path.join(r, 'alpha')); mkdirSync(path.join(r, '.hidden'));
   writeFileSync(path.join(r, 'a-file'), 'x');
   assert.deepEqual(P.listProjects(r).map((p) => p.name), ['alpha', 'zeta']);
-  rmSync(r, { recursive: true });
 });
 
 test('a project is named like a folder and starts with its instructions', () => {
@@ -22,20 +21,18 @@ test('a project is named like a folder and starts with its instructions', () => 
   assert.equal(p.name, 'cool-project');
   assert.equal(p.hasInstructions, true);
   assert.equal(readFileSync(path.join(r, 'cool-project', 'AGENTS.md'), 'utf8'), '  Answer in German.\n');
-  assert.equal(P.readInstructions(r, 'cool-project'), '  Answer in German.\n');
-  rmSync(r, { recursive: true });
+  assert.equal(P.readInstructions(r, 'cool-project').text, '  Answer in German.\n');
 });
 
 test('a project without instructions has no file, and blank instructions remove it', () => {
   const r = root();
   const p = P.createProject(r, 'plain');
   assert.equal(p.hasInstructions, false);
-  assert.equal(P.readInstructions(r, 'plain'), '');
+  assert.deepEqual(P.readInstructions(r, 'plain'), { text: '', mtime: 0 });
   P.writeInstructions(r, 'plain', 'be brief');
   assert.equal(P.getProject(r, 'plain').hasInstructions, true);
   P.writeInstructions(r, 'plain', '   \n');
   assert.equal(P.getProject(r, 'plain').hasInstructions, false);
-  rmSync(r, { recursive: true });
 });
 
 test('names that are taken, reserved or unusable are refused', () => {
@@ -48,12 +45,11 @@ test('names that are taken, reserved or unusable are refused', () => {
   assert.equal(code(() => P.createProject(r, '???')), 'invalid');
   assert.equal(code(() => P.createProject(r, '../escape')), 'none'); // becomes "escape": nothing to escape with
   assert.ok(!existsSync(path.join(path.dirname(r), 'escape')));
-  rmSync(r, { recursive: true });
 });
 
 test('a name from outside cannot reach beyond the root', () => {
   const r = root();
-  const outside = mkdtempSync(path.join(tmpdir(), 'outside-'));
+  const outside = scratch('outside-');
   writeFileSync(path.join(outside, 'precious'), 'keep');
   symlinkSync(outside, path.join(r, 'link'));
   mkdirSync(path.join(r, 'real'));
@@ -66,7 +62,6 @@ test('a name from outside cannot reach beyond the root', () => {
   assert.equal(code(() => P.writeInstructions(r, 'link', 'x')), 'invalid');
   assert.ok(existsSync(path.join(outside, 'precious')));
   assert.equal(code(() => P.getProject(r, 'nope')), 'missing');
-  rmSync(r, { recursive: true }); rmSync(outside, { recursive: true });
 });
 
 test('deleting a project removes its folder', () => {
@@ -80,14 +75,12 @@ test('deleting a project removes its folder', () => {
   assert.deepEqual(d, { files: 3, bytes: 2 + 3 + 4, complete: true });
   P.deleteProjectFolder(r, 'gone');
   assert.ok(!existsSync(path.join(r, 'gone')));
-  rmSync(r, { recursive: true });
 });
 
 test('instructions have a size limit', () => {
   const r = root();
   P.createProject(r, 'big');
   assert.equal(code(() => P.writeInstructions(r, 'big', 'x'.repeat(100_001))), 'invalid');
-  rmSync(r, { recursive: true });
 });
 
 test('a chat is named after its first line, briefly, and never after a command', () => {
@@ -104,7 +97,6 @@ test('a link in the root is not listed as a project, since every operation on it
   mkdirSync(path.join(r, 'real'));
   symlinkSync(outside, path.join(r, 'linked'));
   assert.deepEqual(P.listProjects(r).map((p) => p.name), ['real']);
-  rmSync(r, { recursive: true }); rmSync(outside, { recursive: true });
 });
 
 test('instructions that are too long are refused before the folder is made, so the name stays free', () => {
@@ -112,14 +104,12 @@ test('instructions that are too long are refused before the folder is made, so t
   assert.equal(code(() => P.createProject(r, 'big', 'x'.repeat(100_001))), 'invalid');
   assert.equal(existsSync(path.join(r, 'big')), false);
   assert.equal(P.createProject(r, 'big', 'short').name, 'big');
-  rmSync(r, { recursive: true });
 });
 
 test('the limit message uses the same digits wherever the server runs', () => {
   const r = root();
   try { P.createProject(r, 'big', 'x'.repeat(100_001)); assert.fail('should have refused'); }
   catch (e) { assert.match(e.message, /100,000 characters/); }
-  rmSync(r, { recursive: true });
 });
 
 test('saving a long run of blanks is quick', () => {
@@ -130,7 +120,6 @@ test('saving a long run of blanks is quick', () => {
   assert.ok(Date.now() - started < 500, `took ${Date.now() - started} ms`);
   P.writeInstructions(r, 'blanks', 'x' + ' '.repeat(99_998) + '\n');
   assert.ok(Date.now() - started < 1000);
-  rmSync(r, { recursive: true });
 });
 
 test('a link in place of AGENTS.md is neither read nor written through', () => {
@@ -146,7 +135,6 @@ test('a link in place of AGENTS.md is neither read nor written through', () => {
   P.writeInstructions(r, 'linked', '');
   assert.equal(existsSync(path.join(r, 'linked', 'AGENTS.md')), false);
   assert.equal(readFileSync(target, 'utf8'), 'not yours');
-  rmSync(r, { recursive: true }); rmSync(outside, { recursive: true });
 });
 
 test('a second name for a file elsewhere is not written to either', () => {
@@ -157,7 +145,6 @@ test('a second name for a file elsewhere is not written to either', () => {
   linkSync(target, path.join(r, 'shared', 'AGENTS.md'));
   assert.equal(code(() => P.writeInstructions(r, 'shared', 'overwritten')), 'invalid');
   assert.equal(readFileSync(target, 'utf8'), 'not yours');
-  rmSync(r, { recursive: true }); rmSync(outside, { recursive: true });
 });
 
 test('an AGENTS.md far larger than the editor takes is refused rather than read into memory', () => {
@@ -166,8 +153,7 @@ test('an AGENTS.md far larger than the editor takes is refused rather than read 
   writeFileSync(path.join(r, 'huge', 'AGENTS.md'), 'x'.repeat(400_001));
   assert.equal(code(() => P.readInstructions(r, 'huge')), 'invalid');
   writeFileSync(path.join(r, 'huge', 'AGENTS.md'), 'y'.repeat(100_000));
-  assert.equal(P.readInstructions(r, 'huge').length, 100_000);
-  rmSync(r, { recursive: true });
+  assert.equal(P.readInstructions(r, 'huge').text.length, 100_000);
 });
 
 test('a title is cut between characters, not through one', () => {

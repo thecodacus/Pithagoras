@@ -1,4 +1,5 @@
-import { test, expect, type Page } from '@playwright/test';
+import { type Page } from '@playwright/test';
+import { test, expect, mockPortal, reply } from './portal-mock';
 
 /** The portal with no server: Settings → Add-ons, over canned answers for the opt-in features. */
 async function portal(page: Page, { reachable = true, available = true, docker = false, llm = { source: 'auto' } as any, autoPossible = true, dreamFails = false, container = 'absent' } = {}) {
@@ -10,34 +11,23 @@ async function portal(page: Page, { reachable = true, available = true, docker =
       managed: {
         available: docker, image: false, container, pulling: { active: false, line: '' }, url: 'http://127.0.0.1:3800/mcp',
         config: { llm, dreamInterval: '', dreamAt: '' }, autoPossible,
-        providers: [{ id: 'llama-swap', models: ['Ornith', 'Small'] }, { id: 'vllm', models: ['Qwen'] }],
+        providers: [{ id: 'llama-swap', models: ['model-a', 'Small'] }, { id: 'vllm', models: ['model-b'] }],
         dreaming: false, lastDream: null as any, nextDream: null as string | null, timeZone: 'Europe/Berlin',
       },
     },
   };
-  const images = { enabled: false, baseUrl: '', model: '', size: '', keySet: false, editEnabled: false, editBaseUrl: '', editModel: '', editMultiple: false, editMaxSize: '', editKeySet: false, timeoutSeconds: 300, editReady: false };
-  await page.route('**/api/**', async (route) => {
-    const url = new URL(route.request().url());
-    const p = url.pathname;
-    const method = route.request().method();
-    let body: unknown = {};
-    if (p === '/api/auth/status') body = { authed: true, authRequired: false };
-    else if (p === '/api/sessions' && method === 'GET') body = { sessions: [], executor: 'host' };
-    else if (p === '/api/settings') body = {
+  const images = { enabled: false, baseUrl: '', model: '', size: '', keySet: false, editEnabled: false, editBaseUrl: '', editModel: '', editMultiple: false, editMaxSize: '', editKeySet: false, timeoutSeconds: 300, sdExtras: false, ready: false, editReady: false };
+  await mockPortal(page, async ({ path: p, method, url, json }) => {
+    if (p === '/api/settings') return {
       settings: { provider: 'p', model: 'm', thinkingLevel: 'medium' }, stored: {}, defaults: { provider: 'p', model: 'm', thinkingLevel: 'medium' },
       piSettingsPath: '/a/settings.json', compaction: { keepRecentTokens: 20000 }, compactionDefaults: { keepRecentTokens: 20000 }, contextDefault: null, executor: 'host', workspaceRoot: '/w',
     };
-    else if (p === '/api/models') body = { models: [{ provider: 'p', id: 'm', name: 'M', contextWindow: 65536 }, { provider: 'llama-swap', id: 'qwen3.8', name: 'Qwen 3.8' }], providers: { p: 'p' } };
-    else if (p === '/api/extensions') body = { settingsPath: '/a/settings.json', extensions: [] };
-    else if (p === '/api/browser') body = { running: false, sessions: [], routines: [], install: { available: false, mode: 'docker', container: 'absent', pulling: { active: false } }, config: {} };
-    else if (p === '/api/voice') body = { enabled: false };
-    else if (p === '/api/workspaces') body = { root: '/w', workspaces: [] };
-    else if (p === '/api/projects') body = { root: '/w', home: '/h', projects: [] };
-    else if (p === '/api/features/subagent' && method === 'GET') body = { subagent: state.subagent };
-    else if (p === '/api/features/flags') body = { subagent: { enabled: state.subagent.enabled }, understory: { enabled: state.understory.enabled }, images: { enabled: images.enabled && images.baseUrl !== '' } };
-    else if (p === '/api/features/images' && method === 'GET') body = { images };
-    else if (p === '/api/features/images' && method === 'PUT') {
-      const patch = route.request().postDataJSON();
+    if (p === '/api/models') return { models: [{ provider: 'p', id: 'm', name: 'M', contextWindow: 65536 }, { provider: 'llama-swap', id: 'model-b', name: 'Model B' }], providers: { p: 'p' } };
+    if (p === '/api/features/subagent' && method === 'GET') return { subagent: state.subagent };
+    if (p === '/api/features/flags') return { subagent: { enabled: state.subagent.enabled }, understory: { enabled: state.understory.enabled }, images: { enabled: images.enabled && images.baseUrl !== '' } };
+    if (p === '/api/features/images' && method === 'GET') return { images };
+    if (p === '/api/features/images' && method === 'PUT') {
+      const patch = json();
       sent.push({ path: p, body: patch });
       // The shape of the edit tool counts as a change only while there is an edit tool.
       const changed = (patch.enabled !== undefined && patch.enabled !== images.enabled) || (patch.editEnabled !== undefined && patch.editEnabled !== images.editEnabled)
@@ -48,57 +38,60 @@ async function portal(page: Page, { reachable = true, available = true, docker =
       if (patch.timeoutSeconds === null) images.timeoutSeconds = 300;
       if (apiKey !== undefined) images.keySet = apiKey !== '';
       if (editApiKey !== undefined) images.editKeySet = editApiKey !== '';
+      images.ready = images.enabled && images.baseUrl !== '';
       images.editReady = images.editEnabled && (images.editBaseUrl || images.baseUrl) !== '';
-      body = { images, changed, reloaded: 1, waiting: 1 };
+      return { images, changed, reloaded: 1, waiting: 1 };
     }
-    else if (p === '/api/features') body = { ...state, images };
-    else if (p === '/api/features/subagent' && method === 'PUT') {
-      const patch = route.request().postDataJSON();
+    if (p === '/api/features') return { ...state, images };
+    if (p === '/api/features/subagent' && method === 'PUT') {
+      const patch = json();
       sent.push({ path: p, body: patch });
       if (patch.mode) state.subagent.mode = patch.mode;
       if (patch.maxParallel) state.subagent.maxParallel = patch.maxParallel;
       if (patch.model) state.subagent.model = patch.model;
       if (patch.enabled !== undefined) Object.assign(state.subagent, { enabled: patch.enabled, installed: patch.enabled, source: patch.enabled ? '/app/extensions/subagent' : null });
-      body = { subagent: state.subagent, reloaded: 1, waiting: 1 };
-    } else if (p === '/api/features/understory/config' && method === 'PUT') {
-      const patch = route.request().postDataJSON();
+      return { subagent: state.subagent, reloaded: 1, waiting: 1 };
+    }
+    if (p === '/api/features/understory/config' && method === 'PUT') {
+      const patch = json();
       sent.push({ path: p, body: patch });
       const { apiKey, ...llm } = patch.llm;
       state.understory.managed.config = { llm: llm.source === 'custom' ? { ...llm, hasKey: Boolean(apiKey) || state.understory.managed.config.llm?.hasKey } : llm, dreamInterval: patch.dreamInterval, dreamAt: patch.dreamAt };
       state.understory.managed.nextDream = patch.dreamAt ? '2026-09-29T01:00:00.000Z' : null;
-      body = { understory: state.understory };
-    } else if (p === '/api/features/understory/install' && method === 'POST') {
+      return { understory: state.understory };
+    }
+    if (p === '/api/features/understory/install' && method === 'POST') {
       sent.push({ path: p, body: null });
       Object.assign(state.understory.managed, { container: 'running', image: true });
       Object.assign(state.understory, { enabled: true, adapterInstalled: true, tokenSet: true, url: state.understory.managed.url });
-      body = { understory: state.understory, reloaded: 1, waiting: 0 };
-    } else if (p === '/api/features/understory/install' && method === 'DELETE') {
+      return { understory: state.understory, reloaded: 1, waiting: 0 };
+    }
+    if (p === '/api/features/understory/install' && method === 'DELETE') {
       sent.push({ path: `${p}${url.search}`, body: null });
       Object.assign(state.understory.managed, { container: 'absent' });
       Object.assign(state.understory, { enabled: false });
-      body = { understory: state.understory, reloaded: 1, waiting: 0 };
-    } else if (p === '/api/features/understory/dream' && method === 'POST' && dreamFails) {
-      return route.fulfill({ status: 502, json: { error: 'fetch failed', run: { ok: false, said: 'fetch failed' }, understory: state.understory } });
-    } else if (p === '/api/features/understory/dream' && method === 'POST') {
+      return { understory: state.understory, reloaded: 1, waiting: 0 };
+    }
+    if (p === '/api/features/understory/dream' && method === 'POST' && dreamFails) {
+      return reply(502, { error: 'fetch failed', run: { ok: false, said: 'fetch failed' }, understory: state.understory });
+    }
+    if (p === '/api/features/understory/dream' && method === 'POST') {
       sent.push({ path: p, body: null });
       state.understory.managed.lastDream = { at: '2026-09-28T12:00:00.000Z', ok: true, ran: true, said: '2 files changed — merged two notes' };
-      body = { understory: state.understory };
-    } else if (p === '/api/features/understory/stop' && method === 'POST') {
+      return { understory: state.understory };
+    }
+    if (p === '/api/features/understory/stop' && method === 'POST') {
       sent.push({ path: p, body: null });
       state.understory.managed.container = 'stopped';
-      body = { understory: state.understory };
-    } else if (p === '/api/features/understory' && method === 'PUT') {
-      const patch = route.request().postDataJSON();
+      return { understory: state.understory };
+    }
+    if (p === '/api/features/understory' && method === 'PUT') {
+      const patch = json();
       sent.push({ path: p, body: patch });
       Object.assign(state.understory, { enabled: patch.enabled, adapterInstalled: state.understory.adapterInstalled || patch.enabled, ...(patch.url ? { url: patch.url } : {}) });
-      body = { understory: state.understory, reloaded: 0, waiting: 0 };
+      return { understory: state.understory, reloaded: 0, waiting: 0 };
     }
-    await route.fulfill({ json: body });
-  });
-  await page.addInitScript(() => {
-    localStorage.setItem('pithagoras.setup', 'done');
-    (window as any).EventSource = class { onmessage: any; onopen: any; onerror: any; addEventListener() {} close() {} };
-  });
+  }, { settings: true });
   return { sent };
 }
 
@@ -230,7 +223,7 @@ test('the portal runs Understory: a provider and model set up here, how often it
 });
 
 test("the chat's model for the memory, unless the portal serves its own TLS", async ({ page }) => {
-  const { sent } = await portal(page, { docker: true, llm: { source: 'provider', provider: 'llama-swap', model: 'Ornith' } });
+  const { sent } = await portal(page, { docker: true, llm: { source: 'provider', provider: 'llama-swap', model: 'model-a' } });
   await page.goto('/settings/add-ons');
   await addons(page).getByRole('tab', { name: 'Memory' }).click();
   const here = addons(page).getByRole('region', { name: 'Understory run here' });
@@ -241,7 +234,7 @@ test("the chat's model for the memory, unless the portal serves its own TLS", as
 });
 
 test("over the portal's own TLS the memory cannot use the chat's model", async ({ page }) => {
-  await portal(page, { docker: true, llm: { source: 'provider', provider: 'llama-swap', model: 'Ornith' }, autoPossible: false });
+  await portal(page, { docker: true, llm: { source: 'provider', provider: 'llama-swap', model: 'model-a' }, autoPossible: false });
   await page.goto('/settings/add-ons');
   await addons(page).getByRole('tab', { name: 'Memory' }).click();
   await expect(addons(page).getByRole('radio', { name: "The chat's model" })).toBeDisabled();
@@ -254,9 +247,9 @@ test('subagents run on the chat\'s model unless one is named', async ({ page }) 
   const model = addons(page).getByRole('combobox', { name: 'Subagent model' });
   await expect(model).toContainText('Same as the chat');
   await model.click();
-  await page.getByRole('option', { name: /Qwen 3\.8/ }).click();
-  await expect(model).toContainText('Qwen 3.8');
-  expect(sent.at(-1)!.body).toEqual({ model: 'llama-swap/qwen3.8' });
+  await page.getByRole('option', { name: /Model B/ }).click();
+  await expect(model).toContainText('Model B');
+  expect(sent.at(-1)!.body).toEqual({ model: 'llama-swap/model-b' });
 });
 
 test("a model at an address of its own keeps its saved key unless one is typed", async ({ page }) => {
@@ -275,7 +268,7 @@ test("a model at an address of its own keeps its saved key unless one is typed",
 });
 
 test('forgetting the memory asks first', async ({ page }) => {
-  const { sent } = await portal(page, { docker: true, llm: { source: 'provider', provider: 'llama-swap', model: 'Ornith' } });
+  const { sent } = await portal(page, { docker: true, llm: { source: 'provider', provider: 'llama-swap', model: 'model-a' } });
   await page.goto('/settings/add-ons');
   await addons(page).getByRole('tab', { name: 'Memory' }).click();
   const here = addons(page).getByRole('region', { name: 'Understory run here' });
@@ -329,16 +322,62 @@ test("the Subagents tab opens whatever Docker's state: it asks nothing of it", a
   await expect(addons(page).getByRole('switch', { name: 'Subagent tool' })).toBeVisible();
 });
 
+test('Escape over the image endpoint that was typed in asks first, and over one that was saved does not', async ({ page }) => {
+  const { sent } = await portal(page);
+  const ask = page.getByRole('alertdialog', { name: 'Discard your changes?' });
+  await page.goto('/settings/images');
+  await expect(addons(page).getByLabel('API address')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(addons(page)).toBeHidden();
+
+  await page.goto('/settings/images');
+  const address = addons(page).getByLabel('API address');
+  await address.fill('https://images.example.com/v1');
+  await page.keyboard.press('Escape');
+  await expect(ask).toBeVisible();
+  await ask.getByRole('button', { name: 'Cancel' }).click();
+  await expect(address).toHaveValue('https://images.example.com/v1');
+  await addons(page).getByLabel('Model', { exact: true }).fill('image-model');
+  await addons(page).getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(addons(page).getByRole('button', { name: 'Save', exact: true })).toBeHidden();
+  expect(sent).toHaveLength(1);
+  await page.keyboard.press('Escape');
+  await expect(addons(page)).toBeHidden();
+});
+
+test('Escape over the memory settings that were changed asks first, and over ones that were saved does not', async ({ page }) => {
+  await portal(page, { docker: true });
+  const ask = page.getByRole('alertdialog', { name: 'Discard your changes?' });
+  await page.goto('/settings/add-ons');
+  await addons(page).getByRole('tab', { name: 'Memory' }).click();
+  const here = addons(page).getByRole('region', { name: 'Understory run here' });
+  await expect(here.getByRole('radio', { name: 'Never' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(addons(page)).toBeHidden();
+
+  await page.goto('/settings/add-ons');
+  await addons(page).getByRole('tab', { name: 'Memory' }).click();
+  await here.getByRole('radio', { name: 'On an interval' }).click();
+  await page.keyboard.press('Escape');
+  await expect(ask).toBeVisible();
+  await ask.getByRole('button', { name: 'Cancel' }).click();
+  await expect(here.getByRole('radio', { name: 'On an interval' })).toBeChecked();
+  await here.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(here.getByRole('button', { name: 'Save', exact: true })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(addons(page)).toBeHidden();
+});
+
 test('image generation needs an endpoint before it can be switched on, and the key is sent once and never shown again', async ({ page }) => {
   const { sent } = await portal(page);
   await page.goto('/settings/images');
   const panel = addons(page);
-  const tool = panel.getByRole('switch', { name: 'Image generation tool' });
+  const tool = panel.getByRole('switch', { name: 'Image generation', exact: true });
   await expect(tool).toHaveAttribute('aria-checked', 'false');
   await expect(tool).toBeDisabled();
   // Both switches say it: generation's is the first.
   await expect(panel.getByText('Save the address of an image endpoint first.').first()).toBeVisible();
-  await expect(panel.getByText('Off: the agent has no image tool.')).toBeVisible();
+  await expect(panel.getByText('Off: no pictures are made, on the Images page or by the agent.')).toBeVisible();
 
   await panel.getByLabel('API address').fill('https://images.example.com/v1');
   await panel.getByLabel('API key').fill('sk-test-123');
@@ -355,7 +394,7 @@ test('image generation needs an endpoint before it can be switched on, and the k
   await expect(tool).toBeEnabled();
   await tool.click();
   await expect(tool).toHaveAttribute('aria-checked', 'true');
-  await expect(panel.getByText('On: the agent has a generate_image tool.')).toBeVisible();
+  await expect(panel.getByText('On: pictures are made on the Images page, and the agent can have a generate_image tool.')).toBeVisible();
   await expect(panel.getByText(/one busy chat picks it up/)).toBeVisible();
   expect(sent.at(-1)!.body).toEqual({ enabled: true });
 
@@ -381,9 +420,9 @@ test('the Images page is in the sidebar while image generation is on, and the sw
   await expect(panel.getByRole('button', { name: 'Save', exact: true })).toBeHidden();
   // An address is not enough: the tool is still off.
   await expect(entry).toHaveCount(0);
-  await panel.getByRole('switch', { name: 'Image generation tool' }).click();
+  await panel.getByRole('switch', { name: 'Image generation', exact: true }).click();
   await expect(entry).toHaveCount(1);
-  await panel.getByRole('switch', { name: 'Image generation tool' }).click();
+  await panel.getByRole('switch', { name: 'Image generation', exact: true }).click();
   await expect(entry).toHaveCount(0);
 });
 
@@ -430,10 +469,10 @@ test('image editing has a switch and an endpoint of its own: it needs an address
   const { sent } = await portal(page);
   await page.goto('/settings/images');
   const panel = addons(page);
-  const editing = panel.getByRole('switch', { name: 'Image editing tool' });
+  const editing = panel.getByRole('switch', { name: 'Image editing', exact: true });
   await expect(editing).toHaveAttribute('aria-checked', 'false');
   await expect(editing).toBeDisabled();
-  await expect(panel.getByText('Off: the agent cannot change a picture.')).toBeVisible();
+  await expect(panel.getByText('Off: no pictures are changed, on the Images page or by the agent.')).toBeVisible();
 
   // Generation's address is enough, and its key is the one used: the form says so.
   await panel.getByLabel('API address').fill('https://images.example.com/v1');
@@ -445,11 +484,11 @@ test('image editing has a switch and an endpoint of its own: it needs an address
   await expect(editing).toBeEnabled();
   await editing.click();
   await expect(editing).toHaveAttribute('aria-checked', 'true');
-  await expect(panel.getByText('On: the agent has an edit_image tool.')).toBeVisible();
+  await expect(panel.getByText('On: pictures are changed on the Images page, and the agent can have an edit_image tool.')).toBeVisible();
   await expect(panel.getByText(/one busy chat picks it up/)).toBeVisible();
   expect(sent.at(-1)!.body).toEqual({ editEnabled: true });
   // Generation is its own switch: still off.
-  await expect(panel.getByRole('switch', { name: 'Image generation tool' })).toHaveAttribute('aria-checked', 'false');
+  await expect(panel.getByRole('switch', { name: 'Image generation', exact: true })).toHaveAttribute('aria-checked', 'false');
 
   // Its own address, model and key: another server is not given the one above, and the switch waits for the save.
   await panel.getByLabel('Editing address').fill('https://edit.example.net/v1');
@@ -524,14 +563,14 @@ test('several pictures per edit is a switch of its own that waits for the editin
   const panel = addons(page);
   const several = panel.getByRole('switch', { name: 'Several pictures per edit' });
   await expect(several).toHaveAttribute('aria-checked', 'false');
-  await expect(panel.getByText('Off: edit_image takes one picture.')).toBeVisible();
+  await expect(panel.getByText('Off: an edit takes one picture.')).toBeVisible();
   await expect(panel.getByText(/Switch on several pictures only if the editing endpoint takes more than one/)).toBeVisible();
 
   await panel.getByLabel('API address').fill('https://images.example.com/v1');
   await panel.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(panel.getByRole('button', { name: 'Save', exact: true })).toBeHidden();
-  await panel.getByRole('switch', { name: 'Image editing tool' }).click();
-  await expect(panel.getByRole('switch', { name: 'Image editing tool' })).toHaveAttribute('aria-checked', 'true');
+  await panel.getByRole('switch', { name: 'Image editing', exact: true }).click();
+  await expect(panel.getByRole('switch', { name: 'Image editing', exact: true })).toHaveAttribute('aria-checked', 'true');
 
   // Typing in the editing form waits for its save, as the switch above it does.
   await panel.getByLabel('Editing model').fill('image-edit-model');
@@ -542,7 +581,7 @@ test('several pictures per edit is a switch of its own that waits for the editin
 
   await several.click();
   await expect(several).toHaveAttribute('aria-checked', 'true');
-  await expect(panel.getByText('On: edit_image takes a list of pictures.')).toBeVisible();
+  await expect(panel.getByText('On: an edit takes up to eight pictures, on the Images page and for edit_image.')).toBeVisible();
   // The tool has another shape from now on, so the chats are reloaded like for a tool that came.
   await expect(panel.getByText(/one busy chat picks it up/)).toBeVisible();
   expect(sent.at(-1)!.body).toEqual({ editMultiple: true });
@@ -551,14 +590,50 @@ test('several pictures per edit is a switch of its own that waits for the editin
   expect(sent.at(-1)!.body).toEqual({ editMultiple: false });
 });
 
+test('Stable Diffusion extra settings is a switch of its own, off by default, that says plainly what it does and for which servers', async ({ page }) => {
+  const { sent } = await portal(page);
+  await page.goto('/settings/images');
+  const panel = addons(page);
+  const sd = panel.getByRole('switch', { name: 'Stable Diffusion extra settings' });
+  await expect(sd).toHaveAttribute('aria-checked', 'false');
+  await expect(sd).toBeEnabled();
+  await expect(panel.getByText('Off: the Images page shows and sends only the settings of the OpenAI image format.')).toBeVisible();
+  // What it does, and that only one kind of server understands it: any other would read the block as words of the description.
+  await expect(panel.getByText(/Switch this on only if the image endpoint, for generating and for editing, is a stable-diffusion\.cpp server/)).toBeVisible();
+  await expect(panel.getByText(/any other endpoint would take the block as part of the description/)).toBeVisible();
+  await expect(panel.getByText(/the agent's tools do not use these settings/)).toBeVisible();
+
+  // It is a setting of the endpoint, not of a tool: no address is needed to say it, and nothing reloads.
+  await sd.click();
+  await expect(sd).toHaveAttribute('aria-checked', 'true');
+  await expect(panel.getByText('On: the Images page shows settings that only stable-diffusion.cpp servers understand, under Advanced, and sends them in the description.')).toBeVisible();
+  expect(sent.at(-1)!.body).toEqual({ sdExtras: true });
+  await expect(panel.getByText(/one busy chat picks it up/)).toHaveCount(0);
+  await sd.click();
+  await expect(sd).toHaveAttribute('aria-checked', 'false');
+  expect(sent.at(-1)!.body).toEqual({ sdExtras: false });
+
+  // An address typed and not saved: the switch waits for the save, as the others of the endpoint do, since saving the address of another server takes it off again.
+  await panel.getByLabel('API address').fill('http://sd-box.example:1234/v1');
+  await expect(sd).toBeDisabled();
+  await panel.getByRole('button', { name: 'Discard' }).click();
+  await expect(sd).toBeEnabled();
+  await panel.getByLabel('Editing model').fill('edit-model');
+  await expect(sd).toBeDisabled();
+  await panel.getByRole('button', { name: 'Discard' }).click();
+  await expect(sd).toBeEnabled();
+});
+
 test('the Images page holds the image settings and no switch for the tools themselves', async ({ page }) => {
   await portal(page);
   await page.goto('/settings/images');
   const here = addons(page);
-  await expect(here.getByRole('switch', { name: 'Image generation tool' })).toBeVisible();
-  await expect(here.getByRole('switch', { name: 'Image editing tool' })).toBeVisible();
+  await expect(here.getByRole('switch', { name: 'Image generation', exact: true })).toBeVisible();
+  await expect(here.getByRole('switch', { name: 'Image editing', exact: true })).toBeVisible();
   await expect(here.getByRole('switch', { name: 'Several pictures per edit' })).toBeVisible();
-  // The tools are switched in the tool lists, in their one group.
+  // The switches are the feature's, and say so: which chat's agent gets a tool is for the tool lists, in their one group.
+  await expect(here.getByText(/whether a chat's agent gets the generate_image tool is set in the tool lists \(Settings → Agent → Tools/)).toBeVisible();
+  await expect(here.getByText(/whether a chat's agent gets the edit_image tool is set in the tool lists/)).toBeVisible();
   await expect(here.getByText('Picture tools', { exact: true })).toHaveCount(0);
   for (const name of ['show_image', 'generate_image', 'edit_image']) await expect(here.getByRole('switch', { name: `${name} in new chats` })).toHaveCount(0);
   // Settings → Add-ons has no Images tab.
@@ -570,7 +645,7 @@ test('the Images section fits a phone', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 800 });
   await portal(page);
   await page.goto('/settings/images');
-  await expect(addons(page).getByRole('switch', { name: 'Image editing tool' })).toBeVisible();
+  await expect(addons(page).getByRole('switch', { name: 'Image editing', exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   expect(await addons(page).evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
 });

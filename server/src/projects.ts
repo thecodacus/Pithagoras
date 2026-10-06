@@ -3,7 +3,6 @@ import {
   constants,
   existsSync,
   fstatSync,
-  ftruncateSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -12,9 +11,10 @@ import {
   realpathSync,
   rmSync,
   statSync,
-  writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { writeFileAtomic } from "./atomic-write.js";
+import { removeFolderLater } from "./folder-removal.js";
 import { isValidSlug, slugify } from "./slug.js";
 
 /**
@@ -43,7 +43,7 @@ const MAX_READ_BYTES = MAX_INSTRUCTIONS * 4;
 /** A walk that has counted this many entries stops: the number is a warning, not an inventory. */
 const COUNT_LIMIT = 20_000;
 
-export type ProjectErrorCode = "invalid" | "exists" | "missing";
+export type ProjectErrorCode = "invalid" | "exists" | "missing" | "conflict";
 
 export class ProjectError extends Error {
   constructor(
@@ -170,17 +170,19 @@ function openInstructions(file: string, flags: number): number | undefined {
   return fd;
 }
 
-export function readInstructions(root: string, name: string): string {
+/** The instructions and when the file last changed, which a save sends back as `expected`. "" and 0 where there is no file. */
+export function readInstructions(root: string, name: string): { text: string; mtime: number } {
   const dir = resolveProject(root, name);
   const fd = openInstructions(path.join(dir, INSTRUCTIONS_FILE), constants.O_RDONLY);
-  if (fd === undefined) return "";
+  if (fd === undefined) return { text: "", mtime: 0 };
   try {
     // Writes are capped, but the agent can leave a file of any size here, and
     // reading one into a JSON response would be the server's problem.
-    if (fstatSync(fd).size > MAX_READ_BYTES) {
+    const st = fstatSync(fd);
+    if (st.size > MAX_READ_BYTES) {
       throw new ProjectError("invalid", `${INSTRUCTIONS_FILE} is too large to edit here; edit it in the folder`);
     }
-    return readFileSync(fd, "utf8");
+    return { text: readFileSync(fd, "utf8"), mtime: st.mtimeMs };
   } finally {
     closeSync(fd);
   }
@@ -193,28 +195,41 @@ function checkInstructions(text: string): void {
   }
 }
 
-/** Saves the project's instructions; blank removes the file, so an empty project has none. */
-export function writeInstructions(root: string, name: string, text: string): void {
+/**
+ * Saves the project's instructions; blank removes the file, so an empty project has none.
+ *
+ * `expected` is the modification time the page read the file at, 0 for no file.
+ * The agent works in this folder and writes AGENTS.md too, so a file that has
+ * changed since is not overwritten with the page's older copy: the save is
+ * refused as a "conflict", and the person chooses what to keep.
+ */
+export function writeInstructions(root: string, name: string, text: string, expected?: number): void {
   const dir = resolveProject(root, name);
   checkInstructions(text);
   const file = path.join(dir, INSTRUCTIONS_FILE);
+  // Looked at before anything is written, and not created: what is there is judged as it is.
+  const fd = text.trim() ? openInstructions(file, constants.O_RDONLY) : undefined;
+  let mtime = 0;
+  try {
+    if (fd !== undefined) {
+      const st = fstatSync(fd);
+      if (st.nlink > 1) throw new ProjectError("invalid", `${INSTRUCTIONS_FILE} is shared with another file, so it is left alone`);
+      mtime = st.mtimeMs;
+    } else {
+      mtime = lstatSync(file, { throwIfNoEntry: false })?.mtimeMs ?? 0;
+    }
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+  if (expected !== undefined && Math.abs(mtime - expected) > 1) {
+    throw new ProjectError("conflict", "The file changed after you opened it");
+  }
   if (!text.trim()) {
     rmSync(file, { force: true });
     return;
   }
-  // Not created with O_TRUNC: the file is looked at before anything is cut off.
-  const fd = openInstructions(file, constants.O_WRONLY | constants.O_CREAT);
-  if (fd === undefined) throw new ProjectError("missing", `${INSTRUCTIONS_FILE} could not be created`);
-  try {
-    if (fstatSync(fd).nlink > 1) {
-      throw new ProjectError("invalid", `${INSTRUCTIONS_FILE} is shared with another file, so it is left alone`);
-    }
-    ftruncateSync(fd, 0);
-    // trimEnd, not a regex: /\s+$/ backtracks quadratically on a long run of blanks.
-    writeFileSync(fd, text.trimEnd() + "\n");
-  } finally {
-    closeSync(fd);
-  }
+  // trimEnd, not a regex: /\s+$/ backtracks quadratically on a long run of blanks.
+  writeFileAtomic(file, text.trimEnd() + "\n");
 }
 
 /** What is in a project, for the question "are you sure?". */
@@ -249,9 +264,9 @@ export function describeProject(root: string, name: string): { files: number; by
   return { files, bytes, complete: true };
 }
 
-/** Removes the folder and everything in it. */
+/** Removes the folder and everything in it: out of the way at once, gone shortly after (see removeFolderLater). */
 export function deleteProjectFolder(root: string, name: string): void {
-  rmSync(resolveProject(root, name), { recursive: true, force: true });
+  removeFolderLater(resolveProject(root, name));
 }
 
 /**

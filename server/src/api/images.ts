@@ -12,8 +12,9 @@ import {
   type PictureOrigin,
 } from "../image-gallery.js";
 import { JobRefusal, MAX_RUNNING, listJobs, startEdit, startGenerations, stopJob, type EditJob, type GenerateJob } from "../image-jobs.js";
-import { MAX_PROMPT, SIZE, parseExtra } from "../image-generation.js";
-import { pictureExt } from "../prompt-images.js";
+import { MAX_PROMPT } from "../image-generation.js";
+import { nativeConflict, parsePictureSettings } from "../image-settings.js";
+import { decodeBase64, pictureExt } from "../prompt-images.js";
 import { MAX_PICTURE_BYTES } from "../workspace-files.js";
 import { fail, sendPicture } from "./files.js";
 
@@ -48,52 +49,55 @@ function parsePrompt(value: unknown): string | { error: string } {
   return prompt;
 }
 
+/** How many pictures a request asks for: one each, up to as many as run at once. */
+function parseCount(value: unknown): number | string {
+  if (value === undefined) return 1;
+  if (!Number.isInteger(value) || (value as number) < 1 || (value as number) > MAX_RUNNING) return `The number of pictures is a whole number from 1 to ${MAX_RUNNING}`;
+  return value as number;
+}
+
+/** What a request that still has the free extra fields of an older page is told: none is sent, so that it is not thought to be. */
+const NO_EXTRA = "Free extra fields are not sent any more: the settings of a picture are named fields (outputFormat, seed, sampleSteps, negativePrompt, …)";
+
 /** A request to make pictures, checked; the reason when it may not be made. */
 export function parseGenerate(body: unknown): GenerateJob | string {
   const b = object(body);
+  if (b.extra !== undefined) return NO_EXTRA;
   const prompt = parsePrompt(b.prompt);
   if (typeof prompt !== "string") return prompt.error;
-  const job: GenerateJob = { prompt, count: 1 };
-  if (b.size !== undefined && b.size !== "") {
-    if (typeof b.size !== "string" || !SIZE.test(b.size.trim())) return 'The size looks like "1024x1024"';
-    job.size = b.size.trim();
-  }
-  if (b.model !== undefined && b.model !== "") {
-    if (typeof b.model !== "string" || b.model.length > 200) return "The model must be text of at most 200 characters";
-    job.model = b.model.trim();
-  }
-  const extra = parseExtra(b.extra);
-  if (typeof extra === "string") return extra;
-  if (Object.keys(extra).length) job.extra = extra;
-  if (b.count !== undefined) {
-    if (!Number.isInteger(b.count) || (b.count as number) < 1 || (b.count as number) > MAX_RUNNING) return `The number of pictures is a whole number from 1 to ${MAX_RUNNING}`;
-    job.count = b.count as number;
-  }
-  return job;
+  const count = parseCount(b.count);
+  if (typeof count === "string") return count;
+  const settings = parsePictureSettings(b, false, count);
+  if (typeof settings === "string") return settings;
+  return nativeConflict(prompt, settings) ?? { ...settings, prompt, count };
 }
 
-const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
-
-/** A mask as the page sends it, base64 or a data: URL, decoded; the size is worked out before anything large is. */
+/** A mask as the page sends it, base64 or a data: URL, decoded. */
 function parseMask(value: unknown): Buffer | string {
   if (typeof value !== "string") return "The mask must be a picture, as base64";
-  const comma = value.startsWith("data:") ? value.indexOf(",") : -1;
-  const data = (comma >= 0 ? value.slice(comma + 1) : value).replace(/\s+/g, "");
-  if (!data || !BASE64.test(data)) return "The mask is not base64";
-  if (Math.floor((data.length * 3) / 4) > MAX_PICTURE_BYTES + 3) return `The mask is over ${MAX_PICTURE_BYTES / 1024 / 1024} MB`;
-  return Buffer.from(data, "base64");
+  const decoded = decodeBase64(value, MAX_PICTURE_BYTES);
+  if ("error" in decoded) return decoded.error === "invalid" ? "The mask is not base64" : `The mask is over ${MAX_PICTURE_BYTES / 1024 / 1024} MB`;
+  return decoded.bytes;
 }
 
 /** A request to change pictures, checked; the reason when it may not be made. */
 export function parseEdit(body: unknown): EditJob | string {
   const b = object(body);
+  if (b.extra !== undefined) return NO_EXTRA;
   const prompt = parsePrompt(b.prompt);
   if (typeof prompt !== "string") return prompt.error;
   if (!Array.isArray(b.sources) || !b.sources.length) return "There is no picture to change";
   if (b.sources.length > MAX_EDIT_PICTURES) return `An edit takes at most ${MAX_EDIT_PICTURES} pictures, and ${b.sources.length} were given`;
   if (!b.sources.every((id) => typeof id === "string" && IDS.test(id))) return "The pictures are named by their ids in the gallery";
-  const job: EditJob = { prompt, sources: b.sources as string[] };
+  const count = parseCount(b.count);
+  if (typeof count === "string") return count;
+  const settings = parsePictureSettings(b, true, count);
+  if (typeof settings === "string") return settings;
+  const conflict = nativeConflict(prompt, settings);
+  if (conflict) return conflict;
+  const job: EditJob = { ...settings, prompt, sources: b.sources as string[], count };
   if (b.mask !== undefined && b.mask !== null) {
+    if (settings.fromNoise) return "A mask marks what to change in the picture that is built on, and there is none to start from";
     const mask = parseMask(b.mask);
     if (typeof mask === "string") return mask;
     job.mask = mask;
@@ -134,7 +138,7 @@ export function imagesRouter(): Router {
         if (typeof ids === "string") return res.status(400).json({ error: ids });
         return res.json({ pictures: picturesById(ids) });
       }
-      const { origin, kind, before, limit } = req.query;
+      const { origin, kind, before, limit, again } = req.query;
       if (origin !== undefined && !(typeof origin === "string" && ORIGINS.has(origin))) return res.status(400).json({ error: "origin is page, chat or folder" });
       if (kind !== undefined && !(typeof kind === "string" && KINDS.has(kind))) return res.status(400).json({ error: "kind is generated, edited, uploaded or unknown" });
       if (before !== undefined && !(typeof before === "string" && /^\d+:[0-9a-f]+$/.test(before))) return res.status(400).json({ error: "before is the next of the page before" });
@@ -145,6 +149,8 @@ export function imagesRouter(): Router {
           ...(origin ? { origin: origin as PictureOrigin } : {}),
           ...(kind ? { kind: kind as PictureKind } : {}),
           ...(typeof before === "string" ? { before } : {}),
+          // A page asking again for a list it has: see ListQuery.again.
+          ...(again === "1" ? { again: true } : {}),
           limit: asked,
         }),
       );
@@ -185,7 +191,7 @@ export function imagesRouter(): Router {
     const job = parseEdit(req.body);
     if (typeof job === "string") return res.status(400).json({ error: job });
     try {
-      res.status(202).json({ jobs: [startEdit(job)] });
+      res.status(202).json({ jobs: startEdit(job) });
     } catch (e) {
       refused(res, e);
     }

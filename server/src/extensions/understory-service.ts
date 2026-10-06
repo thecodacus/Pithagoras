@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { getSetting, putSetting } from "../db.js";
 import { tlsFiles } from "../http-security.js";
-import { readModelsJson, storedKey } from "../providers.js";
-import { dockerAvailable, imagePresent, pullImage, request } from "./docker.js";
+import { readModelsJson, resolveKey, storedKey } from "../providers.js";
+import { containerAction, dockerAvailable, ensureImage, imagePresent, request, type PullState } from "./docker.js";
 import { voiceNetworkMode as sharedNetworkMode } from "./voice-service.js";
 
 /**
@@ -88,11 +88,10 @@ export function config(): UnderstoryConfig {
 const put = putSetting;
 
 /**
- * Saved as given, except that a custom address sent without a key keeps the
- * one it had, while the address is the same: the page never holds it, so it
- * cannot send it back.
+ * A choice as it would be saved: as given, except that a custom address sent
+ * without a key keeps the one it had, for the same address only. The page never
+ * holds the key, so it cannot send it back.
  */
-/** A choice as it would be saved: a custom address sent without a key keeps the one it had, for the same address only. */
 export function withSavedKey(llm: LlmChoice): LlmChoice {
   const had = config().llm;
   // Only for the same address: a key is the one server's, and must not go to another.
@@ -144,14 +143,13 @@ export function portalLlmBase(): string | undefined {
 }
 
 /**
- * A key as pi keeps it may be the key, or the name of the variable holding
- * it. A command (`!…`) is pi's to run, not ours to hand a container.
+ * The key a provider is saved with, as pi reads it. A command (`!…`) is pi's
+ * to run, not ours to hand a container.
  */
-function resolveKey(key: string | undefined): string | undefined {
-  if (!key) return undefined;
-  if (key.startsWith("!")) throw new Error("That provider's key is a command pi runs; give Understory an address and key of its own instead");
-  if (/^[A-Z_][A-Z0-9_]*$/.test(key) && process.env[key]) return process.env[key];
-  return key;
+function providerKey(provider: string): string | undefined {
+  const key = storedKey(provider);
+  if (key?.startsWith("!")) throw new Error("That provider's key is a command pi runs; give Understory an address and key of its own instead");
+  return resolveKey(key);
 }
 
 /** What Understory is told about its model: the provider's address and key, looked up when the container is made. */
@@ -167,7 +165,7 @@ export function llmEnv(llm: LlmChoice): { baseUrl: string; apiKey: string; model
   return {
     baseUrl: raw.baseUrl,
     // A local server without one still needs something: Understory refuses to start with no key.
-    apiKey: resolveKey(storedKey(llm.provider)) || "none",
+    apiKey: providerKey(llm.provider) || "none",
     model: llm.model,
     format: raw.api === "anthropic-messages" ? "anthropic" : "openai",
   };
@@ -206,7 +204,7 @@ export function spec(cfg: UnderstoryConfig, auth: string, networkMode = "host") 
   };
 }
 
-let pulling: { active: boolean; line: string; error?: string } = { active: false, line: "" };
+let pulling: PullState = { active: false, line: "" };
 
 /** The container by that name: whether it is there, running, and the portal's own. */
 async function inspect(): Promise<{ exists: boolean; running: boolean; ours: boolean }> {
@@ -273,16 +271,7 @@ async function installNow(start = true): Promise<void> {
   if (!dockerAvailable()) throw new Error("The portal cannot reach Docker here, so it cannot run Understory");
   const cfg = config();
   const made = spec(cfg, token(), await sharedNetworkMode());
-  if (!(await imagePresent(IMAGE))) {
-    pulling = { active: true, line: "starting" };
-    try {
-      await pullImage(IMAGE, (line) => (pulling = { active: true, line }));
-      pulling = { active: false, line: "done" };
-    } catch (e) {
-      pulling = { active: false, line: "", error: (e as Error).message };
-      throw e;
-    }
-  }
+  await ensureImage(IMAGE, (state) => (pulling = state));
   await request("POST", "/volumes/create", { Name: VOLUME });
   if ((await onlyOurs()).exists) await removeNow();
   const created = await request<{ message?: string }>("POST", `/containers/create?name=${CONTAINER}`, made);
@@ -292,22 +281,18 @@ async function installNow(start = true): Promise<void> {
 
 async function startNow(): Promise<void> {
   await onlyOurs();
-  const res = await request<{ message?: string }>("POST", `/containers/${CONTAINER}/start`);
-  if (res.status >= 400 && res.status !== 304) throw new Error(res.body?.message || `Start failed (${res.status})`);
+  await containerAction(CONTAINER, "start");
 }
 
 async function stopNow(): Promise<void> {
   await onlyOurs();
-  const res = await request<{ message?: string }>("POST", `/containers/${CONTAINER}/stop?t=10`);
-  if (res.status >= 400 && res.status !== 304) throw new Error(res.body?.message || `Stop failed (${res.status})`);
+  await containerAction(CONTAINER, "stop");
 }
 
 /** Removes the container. The memory is in its volume, and stays. */
 async function removeNow(): Promise<void> {
   if (!(await onlyOurs()).exists) return;
-  await request("POST", `/containers/${CONTAINER}/stop?t=10`).catch(() => {});
-  const res = await request<{ message?: string }>("DELETE", `/containers/${CONTAINER}?force=true`);
-  if (res.status >= 400 && res.status !== 404) throw new Error(res.body?.message || `Remove failed (${res.status})`);
+  await containerAction(CONTAINER, "remove");
 }
 
 /** Forgets the memory as well. Separate on purpose, and not undoable. */
@@ -340,6 +325,9 @@ export function lastDream(): DreamRun | null {
   }
 }
 
+/** In every script the portal runs there, so one given up on can be found and ended. */
+const MARK = "pithagoras-portal-run";
+
 /**
  * Code run inside Understory's container, with its own library, settings and
  * bundle — Understory has no API that writes, and none that tidies up on
@@ -347,9 +335,6 @@ export function lastDream(): DreamRun | null {
  * goes. Its input is handed over base64'd in the environment; it prints what
  * it came to, as JSON, as its last line.
  */
-/** In every script the portal runs there, so one given up on can be found and ended. */
-const MARK = "pithagoras-portal-run";
-
 function script(body: string): string {
   return `/* ${MARK} */ (async () => {
   const m = await import("@understory/core");

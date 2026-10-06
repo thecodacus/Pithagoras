@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { LuBan, LuCircleCheck, LuGlobe, LuKeyRound, LuRefreshCw, LuShield, LuTrash2, LuUserX } from "react-icons/lu";
 import { confirmDialog } from "./ConfirmDialog";
 import { PageHeader, Stat } from "./PageHeader";
+import { ErrorBanner, LoadFailed, Segments } from "./SettingsUi";
 import { api, type AuditEntry } from "../api";
 import { pollWhileVisible } from "../poll";
 import { msg, t, tp } from "../i18n";
@@ -48,14 +49,27 @@ export function AuditPage() {
   return (
     <div className="h-full overflow-y-auto px-4 py-6">
       <div className="mx-auto w-full max-w-3xl">
-        {error && (
-          <div className="mb-4 rounded-xl border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
-            {error}
-          </div>
-        )}
+        {error && <ErrorBanner className="mb-4" onClose={() => setError(null)}>{error}</ErrorBanner>}
         <AuditPanel onError={setError} />
       </div>
     </div>
+  );
+}
+
+/** What was asked for, two lines of it and the whole with a click: a refused command is the one thing here worth reading to the end. */
+function Subject({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={() => setOpen((v) => !v)}
+      aria-expanded={open}
+      title={text}
+      // `block` only when open: the clamp is a display of its own, and the later of the two rules would win.
+      className={`mt-1 w-full break-all text-left font-mono text-[11px] text-fg-muted ${open ? "block whitespace-pre-wrap" : "line-clamp-2"}`}
+    >
+      {text}
+    </button>
   );
 }
 
@@ -63,6 +77,9 @@ function AuditPanel({ onError }: { onError: (e: string | null) => void }) {
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [filter, setFilter] = useState("all");
   const [loading, setLoading] = useState(true);
+  // Why the first read failed: an empty list and "0 refused" would say there is nothing to see, and the page tries again by itself only every ten seconds.
+  const [failed, setFailed] = useState<string | null>(null);
+  const had = useRef(false);
   const [clearing, setClearing] = useState(false);
   // Shown by the button, as MemoryPage's log does, so a poll that works does
   // not take it off the page banner before it is read.
@@ -79,11 +96,16 @@ function AuditPanel({ onError }: { onError: (e: string | null) => void }) {
       .audit(300)
       .then((r) => {
         if (since !== cleared.current) return;
+        had.current = true;
+        setFailed(null);
         setEntries(r.entries);
         onError(null);
       })
       .catch((e) => {
-        if (since === cleared.current) onError((e as Error).message);
+        if (since !== cleared.current) return;
+        // A refresh of what is shown goes to the banner; with nothing read yet the page says it itself.
+        if (had.current) onError((e as Error).message);
+        else setFailed((e as Error).message);
       })
       .finally(() => setLoading(false));
   };
@@ -143,6 +165,8 @@ function AuditPanel({ onError }: { onError: (e: string | null) => void }) {
     );
   }
 
+  if (failed && !had.current) return <LoadFailed error={failed} onRetry={load} />;
+
   const counts = {
     refused: entries.filter((e) => e.kind === "refused").length,
     allowed: entries.filter((e) => e.kind.startsWith("allowed")).length,
@@ -169,19 +193,7 @@ function AuditPanel({ onError }: { onError: (e: string | null) => void }) {
       </PageHeader>
 
       <div className="mb-3 flex flex-wrap items-center gap-1">
-        {FILTERS.map((f) => (
-          <button
-            key={f.id}
-            onClick={() => setFilter(f.id)}
-            className={`rounded-lg px-2.5 py-1 text-xs transition ${
-              filter === f.id
-                ? "bg-accent/12 text-accent ring-1 ring-inset ring-accent/25"
-                : "bg-fg/5 text-fg-muted hover:bg-fg/10"
-            }`}
-          >
-            {t(f.label)}
-          </button>
-        ))}
+        <Segments label={t("Which decisions to show")} value={filter} options={FILTERS} onChange={setFilter} />
         <span className="ml-auto text-xs text-fg-faint">{shown.filter((e) => e.kind !== "cleared").length}</span>
         <button
           onClick={clear}
@@ -191,11 +203,13 @@ function AuditPanel({ onError }: { onError: (e: string | null) => void }) {
           <LuTrash2 className="h-3 w-3" /> {t("Clear the log")}
         </button>
       </div>
-      {clearFailed && <p className="mb-3 text-xs text-danger">{clearFailed}</p>}
+      {clearFailed && <p role="alert" className="mb-3 text-xs text-danger">{clearFailed}</p>}
 
       {shown.length === 0 ? (
         <p className="rounded-xl border border-dashed border-line px-3 py-6 text-center text-xs text-fg-faint">
-          {t("Nothing recorded. The guard writes here when it refuses something, lets something through on a rule or an approval, or turns a stranger away.")}
+          {decisions.length > 0
+            ? t("Nothing matches this filter.")
+            : t("Nothing recorded. The guard writes here when it refuses something, lets something through on a rule or an approval, or turns a stranger away.")}
         </p>
       ) : (
         <ul className="stagger-in space-y-1">
@@ -215,12 +229,7 @@ function AuditPanel({ onError }: { onError: (e: string | null) => void }) {
                   )}
                   <span className="ml-auto shrink-0 text-[11px] text-fg-faint">{when(e.at)}</span>
                 </div>
-                {e.subject && (
-                  <p className="mt-1 truncate font-mono text-[11px] text-fg-muted">
-                    {e.tool ? `${e.tool}: ` : ""}
-                    {e.subject}
-                  </p>
-                )}
+                {e.subject && <Subject text={`${e.tool ? `${e.tool}: ` : ""}${e.subject}`} />}
                 {e.kind === "cleared" && Number.isFinite(Number(e.reason)) ? (
                   <p className="mt-0.5 text-[11px] text-fg-faint">
                     {tp(Number(e.reason), "One entry was deleted.", "{n} entries were deleted.")}

@@ -1,4 +1,5 @@
-import { test, expect, type Locator, type Page } from '@playwright/test';
+import { type Locator, type Page } from '@playwright/test';
+import { test, expect, mockPortal, DONE } from './portal-mock';
 
 /**
  * The picture viewer in the chat (web/src/components/ImageViewer.tsx) over the fixture's
@@ -521,7 +522,6 @@ test('the viewer is as wide as the window on a phone, with the controls inside i
     expect(b.x + b.width).toBeLessThanOrEqual(win.width);
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.screenshot({ path: '/tmp/pithagoras-image-viewer-phone.png' });
 });
 
 test('Open in a new tab and Download are there for the file itself, and are the only way a tab opens', async ({ page }) => {
@@ -568,27 +568,18 @@ async function openApp(page: Page, ids: string[], { collapsed = true } = {}) {
   const failures: string[] = [];
   page.on('pageerror', (e) => failures.push(e.message));
   page.on('console', (m) => m.type() === 'error' && !/Failed to load resource/.test(m.text()) && failures.push(m.text()));
-  await page.route('**/api/**', async (route) => {
-    const p = new globalThis.URL(route.request().url()).pathname;
-    let reply: unknown = {};
-    if (p === '/api/auth/status') reply = { authed: true, authRequired: false };
-    else if (p === '/api/sessions') reply = { sessions: chats, executor: 'host' };
-    else if (/^\/api\/sessions\/\w+$/.test(p)) reply = chats.find((c) => p.endsWith(`/${c.id}`)) ?? {};
-    else if (/^\/api\/sessions\/\w+\/picture$/.test(p)) return route.fulfill({ body: svg(1600, 1000, '#335'), contentType: 'image/svg+xml' });
-    else if (/^\/api\/sessions\/\w+\/(config|models)$/.test(p)) reply = { live: false, state: { model: { id: 'm', name: 'Model', provider: 'x' }, thinkingLevel: 'medium' }, stats: null, thinking: { levels: ['off', 'medium'] }, models: { models: [] }, named: { provider: null, model: null } };
-    else if (/^\/api\/sessions\/\w+\/files$/.test(p)) reply = { path: '', entries: [], truncated: false };
-    else if (p.endsWith('/canvases')) reply = [];
-    else if (p.endsWith('/background')) reply = { jobs: [], statuses: [] };
-    else if (p === '/api/projects') reply = { root: '/w', home: '/w', projects: [] };
-    else if (p === '/api/workspaces') reply = { root: '/w', workspaces: [] };
-    else if (p === '/api/models') reply = { models: [], providers: {} };
-    else if (p === '/api/features/flags') reply = { subagent: { enabled: false }, understory: { enabled: false } };
-    else if (p === '/api/settings') reply = { settings: {}, defaults: {}, stored: {}, executor: 'host', workspaceRoot: '/w', piSettingsPath: '/p/settings.json', compaction: { keepRecentTokens: 20000 }, contextDefault: null };
-    else if (p === '/api/extensions') reply = { extensions: [], settingsPath: '/p/settings.json' };
-    await route.fulfill({ json: reply });
-  });
+  await mockPortal(page, async ({ path: p, route }) => {
+    if (p === '/api/sessions') return { sessions: chats, executor: 'host' };
+    if (/^\/api\/sessions\/\w+$/.test(p)) return chats.find((c) => p.endsWith(`/${c.id}`)) ?? {};
+    if (/^\/api\/sessions\/\w+\/picture$/.test(p)) {
+      await route.fulfill({ body: svg(1600, 1000, '#335'), contentType: 'image/svg+xml' });
+      return DONE;
+    }
+    if (/^\/api\/sessions\/\w+\/(config|models)$/.test(p)) return { live: false, state: { model: { id: 'm', name: 'Model', provider: 'x' }, thinkingLevel: 'medium' }, stats: null, thinking: { levels: ['off', 'medium'] }, models: { models: [] }, named: { provider: null, model: null } };
+    if (/^\/api\/sessions\/\w+\/files$/.test(p)) return { path: '', entries: [], truncated: false };
+    if (p.endsWith('/canvases')) return [];
+  }, { streams: 'none', settings: true });
   await page.addInitScript(({ events, collapsed }) => {
-    localStorage.setItem('pithagoras.setup', 'done');
     if (collapsed) localStorage.setItem('sidebarCollapsed', 'true');
     (window as any).EventSource = class {
       closed = false; onmessage: any; onopen: any; listeners: Record<string, ((e: any) => void)[]> = {};

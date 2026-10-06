@@ -114,9 +114,3 @@ export function watchBrowserFrames(): void {
   timer.unref();
   void tick().catch(() => {});
 }
-
-export function stopWatchingBrowserFrames(): void {
-  if (timer) clearInterval(timer);
-  timer = undefined;
-  disconnect();
-}

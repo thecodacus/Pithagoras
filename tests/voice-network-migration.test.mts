@@ -1,32 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
-import {mkdtempSync,rmSync} from 'node:fs';
-import {tmpdir} from 'node:os';
 import path from 'node:path';
+import { scratch } from './helpers.mts';
+import { fakeDocker } from './fake-docker.mts';
 
 test('managed networking automatically migrates running containers, preserves stopped ones and rejoins recreated portals',async()=>{
- const dir=mkdtempSync(path.join(tmpdir(),'voice-net-'));
+ const dir=scratch('voice-net-');
  process.env.DOCKER_SOCKET=path.join(dir,'docker.sock');
  process.env.PORTAL_CONTAINER_NAME='portal-test';
  let portalId='portal-one';
  let container:any={Config:{Labels:{'pithagoras.addon':'voice'}},HostConfig:{NetworkMode:'bridge'},State:{Running:true}};
- const calls:{method:string;url:string;body:any}[]=[];
- const server=http.createServer(async(req,res)=>{
-  let raw='';for await(const c of req)raw+=c;
-  const body=raw?JSON.parse(raw):undefined;const url=req.url!;const method=req.method!;
-  calls.push({method,url,body});res.setHeader('Content-Type','application/json');
-  if(url==='/containers/portal-test/json')return res.end(JSON.stringify({Id:portalId,State:{Running:true}}));
-  if(url==='/containers/pithagoras-voice/json'){res.statusCode=container?200:404;return res.end(JSON.stringify(container));}
-  if(url.includes('/logs?'))return res.end(JSON.stringify('services ready'));
-  if(url.startsWith('/images/'))return res.end('{}');
-  if(url.includes('/stop?'))container.State.Running=false;
-  if(method==='DELETE')container=null;
-  if(url.startsWith('/containers/create'))container={Config:body,HostConfig:body.HostConfig,State:{Running:false}};
-  if(url.endsWith('/start'))container.State.Running=true;
-  res.end('{}');
+ const docker=await fakeDocker(process.env.DOCKER_SOCKET!,({method,url,path:p,body})=>{
+  if(url==='/containers/portal-test/json')return{json:{Id:portalId,State:{Running:true}}};
+  if(url==='/containers/pithagoras-voice/json')return{status:container?200:404,json:container};
+  if(url.includes('/logs?'))return{json:'services ready'};
+  if(p==='/volumes/create'||p.startsWith('/images/'))return{};
+  if(url.includes('/stop?')){container.State.Running=false;return{};}
+  if(method==='DELETE'){container=null;return{};}
+  if(url.startsWith('/containers/create')){container={Config:body,HostConfig:body.HostConfig,State:{Running:false}};return{};}
+  if(url.endsWith('/start')){container.State.Running=true;return{};}
  });
- await new Promise<void>(r=>server.listen(process.env.DOCKER_SOCKET,r));
+ const{calls}=docker;
  const oldFetch=globalThis.fetch;globalThis.fetch=async()=>new Response('{}');
  try {
   const voice=await import('../server/src/extensions/voice-service.ts');
@@ -37,7 +31,7 @@ test('managed networking automatically migrates running containers, preserves st
   assert.equal(container.HostConfig.PortBindings,undefined);
   assert.deepEqual(container.HostConfig.Binds,['pithagoras_voice-models:/voice']);
   assert.equal((await voice.status()).state,'running');
-  assert.ok(calls.some(c=>c.method==='DELETE'&&c.url==='/containers/pithagoras-voice'));
+  assert.ok(calls.some(c=>c.method==='DELETE'&&c.url==='/containers/pithagoras-voice?force=true'));
   assert.ok(!calls.some(c=>c.method==='DELETE'&&c.url.startsWith('/volumes')));
   // Updating the portal's identity must reattach the still-running add-on.
   portalId='portal-two';assert.equal((await voice.status()).state,'installing');
@@ -48,7 +42,5 @@ test('managed networking automatically migrates running containers, preserves st
   assert.ok(calls.slice(before).every(c=>c.method==='GET'));
  }finally{
   globalThis.fetch=oldFetch;
-  await new Promise<void>((resolve,reject)=>server.close(e=>e?reject(e):resolve()));
-  rmSync(dir,{recursive:true,force:true});
  }
 });

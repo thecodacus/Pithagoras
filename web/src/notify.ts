@@ -18,7 +18,7 @@ export function notifyState(): NotifyState {
 }
 
 /** Asks the browser for permission, which needs a click — this is called from one. */
-export async function enableNotifications(): Promise<NotifyState> {
+async function enableNotifications(): Promise<NotifyState> {
   if (notifyState() === "unsupported") return "unsupported";
   try {
     if (Notification.permission !== "granted") await Notification.requestPermission();
@@ -29,7 +29,7 @@ export async function enableNotifications(): Promise<NotifyState> {
   return notifyState();
 }
 
-export function disableNotifications(): void {
+function disableNotifications(): void {
   local.set(KEY, "off");
 }
 

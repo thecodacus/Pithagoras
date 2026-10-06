@@ -5,8 +5,9 @@ folder it works in. It is the normal unit of work in the portal.
 
 ## Where a session works
 
-**New** starts a chat in **Home**, the agent's own directory; a chat in a project works
-in that project's folder. See [Projects](/guide/projects) for both. The session is named after its
+**New** starts a chat in **Home**, the first agent's own directory; a chat in a
+project works in that project's folder, and a chat with another agent in that
+agent's home. See [Projects](/guide/projects) and [Agents](/guide/agents). The session is named after its
 first message, and you can rename it.
 
 Paths are validated server-side: a workspace must resolve inside the workspace
@@ -18,8 +19,17 @@ session never deletes its folder.
 Type and send. The request returns as soon as pi accepts the message — it does
 not wait for the work to finish. Close the tab if you like.
 
-While a run is in progress you can keep typing; further messages are queued.
-**Stop** aborts the current run.
+While a run is in progress you can keep typing. Words sent mid-run steer it: the
+agent takes them in after the step it is on, instead of when the whole run is
+over. Until then the message sits in the transcript marked *Waiting — goes in
+after the current step*. A message that did not get that far — the run was
+stopped, or the portal restarted, before the agent took it in — says so and has
+a button to send it again. **Stop** aborts the current run, and pressed while pi
+is still starting for a message, it keeps that message from being sent at all:
+the message comes back as not sent, rather than being answered seconds later. In
+[voice mode](/guide/voice#pictures-tool-cards-and-controls) what you say stops
+the task by default, and its settings have a switch to add it to the running task
+instead.
 
 ## The message box
 
@@ -39,6 +49,11 @@ paperclip, and they wait above the words as thumbnails — the × takes one back
 out. They go to the model with the message, up to eight of them, and a message
 can be a picture alone. The sent message shows them; click one to
 [look at it in the viewer](#looking-at-a-picture).
+
+The model sees them, but they are not files of the chat's folder, so the agent's
+[`edit_image`](/guide/features#editing-a-picture) cannot change them: put a picture
+in the folder with the Files panel for that, or change it on the
+[Images page](/guide/images#changing-a-picture).
 
 A photo straight off a phone is made smaller in the browser before it goes:
 2048 pixels on its longer side, as a JPEG. Models scale anything bigger down on
@@ -64,7 +79,7 @@ Two keys work from anywhere on the page:
 | Key | Does |
 | --- | --- |
 | `/` | Jump to the message box with the command list open. Not while you are typing somewhere else, where it is a character. It is the [command character](/guide/commands#the-command-character), so it is another key if you chose one |
-| `Esc` | In the message box, **stop the run**. Only when the box is empty — the moment the send button is a stop button — so it can never cost you words |
+| `Esc` | In the message box, **stop the run**, whatever is typed: the words stay in the box, so it costs you nothing. Not while an input method is composing a word, and not while the command list is open, where it closes the list |
 
 ## Looking at a picture
 
@@ -178,7 +193,9 @@ the moment it is asked for:
   being changed (the first, when it was given several), which is shown under the
   wait; a square when nothing says. It
   says "Making a picture" or "Editing a picture" and, after a few seconds, how
-  long it has taken. Image endpoints do not report how far they are, so the
+  long it has taken; over the picture of an edit, both words and seconds sit on
+  a plate of the theme's own colour, so that they read on a bright picture as
+  on a dark one. Image endpoints do not report how far they are, so the
   animation does not pretend to: a soft light drifts over the frame and a sheen
   passes, and that is all.
 - **When the call is over**, the wait is over too: the frame says "Loading the
@@ -235,10 +252,10 @@ A status that names one of the chat's slash commands runs it when clicked.
 
 ## Sidebar and the sessions page
 
-The sidebar opens with New, then the places — Sessions, Projects, Agent,
-Routines and [Audit](#audit), with Browser and Memory added while the
-[browser](/guide/browser) is installed and [Understory](/guide/features#memory-understory)
-holds the agent's memory — then **Pinned**, then **Recents**. The button at its
+The sidebar opens with New, then the places — Sessions, Projects, Agents,
+Routines and [Audit](#audit), with Browser, Memory and Images added while the
+[browser](/guide/browser) is installed, [Understory](/guide/features#memory-understory)
+holds the agent's memory and an [image endpoint](/guide/images) is set up — then **Pinned**, then **Recents**. The button at its
 top edge folds it to a rail of icons; under each chat's title it shows the folder it works in. Recents is capped at twelve; anything past that is reachable from
 the Sessions page, which lists everything with search over names and workspace
 paths.
@@ -253,8 +270,8 @@ it. The Sessions page has the same search with more room.
 ### By folder
 
 Once there is a project, the chats below **Pinned** are gathered by the folder
-they work in: **Home** and each project, a chat in a project's subfolder counting
-as the project's. Each folder opens to show its chats — the sidebar up to eight,
+they work in: each agent's home, named after the agent, and each project, a
+chat in a project's subfolder counting as the project's. Each folder opens to show its chats — the sidebar up to eight,
 then *N more in …*, which opens the Sessions page at that folder — and remembers
 whether it was left open. The folder of the chat you open is opened for you. A
 project without chats is there all the same, and the **+** on a folder's line
@@ -267,8 +284,8 @@ so the link keeps it); the ✕ on the chip goes back to all of them. A link to a
 folder that is gone since says so. A folder's count, and the mark that something
 in it is running, take in its pinned chats too, in the sidebar as on the page.
 
-Folders are ordered **Latest first** (by their latest chat), **By name** (Home
-first), or in **Your order**: drag a folder by its grip, or press Alt with ↑/↓ on
+Folders are ordered **Latest first** (by their latest chat), **By name** (the
+first agent first, then the other agents), or in **Your order**: drag a folder by its grip, or press Alt with ↑/↓ on
 its name, and the order is yours from then on. The list button next to the order
 puts the chats back into one list, Pinned then Recents, as before. The order,
 the grouping and which folders are open are kept per browser, and the sidebar
@@ -278,13 +295,17 @@ a match, open; one shut during a search is shut only until the search ends.
 The chat's name at the top of the conversation renames it too: click it.
 A name is at most 120 characters, wherever it is given — `/name` included.
 
-Hovering a session gives you pin, rename and delete. Renaming turns the name into
-a field where it stands — Enter or clicking away keeps the new one, Escape puts
-the old one back — and double-clicking the name does the same. Delete asks in the
-portal's own dialog, with the button saying what it will do — and **Settings →
-General → Confirmations** turns that question off, for chats, messages, files,
-skills, routines, projects, voices and channels alike. It is kept per browser.
-Discarding unsaved changes is still asked about. The Agent tab's conversations
+Hovering a session gives you pin, rename and delete; with the keyboard, a row is
+reached with `Tab` and opened with `Enter` or `Space`, and its buttons show as
+soon as one of them has the focus. One the server refuses — pin, rename or
+delete — says so in an alert, with the reason, beside the list, and the row
+stays as it was. Renaming turns the name into a field where it stands — Enter or
+clicking away keeps the new one, Escape puts the old one back — and
+double-clicking the name does the same. Delete asks in the portal's own dialog,
+with the button saying what it will do — and **Settings → This browser →
+Confirmations** turns that question off, for chats, messages, files, skills,
+routines, projects, voices and channels alike. It is kept per browser.
+Discarding unsaved changes is still asked about. The Agents page's conversations
 can be renamed and deleted the same way, from the row.
 
 ## Using a phone
@@ -324,14 +345,14 @@ The pill can say `off` and the model go on thinking. What `off` puts in the
 request is decided by pi from the model's entry in `models.json`, and for an
 OpenAI-compatible server it does not know how to switch reasoning off unless it
 is told. Left alone it sends `reasoning_effort: "off"`, which llama.cpp does not
-read: measured on a Qwen-family model, that answer reasons exactly as much as
+read: measured on a local model, that answer reasons exactly as much as
 `medium` does.
 
 Those models switch thinking through their chat template, so say so:
 
 ```json
 {
-  "id": "Ornith1.5-35b",
+  "id": "my-local-model",
   "reasoning": true,
   "thinkingLevelMap": { "off": "off", "minimal": null, "low": null, "medium": "medium", "high": null, "xhigh": null, "max": null },
   "compat": { "thinkingFormat": "qwen-chat-template" }
@@ -376,7 +397,7 @@ information. Until then the window is the one in the model's entry, or the
 default below.
 
 For all models at once there is a **Context window** default under
-Settings → General. It is a ceiling: a model that declares more is held to it, a
+Settings → Defaults. It is a ceiling: a model that declares more is held to it, a
 model that declares less keeps its own number, and a window set for one model in
 its pill wins over it. Leave it empty to use what each model says.
 
@@ -397,7 +418,32 @@ before it was a feature:
   log, which is what replay reads.
 
 If the server restarts mid-run, that session is marked `interrupted` rather than
-left spinning. Send a message to carry on.
+left spinning. The run is stopped first, as Stop would, so what the agent had
+written so far is kept in the transcript and in its own record of the
+conversation, not lost with the process. Send a message to carry on.
+
+A chat's pi is let go after twenty minutes without use: nothing running, no
+command or question waiting, no subagent working in the background, and nothing
+this chat started that is still running in its folder (a dev server, a build, a
+job an extension started during one of its tool calls; see
+[Subagents and background jobs](/guide/extensions#subagents-and-background-jobs)).
+Every pi is a whole agent in memory (or a container), and a portal with many
+conversations would otherwise hold them all until it stopped. Nothing is lost —
+the next message starts pi again from the conversation's file, which takes a few
+seconds on a cold start. That is why a chat with a job running is not let go:
+an extension that started the job stops it when its pi goes, and the
+message it would have sent when the job ended would have nobody to receive it. Only the
+chat that started a job is kept for it. The other chats in the same folder, such as the
+conversations of one agent, are let go as usual. A chat with `EXECUTOR=container` is not let go: pi in a container
+does not pick the conversation up again when it is started anew, so the agent
+would have forgotten it, and the container stays until the chat is deleted. Picking a model or opening the command list also starts it. A
+routine that runs in a clean session each time lets its pi go as soon as the run
+ends.
+
+pi's file for the chat (`/data/sessions/<id>`, see
+[Deploying](/guide/deploying#volumes)) is what the agent remembers. When it is
+gone, the chat still shows its transcript, but the agent starts over, and a
+notice in the chat says so.
 
 ## The tab
 
@@ -406,13 +452,16 @@ while it runs, `❓ Fix login · asks you` while an extension is waiting for an
 answer, and the plain name when it is done. Whether it is worth switching back
 to is then readable from the tab strip.
 
-The pages that refresh themselves — the sessions in the sidebar, Agent, Routines,
-Channels, Browser, Audit — do that only while the page is visible, and once at
-once when you come back to it. A tab left in the background asks for nothing.
+The pages that refresh themselves — the sessions in the sidebar, Agents, Routines,
+Channels, Browser, Audit — do that only while the page is visible, and once
+when you come back to it. A tab left in the background asks for nothing.
 
 If the connection to a chat breaks, the page reconnects — after two seconds,
 then four, eight and at most fifteen — and says so once a second attempt has
-failed. It is not shown for a blip.
+failed. It is not shown for a blip. A chat the portal no longer has — deleted
+on another device while this one still had it open — is not an outage: the page
+says **This chat no longer exists** and offers the way back to Sessions, instead
+of trying to reconnect.
 
 ## Status dots
 
@@ -437,9 +486,18 @@ and, for a tool, which tool and what it was asked to do:
 | Turned away | A stranger on a channel was refused |
 | You answered | A question from the agent was answered |
 | Page opened | The agent's [browser](/guide/browser) was pointed at a page |
+| `allowed-by-exemption` | A routine whose [injection guard](/guide/routines#the-injection-guard) is off did something the guard would have stopped |
+| Log cleared | Somebody emptied the log, and how many entries went |
 
 The buttons above the list filter it: **Everything**, **Refused**, **Allowed**
-(both kinds) or **Strangers**, with counts of each and how many are shown. The
+(every kind of allowed) or **Strangers**, with counts of each and how many are shown. The
 page shows the latest 300 and refreshes every ten seconds while it is visible.
 Who is named is who they are called now: renaming a person renames them through
-the history. There is no button to clear it.
+the history. A filter that shows nothing says "Nothing matches this filter"; a
+log that could not be read says so, with **Try again**, rather than "Nothing
+recorded".
+
+**Clear the log** empties it, after a confirmation. It deletes every recorded
+decision, not only the ones the filter shows, but not one made while the question
+was open. A clear leaves a *Log cleared* row behind that says how many entries it
+removed, so an emptied log cannot pass for a quiet one.

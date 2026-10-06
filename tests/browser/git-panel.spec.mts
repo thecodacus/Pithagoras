@@ -1,4 +1,5 @@
-import { test, expect, type Page } from '@playwright/test';
+import { type Page } from '@playwright/test';
+import { test, expect } from './portal-mock';
 
 const calls = (page: Page) => page.evaluate(() => (window as any).gitCalls.filter((c: any) => c.method === 'POST').map((c: any) => ({ url: c.url.replace('/api/sessions/s/git', ''), body: c.body })));
 const row = (page: Page, name: string) => page.getByRole('button', { name: new RegExp(name.replace(/[.]/g, '\\.')) }).first();
@@ -45,6 +46,10 @@ test("a file's diff is shown with the lines numbered where they were and where t
   await expect(table.locator('[data-kind="add"]')).toHaveCount(4);
   await expect(table.locator('[data-kind="del"]')).toContainText('11');
   await expect(table.locator('[data-kind="add"]').first()).toContainText('if (!stored) throw');
+  // Said in words as well as drawn: of two lines numbered alike, which one was removed, and what each cell is.
+  await expect(table.getByRole('columnheader')).toHaveText(['Line before', 'Line after', 'Kind of change', 'Text']);
+  await expect(table.locator('[data-kind="del"]').getByRole('cell').nth(2)).toHaveText('−removed');
+  await expect(table.locator('[data-kind="add"]').first().getByRole('cell').nth(2)).toHaveText('+added');
 
   await page.getByRole('button', { name: 'Stage', exact: true }).click();
   // Back on the list, with it staged.
@@ -113,7 +118,8 @@ test('pull requests: listed through gh, one opened with its checks and conversat
   await expect(page.getByRole('button', { name: 'Merge' })).toBeDisabled();
   await page.getByRole('button', { name: 'Back' }).click();
   await page.getByRole('button', { name: /Login with a password/ }).last().click();
-  await page.getByRole('combobox', { name: 'How to merge' }).selectOption('rebase');
+  await page.getByRole('combobox', { name: 'How to merge' }).click();
+  await page.getByRole('option', { name: 'Rebase' }).click();
   await page.getByRole('button', { name: 'Merge' }).click();
   await expect(page.getByRole('alertdialog')).toContainText('Rebased on main');
   await page.getByRole('alertdialog').getByRole('button', { name: 'Merge' }).click();
@@ -140,7 +146,7 @@ test('without gh, pull requests say how to get them — and the branch can still
   await expect(page.getByText('Install the GitHub CLI (gh)')).toBeVisible();
   await page.getByRole('button', { name: /Compare feature\/login with its base/ }).click();
   await expect(page.getByText('Check the password before the session is made')).toBeVisible();
-  await expect(page.getByRole('combobox', { name: 'Compare with' })).toHaveValue('origin/main');
+  await expect(page.getByRole('combobox', { name: 'Compare with' })).toContainText('origin/main');
 });
 
 test('a folder in no repository is offered git init', async ({ page }) => {
@@ -177,8 +183,9 @@ test("a file in conflict is shown a column per side: ours, theirs, and git's mar
   const ours = table.locator('[role=row]', { hasText: 'TWO main' });
   await expect(ours).toHaveAttribute('data-kind', 'add');
   // Ours: line 2 before, line 3 now — not a line of context that reads "+TWO main".
-  await expect(ours).toHaveText(/^2\s*3\s*\+TWO main$/);
-  await expect(table.locator('[role=row]', { hasText: 'TWO side' })).toHaveText(/^\s*5\s*\+\s+TWO side$/);
+  // The sign is drawn, and said in words as well.
+  await expect(ours).toHaveText(/^2\s*3\s*\+\s*addedTWO main$/);
+  await expect(table.locator('[role=row]', { hasText: 'TWO side' })).toHaveText(/^\s*5\s*\+\s*added\s*TWO side$/);
   await expect(table.locator('[data-kind=add]')).toHaveCount(6);
 });
 
@@ -218,7 +225,7 @@ test('each question is asked once: a comparison when opened, the branches when o
   const asked = (what: string) => page.evaluate((w) => (window as any).gitCalls.filter((c: any) => c.method === 'GET' && c.url.split('?')[0].endsWith(w)).length, what);
   await page.goto('/tests/git.html?tab=history');
   await page.getByText('Compare this branch with its base').click();
-  await expect(page.getByRole('combobox', { name: 'Compare with' })).toHaveValue('origin/main');
+  await expect(page.getByRole('combobox', { name: 'Compare with' })).toContainText('origin/main');
   await page.waitForTimeout(500);
   expect(await asked('/compare')).toBe(1);
   await page.getByRole('tab', { name: 'Branches' }).click();
@@ -241,6 +248,8 @@ test("a pull request is filled in against the repository's own default branch �
   const compared = await page.evaluate(() => (window as any).gitCalls.filter((c: any) => c.url.includes('/compare')).map((c: any) => c.url));
   expect(compared.at(-1)).toContain('base=upstream%2Fmain');
 
+  // What was typed into the form above is kept for the chat, and would open it here already.
+  await page.evaluate(() => sessionStorage.clear());
   await page.goto('/tests/git.html?tab=branches&comparefail=1');
   await page.getByRole('textbox', { name: 'Name of the new branch' }).fill('feature/export');
   await page.getByRole('button', { name: 'Create' }).click();
@@ -280,4 +289,197 @@ test('Refresh reads the state once', async ({ page }) => {
   await expect(page.getByRole('status').filter({ hasText: 'Refreshing' })).toHaveCount(0);
   await page.waitForTimeout(300);
   expect((await states()) - before).toBe(1);
+});
+
+test('a commit message and the Amend box are still there after a diff was opened over them, and after a reload', async ({ page }) => {
+  await page.goto('/tests/git.html');
+  await page.getByRole('textbox', { name: 'Commit message' }).fill('Words worth keeping');
+  await page.getByRole('checkbox', { name: 'Amend' }).check();
+  await row(page, 'session.ts').click();
+  await expect(page.getByRole('table', { name: 'Changes to src/auth/session.ts' })).toBeVisible();
+  await page.getByRole('button', { name: 'Back' }).click();
+  await expect(page.getByRole('textbox', { name: 'Commit message' })).toHaveValue('Words worth keeping');
+  await expect(page.getByRole('checkbox', { name: 'Amend' })).toBeChecked();
+  await page.reload();
+  await expect(page.getByRole('textbox', { name: 'Commit message' })).toHaveValue('Words worth keeping');
+  // Sent, it is not kept for the next time.
+  await page.getByRole('button', { name: /^Amend with/ }).click();
+  await expect(page.getByRole('textbox', { name: 'Commit message' })).toHaveValue('');
+  await page.reload();
+  await expect(page.getByRole('textbox', { name: 'Commit message' })).toHaveValue('');
+  await expect(page.getByRole('checkbox', { name: 'Amend' })).not.toBeChecked();
+});
+
+test('a comment on a pull request survives looking at one of its files', async ({ page }) => {
+  await page.goto('/tests/git.html?tab=pulls');
+  await page.getByRole('button', { name: /Login with a password/ }).last().click();
+  await page.getByRole('textbox', { name: 'Comment on the pull request' }).fill('One question about line 12');
+  await page.getByRole('button', { name: /login\.ts/ }).first().click();
+  await expect(page.getByRole('table', { name: 'Changes to src/auth/login.ts' })).toBeVisible();
+  await page.getByRole('button', { name: 'Back' }).click();
+  await expect(page.getByRole('textbox', { name: 'Comment on the pull request' })).toHaveValue('One question about line 12');
+  await page.reload();
+  await page.getByRole('button', { name: /Login with a password/ }).last().click();
+  await expect(page.getByRole('textbox', { name: 'Comment on the pull request' })).toHaveValue('One question about line 12');
+  await page.getByRole('button', { name: 'Comment', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Comment on the pull request' })).toHaveValue('');
+});
+
+test('the form that opens a pull request survives a comparison looked at over it, and is gone once cancelled', async ({ page }) => {
+  await page.goto('/tests/git.html?tab=branches');
+  await page.getByRole('textbox', { name: 'Name of the new branch' }).fill('feature/export');
+  await page.getByRole('button', { name: 'Create' }).click();
+  await page.getByRole('tab', { name: 'Pull requests' }).click();
+  await page.getByRole('button', { name: 'Open a pull request for feature/export' }).click();
+  await page.getByRole('textbox', { name: 'Title of the pull request' }).fill('Export to CSV');
+  await page.getByRole('checkbox', { name: 'Draft' }).check();
+  await page.getByRole('button', { name: /Compare feature\/export with its base/ }).click();
+  await expect(page.getByText('Add the login form').first()).toBeVisible();
+  await page.getByRole('button', { name: 'Back' }).click();
+  await expect(page.getByRole('textbox', { name: 'Title of the pull request' })).toHaveValue('Export to CSV');
+  await expect(page.getByRole('checkbox', { name: 'Draft' })).toBeChecked();
+  // Cancelled, it is gone.
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  await page.reload();
+  await page.getByRole('textbox', { name: 'Name of the new branch' }).fill('feature/export');
+  await page.getByRole('button', { name: 'Create' }).click();
+  await page.getByRole('tab', { name: 'Pull requests' }).click();
+  await expect(page.getByRole('button', { name: 'Open a pull request for feature/export' })).toBeVisible();
+});
+
+test('a branch deleted anyway leaves the list', async ({ page }) => {
+  await page.goto('/tests/git.html?tab=branches&unmerged=1');
+  await expect(page.getByRole('button', { name: /old\/experiment/ }).first()).toBeVisible();
+  await page.getByRole('button', { name: 'Delete old/experiment', exact: true }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Delete', exact: true }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Delete anyway' }).click();
+  await expect(page.getByRole('button', { name: /old\/experiment/ })).toHaveCount(0);
+  expect((await calls(page)).map((c) => c.body)).toEqual([{ name: 'old/experiment', force: false }, { name: 'old/experiment', force: true }]);
+});
+
+test('a double click on Older commits loads one page, and the next page follows the first', async ({ page }) => {
+  await page.goto('/tests/git.html?tab=history&many=1');
+  await expect(page.getByText('Commit number 0', { exact: true })).toBeVisible();
+  const older = page.getByRole('button', { name: 'Older commits…' });
+  await older.dblclick();
+  await expect(page.getByText('Commit number 199', { exact: true })).toBeVisible();
+  await expect(older).toBeEnabled();
+  const skips = await page.evaluate(() => (window as any).gitCalls.filter((c: any) => c.url.includes('/log?')).map((c: any) => c.url));
+  expect(skips.filter((u: string) => u.includes('skip=100'))).toHaveLength(1);
+  await expect(page.getByText('Commit number 150', { exact: true })).toHaveCount(1);
+  await older.click();
+  await expect(page.getByText('Commit number 249', { exact: true })).toBeVisible();
+  await expect(page.getByText('Commit number 200', { exact: true })).toHaveCount(1);
+});
+
+test('a comparison that fails shows no commits or files of the one before, whose base they were against', async ({ page }) => {
+  await page.goto('/tests/git.html?tab=history');
+  await page.getByText('Compare this branch with its base').click();
+  await expect(page.getByRole('button', { name: /login\.ts/ })).toBeVisible();
+  await page.getByRole('combobox', { name: 'Compare with' }).click();
+  await page.getByRole('option', { name: 'old/experiment' }).click();
+  await expect(page.getByRole('alert')).toContainText('old/experiment and HEAD have nothing in common');
+  await expect(page.getByRole('button', { name: /login\.ts/ })).toHaveCount(0);
+  await expect(page.getByText('Add the login form')).toHaveCount(0);
+});
+
+test('the diff of a file in conflict offers no Discard, and says Mark resolved where the row does', async ({ page }) => {
+  await page.goto('/tests/git.html?conflict=1');
+  await row(page, 'a.txt').click();
+  await expect(page.getByRole('table', { name: 'Changes to a.txt' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Discard' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Stage', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Mark resolved' }).click();
+  expect(await calls(page)).toEqual([{ url: '/stage', body: { paths: ['a.txt'] } }]);
+  // Any other file still can.
+  await page.goto('/tests/git.html?conflict=1');
+  await row(page, 'session.ts').click();
+  await expect(page.getByRole('button', { name: 'Discard' })).toBeVisible();
+});
+
+test('the files of a pull request are listed as a commit’s are: the letter says what happened, a rename shows where it came from, a deleted file is struck through', async ({ page }) => {
+  await page.goto('/tests/git.html?tab=pulls&prfiles=1');
+  await page.getByRole('button', { name: /Login with a password/ }).last().click();
+  const renamed = page.getByRole('button', { name: /token\.ts/ });
+  await expect(renamed).toHaveAttribute('title', 'src/auth/jwt.ts → src/auth/token.ts');
+  await expect(renamed.getByTitle('Renamed')).toHaveText('R');
+  const deleted = page.getByRole('button', { name: /old\.ts/ });
+  await expect(deleted.getByTitle('Deleted')).toHaveText('D');
+  await expect(deleted.locator('.line-through')).toHaveText('old.ts');
+  // The file opens as before: the diff is the pull request's, not a second request.
+  await deleted.click();
+  await expect(page.getByRole('table', { name: 'Changes to src/auth/old.ts' })).toBeVisible();
+});
+
+test('only the last file of a cut-off pull request diff says it was cut off', async ({ page }) => {
+  await page.goto('/tests/git.html?tab=pulls&prtruncated=1');
+  await page.getByRole('button', { name: /Login with a password/ }).last().click();
+  await page.getByRole('button', { name: /login\.ts/ }).first().click();
+  await expect(page.getByRole('table', { name: 'Changes to src/auth/login.ts' })).toBeVisible();
+  await expect(page.getByText('This diff is too large to show whole')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Back' }).click();
+  await page.getByRole('button', { name: /session\.ts/ }).first().click();
+  await expect(page.getByText('This diff is too large to show whole')).toBeVisible();
+});
+
+test("a pull request from a fork's branch of the same name can be checked out; the branch's own cannot", async ({ page }) => {
+  await page.goto('/tests/git.html?tab=pulls&fork=1');
+  await page.getByRole('button', { name: /Fix a typo from a fork/ }).click();
+  await expect(page.getByRole('button', { name: 'Check out' })).toBeVisible();
+  await page.goto('/tests/git.html?tab=pulls');
+  await page.getByRole('button', { name: /Login with a password/ }).last().click();
+  await expect(page.getByText('Login with a password').first()).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Check out' })).toHaveCount(0);
+});
+
+test('a large diff shows its first rows, and the rest as asked', async ({ page }) => {
+  await page.goto('/tests/git.html?bigdiff=1');
+  await row(page, 'session.ts').click();
+  const table = page.getByRole('table', { name: 'Changes to src/auth/session.ts' });
+  // The hunk header is a row too; the one that names the columns for a screen reader is not drawn.
+  const rows = table.locator('[role=row]:not(.sr-only)');
+  await expect(rows).toHaveCount(3000);
+  await expect(page.getByText('3000 of 6501 lines shown')).toBeVisible();
+  await page.getByRole('button', { name: 'Show more' }).click();
+  await expect(rows).toHaveCount(6000);
+  await page.getByRole('button', { name: 'Show more' }).click();
+  await expect(rows).toHaveCount(6501);
+  await expect(page.getByRole('button', { name: 'Show more' })).toHaveCount(0);
+});
+
+test('a pull request list that failed is asked again, not left as Loading', async ({ page }) => {
+  await page.goto('/tests/git.html?tab=pulls&pullsfail=1');
+  await expect(page.getByRole('alert')).toContainText('GitHub is not answering');
+  // No way to dismiss it into a list that is neither there nor failed.
+  await expect(page.getByRole('button', { name: 'Dismiss' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Try again' }).click();
+  await expect(page.getByText('Dark mode for the settings')).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});
+
+test('a branch whose pull request GitHub could not be asked about is not offered a second one', async ({ page }) => {
+  await page.goto('/tests/git.html?tab=pulls&currentfail=1&branch=feature/export');
+  await expect(page.getByText('Could not ask GitHub about this branch: gh timed out')).toBeVisible();
+  await expect(page.getByRole('button', { name: /Open a pull request for/ })).toHaveCount(0);
+});
+
+test('the files of a pull request whose diff failed say so, and do not say there are none', async ({ page }) => {
+  await page.goto('/tests/git.html?tab=pulls&prdifffail=1');
+  await page.getByRole('button', { name: /Login with a password/ }).last().click();
+  await expect(page.getByRole('alert')).toContainText('gh pr diff failed');
+  await expect(page.getByRole('button', { name: 'Try again' })).toBeVisible();
+});
+
+test('once the repository cannot be read, what is shown is said to be old', async ({ page }) => {
+  await page.goto('/tests/git.html');
+  await expect(page.getByText('session.ts')).toBeVisible();
+  await page.evaluate(() => {
+    (window as any).stateFails = true;
+    (window as any).moveHead();
+  });
+  await expect(page.getByRole('alert')).toContainText('what is shown may be out of date: The portal could not be reached');
+  await expect(page.getByText('session.ts')).toBeVisible();
+  await page.evaluate(() => ((window as any).stateFails = false));
+  await page.getByRole('button', { name: 'Try again' }).click();
+  await expect(page.getByRole('alert')).toHaveCount(0);
 });

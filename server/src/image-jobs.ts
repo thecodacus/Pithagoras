@@ -9,8 +9,8 @@ import {
   imageEditingTarget,
   imageGenerationConfig,
   imageGenerationReady,
-  type ExtraValue,
 } from "./image-generation.js";
+import { forPicture, hasNative, type PictureSettings } from "./image-settings.js";
 
 /**
  * Making pictures for the Images page: a request becomes a job that runs on
@@ -131,6 +131,9 @@ function start(job: Omit<PictureJob, "id" | "state" | "startedAt">, make: (signa
   return open(held);
 }
 
+/** What a request with a setting that only stable-diffusion.cpp reads is told while the switch for them is off: they are not sent, and not dropped without a word either. */
+const SD_OFF = "Stable Diffusion extra settings are switched off, so seed, steps, negative prompt, strength and starting from noise are not sent. Switch them on in Settings → Agent → Images, or leave them out";
+
 /** Whether there is room for `count` more, or the refusal that says there is not. */
 function room(count: number): void {
   const free = MAX_RUNNING - running();
@@ -142,55 +145,81 @@ function room(count: number): void {
   }
 }
 
-export interface GenerateJob {
+export interface GenerateJob extends PictureSettings {
   prompt: string;
-  size?: string;
-  model?: string;
-  extra?: Record<string, ExtraValue>;
   /** One picture each: an endpoint that makes one at a time is asked for several as several, not for a number it may refuse. */
   count: number;
 }
 
+/** What goes in the gallery of how a picture was asked for: the settings that were sent, and none that were not. */
+function paramsOf(settings: PictureSettings): PictureParams {
+  const { model, size, outputFormat, outputCompression, fromNoise, negativePrompt, seed, sampleSteps, strength } = settings;
+  return {
+    ...(model ? { model } : {}),
+    ...(size ? { size } : {}),
+    ...(outputFormat ? { outputFormat } : {}),
+    ...(outputCompression !== undefined ? { outputCompression } : {}),
+    ...(negativePrompt ? { negativePrompt } : {}),
+    ...(seed !== undefined ? { seed } : {}),
+    ...(sampleSteps !== undefined ? { sampleSteps } : {}),
+    ...(strength !== undefined ? { strength } : {}),
+    ...(fromNoise ? { fromNoise } : {}),
+  };
+}
+
+/** One picture's settings as a request for it takes them: the ones of the OpenAI format as fields, and the rest apart, for the prompt (see image-settings.ts). */
+const requestOf = ({ model, size, outputFormat, outputCompression, fromNoise, negativePrompt, seed, sampleSteps, strength }: PictureSettings) => ({
+  model,
+  size,
+  outputFormat,
+  outputCompression,
+  native: { fromNoise, negativePrompt, seed, sampleSteps, strength },
+});
+
 /**
  * Starts one request for each picture asked for. The request is checked by
  * the caller (the API); what is checked here is whether the endpoint is
- * there to ask and whether there is room.
+ * there to ask and whether there is room. Each picture has the next seed after
+ * the one before it, so that a seed does not make the same picture several times.
  */
 export function startGenerations(request: GenerateJob): PictureJob[] {
   const config = imageGenerationConfig();
   if (!imageGenerationReady(config)) throw new JobRefusal("Image generation is switched off, or has no address: set it up in Settings → Agent → Images", 409);
+  if (!config.sdExtras && hasNative(request)) throw new JobRefusal(SD_OFF, 409);
   room(request.count);
-  const params: PictureParams = {
-    ...((request.model || config.model) ? { model: request.model || config.model } : {}),
-    ...((request.size || config.size) ? { size: request.size || config.size } : {}),
-    ...(request.extra && Object.keys(request.extra).length ? { extra: request.extra } : {}),
-  };
-  return Array.from({ length: request.count }, () =>
-    start({ kind: "generate", prompt: request.prompt, ...(params.size ? { size: params.size } : {}) }, async (signal) => {
-      const { bytes, ext } = await generateImage(config, { prompt: request.prompt, size: request.size, model: request.model, extra: request.extra }, { signal });
+  return Array.from({ length: request.count }, (_, i) => {
+    const settings = forPicture(request, i);
+    // What is recorded is what was sent: the add-on's model and size are the defaults of a request that has none.
+    const params = paramsOf({ ...settings, model: settings.model || config.model, size: settings.size || config.size });
+    return start({ kind: "generate", prompt: request.prompt, ...(params.size ? { size: params.size } : {}) }, async (signal) => {
+      const { bytes, ext } = await generateImage(config, { prompt: request.prompt, ...requestOf(settings) }, { signal });
       return addPagePicture({ bytes, ext, kind: "generated", prompt: request.prompt, params }).id;
-    }),
-  );
+    });
+  });
 }
 
-export interface EditJob {
+export interface EditJob extends PictureSettings {
   prompt: string;
   /** The pictures to change, or to take as references, by their ids in the gallery, in the order the prompt refers to them. */
   sources: string[];
   /** Marks the area to change; checked as a picture when it is sent. */
   mask?: Buffer;
+  /** One change each, as for generation: the same pictures, the same words, and the next seed for each. */
+  count: number;
 }
 
 /**
- * Starts an edit. The pictures are read now, from the gallery, and checked as
- * the agent's tool checks them (count, size, weight, what they are) before
- * anything is sent: a request that is refused is refused here, with the reason.
+ * Starts an edit, or several of the same. The pictures are read now, from the
+ * gallery, and checked as the agent's tool checks them (count, size, weight,
+ * what they are) before anything is sent: a request that is refused is refused
+ * here, with the reason.
  */
-export function startEdit(request: EditJob): PictureJob {
+export function startEdit(request: EditJob): PictureJob[] {
   const config = imageGenerationConfig();
   if (!imageEditingReady(config)) throw new JobRefusal("Image editing is switched off, or has no address: set it up in Settings → Agent → Images", 409);
   const target = imageEditingTarget(config);
-  room(1);
+  if (!target.sdExtras && hasNative(request)) throw new JobRefusal(SD_OFF, 409);
+  room(request.count);
   try {
     checkCount(request.sources.length, target.multiple);
   } catch (e) {
@@ -213,9 +242,13 @@ export function startEdit(request: EditJob): PictureJob {
       throw new JobRefusal(`${which}${why}`, 400);
     }
   }
-  const params: PictureParams = { ...(target.model ? { model: target.model } : {}), sources: request.sources, ...(request.mask ? { masked: true } : {}) };
-  return start({ kind: "edit", prompt: request.prompt, from: request.sources[0] }, async (signal) => {
-    const { bytes, ext } = await editImage(target, { prompt: request.prompt, image: images.length > 1 ? images : images[0], mask: request.mask }, { signal });
-    return addPagePicture({ bytes, ext, kind: "edited", prompt: request.prompt, params, sourceId: request.sources[0] }).id;
+  return Array.from({ length: request.count }, (_, i) => {
+    const settings = forPicture(request, i);
+    // The size is the request's own: an edit has none of the add-on's, which is the size of a new picture.
+    const params: PictureParams = { ...paramsOf({ ...settings, model: settings.model || target.model }), sources: request.sources, ...(request.mask ? { masked: true } : {}) };
+    return start({ kind: "edit", prompt: request.prompt, from: request.sources[0] }, async (signal) => {
+      const { bytes, ext } = await editImage(target, { prompt: request.prompt, image: images.length > 1 ? images : images[0], mask: request.mask, ...requestOf(settings) }, { signal });
+      return addPagePicture({ bytes, ext, kind: "edited", prompt: request.prompt, params, sourceId: request.sources[0] }).id;
+    });
   });
 }

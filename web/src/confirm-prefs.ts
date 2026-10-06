@@ -15,7 +15,7 @@ export function asksBeforeDeleting(): boolean {
   return local.get(KEY) !== "off";
 }
 
-export function setAsksBeforeDeleting(ask: boolean): void {
+function setAsksBeforeDeleting(ask: boolean): void {
   local.set(KEY, ask ? "on" : "off");
 }
 

@@ -1,17 +1,15 @@
 import { Type } from "typebox";
-import { nanoid } from "nanoid";
-import { getDb, type SessionRow } from "../db.js";
+import { getDb, getSession } from "../db.js";
 import { unscopeKey } from "../agent.js";
 import { placeProblem, routinePlace } from "../workspaces.js";
 import { channelSupervisor } from "../channels/supervisor.js";
-import { isValidSlug, slugify } from "../slug.js";
-import { isValidCron, nextRun, parseCron } from "../routines/cron.js";
+import { fail, say } from "./tool-result.js";
 import {
-  oneOffDone,
   routineSupervisor,
   whenNext,
   type RoutineRow,
 } from "../routines/supervisor.js";
+import { insertRoutine, readTiming, timingSets } from "../routines/store.js";
 
 /**
  * Routine management, as tools the agent can call.
@@ -34,8 +32,8 @@ import {
  * stays a deliberate act in the UI.
  */
 
-const ok = (text: string) => ({ output: text, isError: false });
-const bad = (text: string) => ({ output: text, isError: true });
+const ok = say;
+const bad = fail;
 
 const rows = () =>
   getDb()
@@ -84,39 +82,6 @@ const WORKSPACE_PARAM = Type.Optional(
   }),
 );
 
-/** Same rule as the HTTP API: a schedule or a moment, never both. */
-function timing(schedule?: string, runAt?: string) {
-  const cron = (schedule ?? "").trim();
-  const at = (runAt ?? "").trim();
-  if (cron && at)
-    return { error: "Give a schedule or a one-off time, not both" };
-  if (!cron && !at)
-    return { error: "Needs either a cron schedule or a time to run once" };
-  if (cron) {
-    const problem = isValidCron(cron);
-    return problem
-      ? { error: problem }
-      : { schedule: cron, runAt: null as string | null };
-  }
-  const when = new Date(at);
-  if (Number.isNaN(when.getTime()))
-    return { error: `"${at}" is not a time I can read` };
-  return { schedule: "", runAt: when.toISOString() };
-}
-
-function freeSlug(desired: string, exceptId?: string): string {
-  const base = slugify(desired) || "routine";
-  const taken = new Set(
-    rows()
-      .filter((r) => r.id !== exceptId)
-      .map((r) => r.slug),
-  );
-  if (!taken.has(base)) return base;
-  for (let n = 2; n < 500; n++)
-    if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
-  throw new Error(`No free slug for "${desired}"`);
-}
-
 /**
  * Where a routine created from a conversation should report.
  *
@@ -135,9 +100,7 @@ export function reportBackTo(sessionId?: string): {
   target: string | null;
 } {
   if (!sessionId) return { channel: null, target: null };
-  const session = getDb()
-    .prepare("SELECT * FROM sessions WHERE id = ?")
-    .get(sessionId) as SessionRow | undefined;
+  const session = getSession(sessionId);
   if (!session?.channel_slug || !session.channel_key)
     return { channel: null, target: null };
   if (!channelSupervisor.canSend(session.channel_slug))
@@ -202,37 +165,22 @@ export function routineTools(sessionId?: string) {
       }),
       async execute(_id: string, p: any) {
         if (!p.name?.trim()) return bad("A routine needs a name");
-        const t = timing(p.schedule, p.runAt);
-        if ("error" in t) return bad(t.error!);
+        const t = readTiming(p);
+        if ("error" in t) return bad(t.error);
         const where = place(p.workspace);
         if ("error" in where) return bad(where.error);
 
-        const id = nanoid(10);
-        const slug = freeSlug(p.name);
         const back = reportBackTo(sessionId);
-        getDb()
-          .prepare(
-            `INSERT INTO routines
-           (id, slug, name, schedule, run_at, instructions, fresh_session, next_run,
-            report_channel, report_target, workspace)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .run(
-            id,
-            slug,
-            p.name.trim(),
-            t.schedule,
-            t.runAt,
-            (p.instructions ?? "").trim(),
-            p.freshSession ? 1 : 0,
-            t.schedule
-              ? (nextRun(parseCron(t.schedule))?.toISOString() ?? null)
-              : t.runAt,
-            back.channel,
-            back.target,
-            where.workspace,
-          );
-        routineSupervisor.refreshSchedules();
+        const { id, slug } = insertRoutine({
+          name: p.name,
+          timing: t,
+          instructions: p.instructions ?? "",
+          freshSession: Boolean(p.freshSession),
+          reportChannel: back.channel,
+          reportTarget: back.target,
+          workspace: where.workspace,
+        });
+        routineSupervisor.refreshSchedules([id]);
 
         const created = byName(slug)!;
         return ok(
@@ -298,20 +246,11 @@ export function routineTools(sessionId?: string) {
           values.push(where.workspace);
         }
         if (p.schedule !== undefined || p.runAt !== undefined) {
-          const t = timing(p.schedule, p.runAt);
-          if ("error" in t) return bad(t.error!);
-          sets.push("schedule = ?", "run_at = ?");
-          values.push(t.schedule, t.runAt);
-          // A one-off given a new time is armed again rather than looking done.
-          if (t.runAt && t.runAt !== row.run_at) {
-            sets.push(
-              "last_run = NULL",
-              "last_status = NULL",
-              "last_output = NULL",
-            );
-            // It was switched off by having run; see the routes.
-            if (typeof p.enabled !== "boolean" && oneOffDone(row)) sets.push("enabled = 1");
-          }
+          const t = readTiming(p);
+          if ("error" in t) return bad(t.error);
+          const change = timingSets(row, t, typeof p.enabled === "boolean");
+          sets.push(...change.sets);
+          values.push(...change.values);
         }
         if (!sets.length)
           return bad("Nothing to change — pass at least one field");
@@ -320,7 +259,7 @@ export function routineTools(sessionId?: string) {
         getDb()
           .prepare(`UPDATE routines SET ${sets.join(", ")} WHERE id = ?`)
           .run(...values, row.id);
-        routineSupervisor.refreshSchedules();
+        routineSupervisor.refreshSchedules([row.id]);
 
         const after = byName(row.slug)!;
         return ok(
@@ -343,15 +282,12 @@ export function routineTools(sessionId?: string) {
       async execute(_id: string, p: any) {
         const row = byName(p.routine ?? "");
         if (!row) return bad(`No routine called "${p.routine}"`);
-        try {
-          const after = await routineSupervisor.run(row, "manual");
-          const output = (after.last_output ?? "").trim();
-          return after.last_status === "ok"
-            ? ok(output || "Ran, with no output.")
-            : bad(`It failed: ${output}`);
-        } catch (e) {
-          return bad((e as Error).message);
-        }
+        const after = await routineSupervisor.run(row, "manual");
+        if (!after) return bad(`"${row.name}" was deleted while it ran`);
+        const output = (after.last_output ?? "").trim();
+        return after.last_status === "ok"
+          ? ok(output || "Ran, with no output.")
+          : bad(`It failed: ${output}`);
       },
     });
   };

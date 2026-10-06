@@ -2,13 +2,13 @@ import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
-import { freePort, serverEnv, startServer, testHome } from "./server-harness.mjs";
+import { freePort, inProcessHome, serverEnv, startServer } from "./server-harness.mjs";
 
 /**
  * Opening a chat, against the whole server: what the page asks for first, and
  * what it keeps open.
  */
-const home = testHome("pithagoras-open-");
+const home = inProcessHome("pithagoras-open-");
 const agentDir = path.join(home, "agent");
 const map = (on) => Object.fromEntries(["off", "minimal", "low", "medium", "high", "xhigh", "max"].map((l) => [l, on.includes(l) ? l : null]));
 writeFileSync(path.join(agentDir, "models.json"), JSON.stringify({
@@ -16,7 +16,7 @@ writeFileSync(path.join(agentDir, "models.json"), JSON.stringify({
     "test-server": {
       baseUrl: "http://127.0.0.1:1/v1", api: "openai-completions", apiKey: "none",
       models: [
-        // Thinking only on or off, as Ornith is.
+        // Thinking only on or off, as some models do.
         { id: "switch", name: "Switch", reasoning: true, thinkingLevelMap: map(["off", "medium"]), input: ["text"], contextWindow: 1000, maxTokens: 100 },
         { id: "plain", name: "Plain", reasoning: false, input: ["text"], contextWindow: 1000, maxTokens: 100 },
       ],
@@ -30,7 +30,6 @@ writeFileSync(path.join(agentDir, "models.json"), JSON.stringify({
 }));
 
 // The server's database, to set what its rows say where no route does.
-process.env.DATA_DIR = home;
 const db = await import("../dist/db.js");
 
 let base;

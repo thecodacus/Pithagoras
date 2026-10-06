@@ -1,15 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { inProcessHome } from "./server-harness.mjs";
 
 // A browser connection written before vision: the portal's own, and one
 // somebody gave capabilities of their own.
-const home = mkdtempSync(path.join(tmpdir(), "pithagoras-pin-"));
-process.env.DATA_DIR = home;
-process.env.PI_CODING_AGENT_DIR = path.join(home, "agent");
-mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
+const home = inProcessHome("pithagoras-pin-");
 const mcp = path.join(process.env.PI_CODING_AGENT_DIR, "mcp.json");
 const CDP = "http://127.0.0.1:9222";
 writeFileSync(

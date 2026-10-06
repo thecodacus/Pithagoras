@@ -7,7 +7,6 @@ on:
     # has nothing to publish.
     paths:
       - "docs/**"
-      - "channels/**"
       - ".github/workflows/docs.yml"
       - "package.json"
       - "package-lock.json"
@@ -24,13 +23,18 @@ jobs:
     runs-on: ubuntu-latest
     # pages: write here is not for deploying — it lets configure-pages turn
     # Pages on by itself, so a fresh clone of this repo publishes without
-    # anyone visiting the settings screen first.
+    # anyone visiting the settings screen first. The token that proves who is
+    # deploying (id-token) is the deploy job's alone: this one runs npm.
     permissions:
       contents: read
       pages: write
-      id-token: write
     steps:
+      # The whole history, which is where a page's "Last updated" comes from.
+      # The checkout's token is not kept in .git/config for the install scripts to find.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -38,8 +42,12 @@ jobs:
       - uses: actions/configure-pages@v5
         with:
           enablement: true
-      - run: npm install
+      - run: npm ci
+      # Project pages serve from /<repository name>/, spelled as the repository
+      # is: the paths are case-sensitive, and a fork has a name of its own.
       - run: npm run docs:build
+        env:
+          DOCS_BASE: /${{ github.event.repository.name }}/
       - uses: actions/upload-pages-artifact@v3
         with:
           path: docs/.vitepress/dist

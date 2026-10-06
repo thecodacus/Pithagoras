@@ -1,4 +1,4 @@
-import {test,expect} from '@playwright/test';
+import { test, expect } from './portal-mock';
 // The engine choice asks for the GPU as the page opens; the tests that are about something else get none to read.
 test.beforeEach(async({page})=>{await page.route('**/api/voice/hardware',r=>r.fulfill({json:{gpus:[],source:'none',error:'',checked:false,cpuOnly:false,host:{totalMiB:16384,freeMiB:12000,threads:8},selected:null,reserveMiB:0,suggestion:{tts:'breeze',asr:'whisper',asrModel:'base'}}}));});
 test('settings install progress, ready connection, and stop',async({page})=>{
@@ -22,16 +22,16 @@ test('settings install progress, ready connection, and stop',async({page})=>{
  await page.getByRole('button',{name:'Stop · release VRAM'}).click();
  await expect(page.getByRole('button',{name:'Start voice',exact:true})).toBeEnabled();
  expect(actions).toEqual(['install','stop']);
- await page.screenshot({path:'/tmp/pithagoras-voice-addon.png'});
 });
 
 // The saved settings the install overwrote, as the portal puts them back, and the page that has to show them.
 const uninstallPage = async (page: any, state = 'running') => {
- let status = state, connected = false, failure = ''; const requests: any[] = [];
+ let status = state, connected = false, failure = '', reads = 0; const requests: any[] = [];
  let config: any = { enabled: true, whisperUrl: 'http://127.0.0.1:7862/v1/audio/transcriptions', breezeUrl: 'http://127.0.0.1:7862/v1/audio/speech', instruction: 'Clear speech', voice: 'design', runtime: 'audio-cpp', sttModel: 'qwen3-asr', language: 'auto' };
  await page.route('**/api/voice/presets', (r: any) => r.fulfill({ json: [] }));
  await page.route('**/api/voice', (r: any) => r.fulfill({ json: config }));
- await page.route('**/api/voice/install', (r: any) => r.fulfill({ json: { available: true, state: status, busy: false, progress: '', error: '', connected, choice: { tts: 'breeze', asr: 'qwen3-asr', asrModel: '0.6b' } } }));
+ // As the server answers: once there is a container, `progress` is its log, so a steady service has lines in it too.
+ await page.route('**/api/voice/install', (r: any) => { if (r.request().method() === 'GET') reads++; return r.fulfill({ json: { available: true, state: status, busy: false, progress: status === 'absent' ? '' : 'INFO: Uvicorn running on http://0.0.0.0:7862', error: '', connected, choice: { tts: 'breeze', asr: 'qwen3-asr', asrModel: '0.6b' } } }); });
  await page.route('**/api/voice/uninstall', (r: any) => {
   requests.push(r.request().postDataJSON()); status = 'absent'; connected = false;
   config = { ...config, enabled: false, runtime: 'breeze', whisperUrl: 'http://stt.example.test:9000/inference', breezeUrl: 'http://tts.example.test:9001/v1/audio/speech', sttModel: '' };
@@ -40,7 +40,7 @@ const uninstallPage = async (page: any, state = 'running') => {
  });
  await page.goto('/tests/voice-addon.html');
  await page.locator('summary').filter({ hasText: 'Voice service' }).click();
- return { requests, setState: (value: string) => { status = value; }, setConnected: (value: boolean) => { connected = value; }, fail: (message: string) => { failure = message; } };
+ return { requests, reads: () => reads, change: (patch: any) => { config = { ...config, ...patch }; }, setState: (value: string) => { status = value; }, setConnected: (value: boolean) => { connected = value; }, fail: (message: string) => { failure = message; } };
 };
 
 test('uninstall asks first and says what goes, keeps the downloads unless told, and shows the settings that were put back', async ({ page }) => {
@@ -54,7 +54,6 @@ test('uninstall asks first and says what goes, keeps the downloads unless told, 
  await expect(dialog).toContainText('speech servers you set up yourself stay as they are');
  // Keeping the downloads is the default: a new install is then quick.
  await expect(dialog.getByRole('checkbox', { name: /Also delete the downloaded engines and models/ })).not.toBeChecked();
- await page.screenshot({ path: '/tmp/pithagoras-voice-uninstall.png' });
  await dialog.getByRole('button', { name: 'Cancel' }).click();
  await expect(dialog).toBeHidden();
  expect(requests).toEqual([]);
@@ -73,6 +72,50 @@ test('uninstall asks first and says what goes, keeps the downloads unless told, 
  await expect(page.getByRole('checkbox', { name: 'Enable voice controls in sessions' })).not.toBeChecked();
 });
 
+test('a service that turns ready takes over what the install wrote, and not what is being typed', async ({ page }) => {
+ const { change, setState } = await uninstallPage(page, 'starting');
+ await page.locator('summary').filter({ hasText: 'Advanced connection' }).click();
+ await page.getByLabel('Describe the speaking voice').fill('Edited and not saved yet');
+ // The install writes its own connection settings as it comes up.
+ change({ whisperUrl: 'http://127.0.0.1:7999/v1/audio/transcriptions' });
+ setState('running');
+ await expect(page.getByLabel('Speech recognition URL')).toHaveValue('http://127.0.0.1:7999/v1/audio/transcriptions', { timeout: 8000 });
+ await expect(page.getByLabel('Describe the speaking voice')).toHaveValue('Edited and not saved yet');
+});
+
+// Time goes by in the steps of the quick poll, with a moment of real time after each for the answer to come: a poll that is asked again only after its answer needs both.
+const elapse = async (page: any, ms: number) => {
+ for (let left = ms; left > 0; left -= 2500) { await page.clock.runFor(Math.min(2500, left)); await page.waitForTimeout(25); }
+};
+
+test('the install status is asked for slowly once it is steady, and not at all in a hidden tab', async ({ page }) => {
+ await page.clock.install();
+ const { reads, setState } = await uninstallPage(page, 'running');
+ await expect.poll(reads).toBeGreaterThan(0);
+ const first = reads();
+ await elapse(page, 60_000);
+ // A minute of a steady service: two more questions, not twenty-four.
+ expect(reads() - first).toBeLessThanOrEqual(3);
+ // Hidden: nothing is asked, however long it stays so.
+ await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }); document.dispatchEvent(new Event('visibilitychange')); });
+ const hidden = reads();
+ await elapse(page, 120_000);
+ expect(reads()).toBe(hidden);
+ // Looked at again: asked at once.
+ await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => false }); document.dispatchEvent(new Event('visibilitychange')); });
+ await expect.poll(reads).toBeGreaterThan(hidden);
+ // And quickly again once something is changing.
+ setState('starting');
+ await elapse(page, 32_500);
+ await expect(page.locator('summary').filter({ hasText: 'Voice service' })).toContainText('starting');
+ const starting = reads();
+ await elapse(page, 10_000);
+ expect(reads() - starting).toBeGreaterThanOrEqual(3);
+});
+
+// A steady service is looked at again every half minute, and at once when the tab is come back to.
+const lookAgain = (page: any) => page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+
 test('uninstall deletes the downloaded engines and models only when the box is ticked, and is not offered where nothing is installed', async ({ page }) => {
  const { requests, setState, setConnected } = await uninstallPage(page, 'absent');
  const uninstall = page.getByRole('button', { name: 'Uninstall', exact: true });
@@ -80,11 +123,14 @@ test('uninstall deletes the downloaded engines and models only when the box is t
  await expect(uninstall).toBeHidden();
  // The container was removed by hand and the settings still point at the service: they can be put right from here.
  setConnected(true);
+ await lookAgain(page);
  await expect(uninstall).toBeVisible({ timeout: 8000 });
  setConnected(false);
+ await lookAgain(page);
  await expect(uninstall).toBeHidden({ timeout: 8000 });
  // A stopped service is uninstalled too.
  setState('stopped');
+ await lookAgain(page);
  await expect(uninstall).toBeVisible({ timeout: 8000 });
  await uninstall.click();
  await page.getByRole('alertdialog').getByRole('checkbox', { name: /Also delete the downloaded engines and models/ }).check();
@@ -128,7 +174,7 @@ test('where the downloads cannot be deleted the page still shows the uninstall, 
 });
 
 test('speech detection settings save and restore defaults',async({page})=>{
- let config:any={enabled:true,whisperUrl:'http://localhost:8188/inference',breezeUrl:'http://localhost:7862/v1/audio/speech',instruction:'Clear speech',voice:'aria',runtime:'audio-cpp'};
+ let config:any={enabled:true,whisperUrl:'http://localhost:8188/inference',breezeUrl:'http://localhost:7862/v1/audio/speech',instruction:'Clear speech',voice:'design',runtime:'audio-cpp'};
  await page.route('**/api/voice/presets',r=>r.fulfill({json:[]}));
  await page.route('**/api/voice/install',r=>r.fulfill({json:{available:true,state:'running',busy:false}}));
  await page.route('**/api/voice',async r=>{if(r.request().method()==='PUT')config=r.request().postDataJSON();await r.fulfill({json:config});});
@@ -142,12 +188,11 @@ test('speech detection settings save and restore defaults',async({page})=>{
  await expect(silence).toHaveValue('500');
  await page.getByRole('button',{name:'Reset speech detection'}).click();
  await expect(silence).toHaveValue('1000');
- await page.screenshot({path:'/tmp/pithagoras-vad-settings.png'});
 });
 
 test('speaking instructions show the built-in text, save an edit and reset to the built-in text',async({page})=>{
  const builtIn='Built-in speaking instructions for this test.';
- let config:any={enabled:true,whisperUrl:'http://localhost:8188/inference',breezeUrl:'http://localhost:7862/v1/audio/speech',instruction:'Clear speech',voice:'aria',runtime:'audio-cpp'};
+ let config:any={enabled:true,whisperUrl:'http://localhost:8188/inference',breezeUrl:'http://localhost:7862/v1/audio/speech',instruction:'Clear speech',voice:'design',runtime:'audio-cpp'};
  const puts:any[]=[];
  await page.route('**/api/voice/presets',r=>r.fulfill({json:[]}));
  await page.route('**/api/voice/install',r=>r.fulfill({json:{available:true,state:'running',busy:false}}));
@@ -191,13 +236,12 @@ test('speaking instructions show the built-in text, save an edit and reset to th
  await expect(text).toBeVisible();
  await expect(text).toHaveValue(builtIn);
  await reset.scrollIntoViewIfNeeded();
- await page.screenshot({path:'/tmp/pithagoras-speaking-instructions.png'});
 });
 
 test('speaking instructions say when the portal is set to send none',async({page})=>{
  await page.route('**/api/voice/presets',r=>r.fulfill({json:[]}));
  await page.route('**/api/voice/install',r=>r.fulfill({json:{available:true,state:'running',busy:false}}));
- await page.route('**/api/voice',r=>r.fulfill({json:{enabled:true,whisperUrl:'http://localhost:8188/inference',breezeUrl:'http://localhost:7862/v1/audio/speech',instruction:'Clear speech',voice:'aria',runtime:'audio-cpp',responseInstructions:'Kept text.',defaultResponseInstructions:'Built-in.',responseInstructionsOff:true}}));
+ await page.route('**/api/voice',r=>r.fulfill({json:{enabled:true,whisperUrl:'http://localhost:8188/inference',breezeUrl:'http://localhost:7862/v1/audio/speech',instruction:'Clear speech',voice:'design',runtime:'audio-cpp',responseInstructions:'Kept text.',defaultResponseInstructions:'Built-in.',responseInstructionsOff:true}}));
  await page.goto('/tests/voice-addon.html');
  await page.locator('summary').filter({hasText:'Speaking instructions'}).click();
  await expect(page.getByRole('status').filter({hasText:'VOICE_RESPONSE_INSTRUCTIONS=false'})).toBeVisible();
@@ -207,7 +251,7 @@ test('speaking instructions say when the portal is set to send none',async({page
 test('saving other voice settings does not pin the built-in text of an older portal',async({page})=>{
  // The portal is updated, with new built-in text, while this page is open.
  let builtIn='Built-in text before the update.';
- let config:any={enabled:true,whisperUrl:'http://localhost:8188/inference',breezeUrl:'http://localhost:7862/v1/audio/speech',instruction:'Clear speech',voice:'aria',runtime:'audio-cpp',responseInstructions:''};
+ let config:any={enabled:true,whisperUrl:'http://localhost:8188/inference',breezeUrl:'http://localhost:7862/v1/audio/speech',instruction:'Clear speech',voice:'design',runtime:'audio-cpp',responseInstructions:''};
  const puts:any[]=[];
  const shown=()=>({...config,responseInstructions:config.responseInstructions||builtIn,defaultResponseInstructions:builtIn,responseInstructionsOff:false});
  await page.route('**/api/voice/presets',r=>r.fulfill({json:[]}));
@@ -240,7 +284,7 @@ test('saving other voice settings does not pin the built-in text of an older por
 const host = { totalMiB: 16384, freeMiB: 12000, threads: 8 };
 const hardware = (gpus: any[], checked = gpus.length > 0) => ({ gpus, source: 'host', error: '', checked, cpuOnly: false, host, selected: gpus.length ? 0 : null, chosen: '', reserveMiB: 0, suggestion: { tts: 'breeze', asr: 'qwen3-asr', asrModel: '0.6b' } });
 // A host that was found to have no GPU: what is suggested is recognition alone, on the CPU.
-const noGpu = (patch: any = {}) => ({ gpus: [], source: 'none', error: '', checked: true, cpuOnly: true, host, selected: null, reserveMiB: 0, suggestion: { tts: 'none', asr: 'qwen3-asr', asrModel: '0.6b' }, ...patch });
+const noGpu = (patch: any = {}) => ({ gpus: [], source: 'none', error: '', checked: true, cpuOnly: true, host, selected: null, reserveMiB: 0, suggestion: { tts: 'kokoro', ttsDevice: 'cpu', asr: 'qwen3-asr', asrModel: '0.6b' }, ...patch });
 const card = { index: 0, name: 'Test GPU', totalMiB: 6144, freeMiB: 5000 };
 const config = { enabled: false, whisperUrl: 'http://127.0.0.1:8178/inference', breezeUrl: 'http://127.0.0.1:7860/v1/audio/speech', instruction: 'Clear speech', voice: 'design', runtime: 'breeze', language: 'auto', cfgScale: 4 };
 
@@ -276,7 +320,6 @@ test('engine choice: the GPU is shown, the install picks for it by default, and 
  await synthesis.click();
  await page.getByRole('option',{name:/Chatterbox/}).click();
  await expect(page.getByText('Needs about 4.3 GiB of GPU memory. Fits.')).toBeVisible();
- await page.screenshot({path:'/tmp/pithagoras-voice-engines.png'});
  await page.getByRole('button',{name:'Install voice',exact:true}).click();
  await expect.poll(()=>posts.length).toBe(1);
  expect(posts[0]).toEqual({tts:'chatterbox',asr:'qwen3-asr',asrModel:'0.6b'});
@@ -443,13 +486,12 @@ test('engine choice: a GPU host also picks where recognition runs, and the CPU s
  await expect(page.getByRole('alert').filter({hasText:'more than this GPU has'})).toHaveCount(0);
  await expect(page.getByText('Needs about 2.9 GiB of memory on the CPU. Fits.')).toBeVisible();
  await expect(page.getByText('This host: 8 CPU threads, 16 GiB of memory, 11.7 GiB free')).toBeVisible();
- await page.screenshot({path:'/tmp/pithagoras-voice-engines-cpu.png'});
  await page.getByRole('button',{name:'Install voice',exact:true}).click();
  await expect.poll(()=>posts.length).toBe(1);
  expect(posts[0]).toEqual({tts:'breeze',asr:'qwen3-asr',asrModel:'1.7b',asrDevice:'cpu'});
 });
 
-test('engine choice: with no GPU only recognition works, which is said, and the speech engine is off with its reason',async({page})=>{
+test('engine choice: with no GPU everything runs on the CPU, which is said: Kokoro speaks there, and the other engines are not offered, with their reason',async({page})=>{
  const posts:any[]=[];let state='absent',choice:any;
  await page.route('**/api/voice/presets',r=>r.fulfill({json:[]}));
  await page.route('**/api/voice/hardware',r=>r.fulfill({json:noGpu()}));
@@ -461,32 +503,45 @@ test('engine choice: with no GPU only recognition works, which is said, and the 
  await page.goto('/tests/voice-addon.html');
  await page.locator('summary').filter({hasText:'Voice service'}).click();
  // The warning, and nothing that looks like a failure.
- await expect(page.getByRole('alert').filter({hasText:'No GPU detected. Only speech recognition works: you can dictate, but replies are not spoken.'})).toBeVisible();
+ await expect(page.getByRole('alert').filter({hasText:'No GPU detected. Everything runs on the CPU: Kokoro can speak, the other speech engines need a GPU.'})).toBeVisible();
  await expect(page.getByText('could not select device driver')).toHaveCount(0);
  await expect(page.getByText('GPU not checked yet.')).toHaveCount(0);
- // The speech engine is greyed out with the reason, whatever the toggle says.
- const synthesis=page.getByRole('combobox',{name:'Speech synthesis engine'}),recognition=page.getByRole('combobox',{name:'Speech recognition engine'}),device=page.getByRole('combobox',{name:'Speech recognition runs on'});
+ const synthesis=page.getByRole('combobox',{name:'Speech synthesis engine'}),speechDevice=page.getByRole('combobox',{name:'Speech synthesis runs on'}),recognition=page.getByRole('combobox',{name:'Speech recognition engine'}),device=page.getByRole('combobox',{name:'Speech recognition runs on'});
  await expect(synthesis).toBeDisabled();
- await expect(synthesis).toContainText('No speech synthesis');
- await expect(page.getByText('Speech synthesis needs a GPU. On a CPU, Breeze takes about 3.5 seconds to compute each second of speech and Chatterbox about 7, measured on 8 threads of a desktop CPU: too slow for conversation.')).toBeVisible();
- await expect(page.getByText('Suggested for this host: no speech synthesis with Qwen3-ASR 0.6B on the CPU.')).toBeVisible();
+ await expect(synthesis).toContainText('Kokoro');
+ await expect(page.getByText('Breeze and Chatterbox need a GPU: on a CPU, Breeze takes about 3.5 seconds to compute each second of speech and Chatterbox about 7, too slow for conversation. Kokoro takes about 0.24, measured on 8 threads of a desktop CPU like the others.')).toBeVisible();
+ await expect(page.getByText('Suggested for this host: Kokoro on the CPU with Qwen3-ASR 0.6B.')).toBeVisible();
  await expect(page.getByText('This host: 8 CPU threads, 16 GiB of memory, 11.7 GiB free')).toBeVisible();
  await page.getByRole('checkbox',{name:'Choose for me, based on my GPU'}).uncheck();
- await expect(synthesis).toBeDisabled();
- // Recognition is the choice: every engine and size, on the CPU only.
+ // The speech engines that run on the CPU, and none: Kokoro, on the CPU only.
+ await expect(synthesis).toBeEnabled();
+ await synthesis.click();
+ await expect(page.getByRole('option',{name:/Kokoro/})).toBeVisible();
+ await expect(page.getByRole('option',{name:/No speech synthesis/})).toBeVisible();
+ await expect(page.getByRole('option',{name:/Breeze|Chatterbox/})).toHaveCount(0);
+ await page.keyboard.press('Escape');
+ await expect(speechDevice).toBeDisabled();
+ await expect(speechDevice).toContainText('CPU');
+ await expect(page.getByText("On this host's 8 CPU threads, each second of speech takes about 0.24 seconds to make.")).toBeVisible();
+ // Recognition: every engine and size, on the CPU only.
  await expect(recognition).toBeEnabled();
  await expect(device).toBeDisabled();
  await expect(device).toContainText('CPU');
  await recognition.click();
  for(const name of [/Whisper base/,/Whisper small/,/Qwen3-ASR 0\.6B/,/Qwen3-ASR 1\.7B/])await expect(page.getByRole('option',{name})).toBeVisible();
  await page.getByRole('option',{name:/Whisper small/}).click();
- await expect(page.getByText('Needs about 0.9 GiB of memory on the CPU. Fits.')).toBeVisible();
+ // Kokoro's memory and Whisper's, both on the CPU, and nothing on a GPU.
+ await expect(page.getByText('Needs about 2.1 GiB of memory on the CPU. Fits.')).toBeVisible();
  await expect(page.getByText('Needs about',{exact:false}).filter({hasText:'GPU memory'})).toHaveCount(0);
- await page.screenshot({path:'/tmp/pithagoras-voice-engines-no-gpu.png'});
  await page.getByRole('button',{name:'Install voice',exact:true}).click();
  await expect.poll(()=>posts.length).toBe(1);
- expect(posts[0]).toEqual({tts:'none',asr:'whisper',asrModel:'small'});
- await expect(synthesis).toContainText('No speech synthesis');
+ expect(posts[0]).toEqual({tts:'kokoro',ttsDevice:'cpu',asr:'whisper',asrModel:'small'});
+ await expect(synthesis).toContainText('Kokoro');
+ // Recognition alone is still a choice, and has nothing to put on a device.
+ await synthesis.click();
+ await page.getByRole('option',{name:/No speech synthesis/}).click();
+ await expect(speechDevice).toHaveCount(0);
+ await expect(page.getByText('Needs about 0.9 GiB of memory on the CPU. Fits.')).toBeVisible();
 });
 
 test('engine choice: on a host without a GPU the install is left to the check, and nothing is refused',async({page})=>{
@@ -526,7 +581,12 @@ test('engine choice: an installed recognition-only service shows its engines, an
  await page.locator('summary').filter({hasText:'Voice service'}).click();
  const synthesis=page.getByRole('combobox',{name:'Speech synthesis engine'});
  await expect(page.getByRole('combobox',{name:'Speech recognition engine'})).toContainText('Qwen3-ASR 0.6B');
- await expect(synthesis).toBeDisabled();
+ // Kokoro can be added on the CPU; the engines that need a GPU are not offered.
+ await expect(synthesis).toBeEnabled();
+ await synthesis.click();
+ await expect(page.getByRole('option',{name:/Kokoro/})).toBeVisible();
+ await expect(page.getByRole('option',{name:/Breeze|Chatterbox/})).toHaveCount(0);
+ await page.keyboard.press('Escape');
  // No verdict on what runs: its own memory is what the host shows as taken.
  await expect(page.getByText('Needs about',{exact:false})).toHaveCount(0);
  // A GPU turns up: the installation is still shown as what it is, recognition alone, and speech can be added.
@@ -539,7 +599,7 @@ test('engine choice: an installed recognition-only service shows its engines, an
  await expect(synthesis).toContainText('No speech synthesis');
  await expect(synthesis).not.toContainText('Choose');
  await synthesis.click();
- for(const name of [/Breeze/,/Chatterbox/,/No speech synthesis/])await expect(page.getByRole('option',{name})).toBeVisible();
+ for(const name of [/Breeze/,/Chatterbox/,/Kokoro/,/No speech synthesis/])await expect(page.getByRole('option',{name})).toBeVisible();
  await page.getByRole('option',{name:/Breeze/}).click();
  await expect(page.getByRole('button',{name:'Rebuild with these engines'})).toBeVisible();
  // And back to what is installed is no change: nothing is left pending.
@@ -553,6 +613,41 @@ test('engine choice: an installed recognition-only service shows its engines, an
  await page.getByRole('button',{name:'Rebuild with these engines'}).click();
  await expect.poll(()=>posts.length).toBe(1);
  expect(posts[0]).toEqual({tts:'breeze',asr:'qwen3-asr',asrModel:'0.6b'});
+});
+
+test('engine choice: on a GPU host Kokoro can be put on the CPU, which spares the card, and recognition goes there with it',async({page})=>{
+ const posts:any[]=[];
+ await page.route('**/api/voice/presets',r=>r.fulfill({json:[]}));
+ await page.route('**/api/voice/hardware',r=>r.fulfill({json:hardware([card])}));
+ await page.route('**/api/voice',r=>r.fulfill({json:config}));
+ await page.route('**/api/voice/install',r=>{
+  if(r.request().method()==='POST'){posts.push(r.request().postDataJSON());return r.fulfill({json:{ok:true}});}
+  return r.fulfill({json:{available:true,state:'absent',busy:false,progress:'',error:''}});
+ });
+ await page.goto('/tests/voice-addon.html');
+ await page.locator('summary').filter({hasText:'Voice service'}).click();
+ await page.getByRole('checkbox',{name:'Choose for me, based on my GPU'}).uncheck();
+ const synthesis=page.getByRole('combobox',{name:'Speech synthesis engine'}),speechDevice=page.getByRole('combobox',{name:'Speech synthesis runs on'}),recognition=page.getByRole('combobox',{name:'Speech recognition engine'}),device=page.getByRole('combobox',{name:'Speech recognition runs on'});
+ // Breeze has the GPU only.
+ await expect(speechDevice).toBeDisabled();
+ await expect(speechDevice).toContainText('GPU');
+ await synthesis.click();
+ await page.getByRole('option',{name:/Kokoro/}).click();
+ await recognition.click();
+ await page.getByRole('option',{name:/Qwen3-ASR 0\.6B/}).click();
+ await expect(device).toBeEnabled();
+ await expect(device).toContainText('GPU');
+ // On the CPU: nothing is left on the GPU, so recognition is on the CPU too, and the memory is the host's.
+ await expect(speechDevice).toBeEnabled();
+ await speechDevice.click();
+ await page.getByRole('option',{name:/^CPU/}).click();
+ await expect(device).toBeDisabled();
+ await expect(device).toContainText('CPU');
+ await expect(page.getByText('Needs about',{exact:false}).filter({hasText:'GPU memory'})).toHaveCount(0);
+ await expect(page.getByText('Needs about 2.8 GiB of memory on the CPU. Fits.')).toBeVisible();
+ await page.getByRole('button',{name:'Install voice',exact:true}).click();
+ await expect.poll(()=>posts.length).toBe(1);
+ expect(posts[0]).toEqual({tts:'kokoro',ttsDevice:'cpu',asr:'qwen3-asr',asrModel:'0.6b'});
 });
 
 test('a service without speech synthesis is a listening one: the settings say so and offer nothing to speak with',async({page})=>{
@@ -573,6 +668,34 @@ test('a service without speech synthesis is a listening one: the settings say so
  await expect(page.getByLabel('Speech recognition URL')).toBeVisible();
  await expect(page.getByLabel('Speech synthesis URL')).toHaveCount(0);
  await expect(page.getByRole('combobox',{name:'Speech runtime'})).toContainText('No speech synthesis');
+});
+
+test('with Kokoro the voice list is its own voices, and its speed replaces the generation setting',async({page})=>{
+ const puts:any[]=[];
+ let saved:any={...config,enabled:true,runtime:'kokoro',breezeUrl:'http://127.0.0.1:7862/v1/audio/speech',voice:'voice-1',kokoroVoice:'af_heart',speed:1,managed:true};
+ await page.route('**/api/voice/presets',r=>r.fulfill({json:[{id:'voice-1',name:'Library clone',kind:'clone',instruction:'Warm.',transcript:'Hello.'}]}));
+ await page.route('**/api/voice',async r=>{if(r.request().method()==='PUT'){saved=r.request().postDataJSON();puts.push(saved);}await r.fulfill({json:saved});});
+ await page.route('**/api/voice/install',r=>r.fulfill({json:{available:true,state:'running',busy:false,progress:'',error:'',choice:{tts:'kokoro',asr:'whisper',asrModel:'base'}}}));
+ await page.goto('/tests/voice-addon.html');
+ const voice=page.getByRole('combobox',{name:'Speaking voice'});
+ await expect(voice).toContainText('Heart');
+ await voice.click();
+ await expect(page.getByRole('option',{name:/Emma.*British English · female/})).toBeVisible();
+ await expect(page.getByRole('option',{name:/Library clone|Designed voice/})).toHaveCount(0);
+ await expect(page.getByRole('option',{name:/Japanese/})).toHaveCount(0);
+ await page.getByRole('option',{name:/Emma/}).click();
+ await expect(page.getByText('Speech generation')).toHaveCount(0);
+ await page.getByRole('combobox',{name:'Speaking speed'}).click();
+ await page.getByRole('option',{name:'Faster'}).click();
+ await page.getByRole('button',{name:'Save voice settings'}).click();
+ await expect.poll(()=>puts.length).toBe(1);
+ // The library voice is kept for the other engines.
+ expect([puts[0].kokoroVoice,puts[0].speed,puts[0].voice]).toEqual(['bf_emma',1.15,'voice-1']);
+ // Another engine has the library again.
+ await page.locator('summary').filter({hasText:'Advanced connection'}).click();
+ await page.getByRole('combobox',{name:'Speech runtime'}).click();
+ await page.getByRole('option',{name:/Breeze audio\.cpp/}).click();
+ await expect(voice).toContainText('Library clone');
 });
 
 test('engine choice: a pick made before the GPU check answers is recognition alone once it says there is no GPU',async({page})=>{
@@ -625,14 +748,50 @@ test('engine choice: a speech engine installed on a host that has lost its GPU c
  expect(posts[0]).toEqual({tts:'none',asr:'whisper',asrModel:'base'});
 });
 
-test('engine choice: a card that Docker cannot use is named, with what to install, and only recognition is offered',async({page})=>{
+test('engine choice: a card that Docker cannot use is named, with what to install, and only what runs on the CPU is offered',async({page})=>{
  await page.route('**/api/voice/presets',r=>r.fulfill({json:[]}));
  await page.route('**/api/voice/hardware',r=>r.fulfill({json:noGpu({unusable:['Test GPU']})}));
  await page.route('**/api/voice',r=>r.fulfill({json:config}));
  await page.route('**/api/voice/install',r=>r.fulfill({json:{available:true,state:'absent',busy:false,progress:'',error:''}}));
  await page.goto('/tests/voice-addon.html');
  await page.locator('summary').filter({hasText:'Voice service'}).click();
- await expect(page.getByRole('alert').filter({hasText:'GPU detected: Test GPU, but Docker cannot use it. Install the NVIDIA Container Toolkit and restart Docker. Until then only speech recognition works: you can dictate, but replies are not spoken.'})).toBeVisible();
+ await expect(page.getByRole('alert').filter({hasText:'GPU detected: Test GPU, but Docker cannot use it. Install the NVIDIA Container Toolkit and restart Docker. Until then everything runs on the CPU: Kokoro can speak, the other speech engines need the GPU.'})).toBeVisible();
  await expect(page.getByRole('combobox',{name:'Speech synthesis engine'})).toBeDisabled();
- await expect(page.getByRole('combobox',{name:'Speech synthesis engine'})).toContainText('No speech synthesis');
+ await expect(page.getByRole('combobox',{name:'Speech synthesis engine'})).toContainText('Kokoro');
+ await expect(page.getByRole('combobox',{name:'Speech synthesis runs on'})).toContainText('CPU');
+});
+
+test('the providers that reply without thinking first: the list is typed with commas, saved as the server keeps it, and reset to the default one',async({page})=>{
+ const builtIn=['llama.cpp','llama-server','llama-swap'];
+ let config:any={enabled:true,whisperUrl:'http://localhost:8188/inference',breezeUrl:'http://localhost:7862/v1/audio/speech',instruction:'Clear speech',voice:'design',runtime:'audio-cpp'};
+ const puts:any[]=[];
+ await page.route('**/api/voice/presets',r=>r.fulfill({json:[]}));
+ await page.route('**/api/voice/install',r=>r.fulfill({json:{available:true,state:'running',busy:false}}));
+ // As the server answers: the list in use, the default one to go back to, and a list saved each name once.
+ const shown=()=>({...config,skipThinkingProviders:config.skipThinkingProviders??builtIn,defaultSkipThinkingProviders:builtIn});
+ await page.route('**/api/voice',async r=>{
+  if(r.request().method()==='PUT'){const body=r.request().postDataJSON();puts.push(body);const names=[...new Set<string>(body.skipThinkingProviders)];config={...body,skipThinkingProviders:names.join()===builtIn.join()?undefined:names};}
+  return r.fulfill({json:shown()});
+ });
+ await page.goto('/tests/voice-addon.html');
+ const field=page.getByRole('textbox',{name:'Reply without thinking first on'});
+ const reset=page.getByRole('button',{name:'Reset to the default list'});
+ await expect(field).toHaveValue('llama.cpp, llama-server, llama-swap');
+ await expect(reset).toBeDisabled();
+ // Typed as it is, commas and all, while it is written.
+ await field.fill('llama-swap, my-gateway, llama-swap, ');
+ await expect(field).toHaveValue('llama-swap, my-gateway, llama-swap, ');
+ await expect(reset).toBeEnabled();
+ const save=page.getByRole('button',{name:'Save voice settings'}),saved=page.getByRole('button',{name:'Saved',exact:true});
+ await save.click();
+ await expect(saved).toBeVisible();
+ expect(puts.at(-1).skipThinkingProviders).toEqual(['llama-swap','my-gateway','llama-swap']);
+ // Once saved, the list the server kept, not the text that was typed.
+ await expect(field).toHaveValue('llama-swap, my-gateway');
+ await reset.click();
+ await expect(field).toHaveValue('llama.cpp, llama-server, llama-swap');
+ await save.click();
+ await expect(saved).toBeVisible();
+ expect(puts.at(-1).skipThinkingProviders).toEqual(builtIn);
+ expect(config.skipThinkingProviders).toBeUndefined();
 });

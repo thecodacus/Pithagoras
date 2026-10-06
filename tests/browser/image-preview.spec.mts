@@ -1,4 +1,5 @@
-import { test, expect, type Locator, type Page } from '@playwright/test';
+import { type Locator, type Page } from '@playwright/test';
+import { test, expect } from './portal-mock';
 import zlib from 'node:zlib';
 
 /**
@@ -6,8 +7,8 @@ import zlib from 'node:zlib';
  * web/tests/pictures.tsx, and as the tile on a card in voice mode.
  */
 
-/** A plain picture of this size, as the chat's folder would serve one. */
-function picture(width: number, height: number): Buffer {
+/** A plain picture of this size, as the chat's folder would serve one; `shade` is its grey, from 0 (black) to 255 (white). */
+function picture(width: number, height: number, shade = 150): Buffer {
   const chunk = (type: string, data: Buffer) => {
     const length = Buffer.alloc(4);
     length.writeUInt32BE(data.length);
@@ -21,7 +22,7 @@ function picture(width: number, height: number): Buffer {
   head.writeUInt32BE(height, 4);
   head[8] = 8;
   head[9] = 2;
-  const row = Buffer.concat([Buffer.from([0]), Buffer.alloc(width * 3, 150)]);
+  const row = Buffer.concat([Buffer.from([0]), Buffer.alloc(width * 3, shade)]);
   return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', head), chunk('IDAT', zlib.deflateSync(Buffer.concat(Array.from({ length: height }, () => row)))), chunk('IEND', Buffer.alloc(0))]);
 }
 
@@ -75,6 +76,40 @@ test.describe('in the chat', () => {
     await expect(call(page, making).locator('.chat-tool-body')).toContainText('generate_image');
     await expect(call(page, making).locator('.chat-tool-body')).toContainText('A foggy harbour at first light');
     await expect(call(page, making).locator('.chat-tool-body')).toContainText('1024x1536');
+  });
+
+  test('the seconds of an edit are on a plate of their own, to be read over a picture that is bright or dark, in the light theme and the dark', async ({ page }) => {
+    // WCAG's relative luminance and contrast, for colours as `rgb()` or `rgba()` says them.
+    const channels = (css: string) => (css.match(/[\d.]+/g) ?? []).map(Number);
+    const luminance = ([r, g, b]: number[]) => [r, g, b].map((c) => ((c /= 255) <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)).reduce((sum, c, i) => sum + c * [0.2126, 0.7152, 0.0722][i], 0);
+    const contrast = (a: number[], b: number[]) => (Math.max(luminance(a), luminance(b)) + 0.05) / (Math.min(luminance(a), luminance(b)) + 0.05);
+    for (const scheme of ['light', 'dark'] as const) {
+      for (const shade of [255, 0]) {
+        // The original under the wait is as bright, or as dark, as a picture can be: the worst a plate has to hold against.
+        await page.route('**/api/sessions/preview/picture?path=photos%2Fdog.png*', (route) => route.fulfill({ body: picture(200, 100, shade), contentType: 'image/png', headers: { 'cache-control': 'no-store' } }));
+        await page.goto('/tests/pictures.html');
+        // The fixture has no theme of its own: the page's switch is the attribute the styles read.
+        await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, scheme);
+        const editing = preview(page, 'The dog in the snow');
+        await expect(editing.locator('.image-preview-frame')).toHaveClass(/has-before/);
+        await expect(editing.locator('.image-preview-before')).toBeVisible();
+        const seconds = editing.locator('.image-preview-making > small');
+        await expect(seconds).toHaveText(/^\d+s$|^\d+:\d\d$/);
+        const look = await seconds.evaluate((el) => {
+          const css = getComputedStyle(el);
+          return { color: css.color, background: css.backgroundColor, radius: parseFloat(css.borderTopLeftRadius), padding: parseFloat(css.paddingLeft) };
+        });
+        const name = `${scheme} theme over ${shade ? 'a white' : 'a black'} picture`;
+        const [r, g, b, alpha = 1] = channels(look.background);
+        // A surface of its own, nearly opaque, and a pill: not text on the picture.
+        expect(alpha, name).toBeGreaterThanOrEqual(0.85);
+        expect(look.padding, name).toBeGreaterThan(0);
+        expect(look.radius, name).toBeGreaterThan(8);
+        // What the plate comes to over the picture, and the text on that, as a reader of small text needs it.
+        const plate = [r, g, b].map((c) => c * alpha + shade * (1 - alpha));
+        expect(contrast(channels(look.color).slice(0, 3), plate), name).toBeGreaterThanOrEqual(4.5);
+      }
+    }
   });
 
   test('a picture that is made fills the frame it was given, and is a button for the viewer', async ({ page }) => {

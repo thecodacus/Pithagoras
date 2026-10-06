@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, realpathSync, unlinkSync } from "node:fs";
+import { chmodSync, mkdirSync, realpathSync, unlinkSync } from "node:fs";
 import net from "node:net";
 import path from "node:path";
 
@@ -40,9 +40,21 @@ const answered = (address: string) =>
  * A socket left by a server that ended answers nobody, and is replaced. Where
  * no socket can be made in the directory — a path too long for one, a file
  * system that has none — one named after the directory stands in, outside it.
+ *
+ * The directory is closed to everyone but its owner, on every start, one made
+ * by an older version or by hand too: portal.db holds the channels' bot tokens,
+ * the add-ons' passwords and every conversation, and with the usual umask the
+ * folder, the database and its backups would be readable by every account on
+ * the machine.
  */
 export async function holdDataDir(dir: string): Promise<boolean> {
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    chmodSync(dir, 0o700);
+  } catch (e) {
+    // A folder that is somebody else's, or on a file system without modes: the portal runs, and says so.
+    console.warn(`[portal] could not restrict ${dir} to its owner: ${(e as Error).message}`);
+  }
   const real = realpathSync(dir);
   const file = path.join(real, "portal.sock");
   const named = `\0pithagoras-${createHash("sha256").update(real).digest("hex").slice(0, 32)}`;

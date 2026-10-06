@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import path from "node:path";
+import { inProcessHome } from "./server-harness.mjs";
 
 /**
  * The tool lists learn what a chat registered. A chat that is open while image
@@ -10,11 +10,7 @@ import path from "node:path";
  * without the lists hearing of it, so the lists know the portal's own tools
  * from the settings: the person who has just switched editing on sees it.
  */
-const home = mkdtempSync(path.join(tmpdir(), "pithagoras-tools-portal-picture-"));
-process.env.DATA_DIR = home;
-process.env.WORKSPACE_ROOT = path.join(home, "ws");
-process.env.PI_CODING_AGENT_DIR = path.join(home, "agent");
-mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
+const home = inProcessHome("pithagoras-tools-portal-picture-");
 
 const db = await import("../dist/db.js");
 const gen = await import("../dist/image-generation.js");

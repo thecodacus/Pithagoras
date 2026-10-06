@@ -1,1 +1,27 @@
-<!doctype html><html data-theme="dark"><head><meta name="viewport" content="width=device-width, initial-scale=1" /></head><body><div id="root" style="height:100vh"></div><script type="module" src="/tests/chat.tsx"></script></body></html>
+<!doctype html><html data-theme="dark"><head><meta name="viewport" content="width=device-width, initial-scale=1" />
+<script>
+// With `&count=1`: React tells a hook of this name about every commit (as its devtools are told), and this one counts how often each
+// component named in `window.watched` ran, by the name of its function. `window.drawn` has the counts.
+if (location.search.includes('count=1')) {
+  window.watched = ['CopyAction', 'GitPanel', 'ChildItem', 'JobOutput'];
+  window.drawn = {};
+  window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = {
+    supportsFiber: true, isDisabled: false, renderers: new Map(),
+    inject() { return 1; }, checkDCE() {}, onScheduleFiberRoot() {}, onCommitFiberUnmount() {},
+    onCommitFiberRoot(_id, root) {
+      // As the devtools do: a fiber whose child is the one it had before did not run anything below itself, and what
+      // flags it carries then are from a draw long ago.
+      const walk = (fiber, was) => {
+        const type = fiber.type, own = typeof type === 'function' ? type.name : type && type.type && type.type.name;
+        // The bundler numbers a function that shares its name with the memo around it ("GitPanel2").
+        const name = own && own.replace(/\d+$/, '');
+        // Bit 1 is "performed work": the component ran, rather than being skipped as unchanged.
+        if (fiber.flags & 1 && window.watched.includes(name)) window.drawn[name] = (window.drawn[name] || 0) + 1;
+        if (was && fiber.child === was.child) return;
+        for (let child = fiber.child; child; child = child.sibling) walk(child, child.alternate);
+      };
+      walk(root.current, root.current.alternate);
+    },
+  };
+}
+</script></head><body><div id="root" style="height:100vh"></div><script type="module" src="/tests/chat.tsx"></script></body></html>
