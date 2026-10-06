@@ -1386,7 +1386,7 @@ app.use("/api", mcpRouter());
 app.use("/api", providersRouter());
 app.use("/api", peopleRouter());
 app.use("/api", browserRouter());
-app.use("/api", sandboxRouter());
+app.use("/api", sandboxRouter(sessions));
 app.use("/api", voiceRouter());
 app.use("/api", terminalRouter());
 app.use("/api", canvasesRouter());

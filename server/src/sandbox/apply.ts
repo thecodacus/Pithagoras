@@ -83,53 +83,68 @@ function passable(policy: SandboxPolicy, target: string, report: ApplyReport) {
 
 async function applyRules(policy: SandboxPolicy, ids: Ids, report: ApplyReport, deep: boolean) {
   for (const rule of widestFirst(policy)) {
-    if (!existsSync(rule.path)) {
-      // The sandbox's own HOME is made; others are put on when they appear, on the next apply.
-      if (rule.path !== SANDBOX_HOME) {
-        report.done.push(`${rule.path}: not there yet`);
-        continue;
+    // Each rule on its own: one that cannot be put on must not leave the rest undone, as /certs on a
+    // read-only mount once did to every rule after it.
+    try {
+      await applyRule(policy, rule, ids, report, deep);
+    } catch (e) {
+      const err = e as NodeJS.ErrnoException;
+      if (err.code === "EROFS") report.done.push(`${rule.path}: on a read-only filesystem, left as it is`);
+      else {
+        report.ok = false;
+        report.warnings.push(`${rule.path}: ${err.message}`);
       }
-      mkdirSync(rule.path, { recursive: true });
     }
-    const dir = lstatSync(rule.path).isDirectory();
-    if (rule.access === "none") {
-      const keys = rule.path === SECRETS_DIR;
-      chownSync(rule.path, 0, keys ? ids.tools : 0);
-      chmodSync(rule.path, dir ? (keys ? 0o750 : 0o700) : keys ? 0o640 : 0o600);
-      // A database's journal holds what was written last: SQLite keeps it beside the file, readable unless closed too.
-      if (!dir) {
-        for (const side of ["-wal", "-shm", "-journal"]) {
-          const sibling = `${rule.path}${side}`;
-          if (existsSync(sibling)) {
-            chownSync(sibling, 0, 0);
-            chmodSync(sibling, 0o600);
-          }
+  }
+}
+
+async function applyRule(policy: SandboxPolicy, rule: SandboxPolicy["rules"][number], ids: Ids, report: ApplyReport, deep: boolean) {
+  if (!existsSync(rule.path)) {
+    // The sandbox's own HOME is made; others are put on when they appear, on the next apply.
+    if (rule.path !== SANDBOX_HOME) {
+      report.done.push(`${rule.path}: not there yet`);
+      return;
+    }
+    mkdirSync(rule.path, { recursive: true });
+  }
+  const dir = lstatSync(rule.path).isDirectory();
+  if (rule.access === "none") {
+    const keys = rule.path === SECRETS_DIR;
+    chownSync(rule.path, 0, keys ? ids.tools : 0);
+    chmodSync(rule.path, dir ? (keys ? 0o750 : 0o700) : keys ? 0o640 : 0o600);
+    // A database's journal holds what was written last: SQLite keeps it beside the file, readable unless closed too.
+    if (!dir) {
+      for (const side of ["-wal", "-shm", "-journal"]) {
+        const sibling = `${rule.path}${side}`;
+        if (existsSync(sibling)) {
+          chownSync(sibling, 0, 0);
+          chmodSync(sibling, 0o600);
         }
       }
-      report.done.push(`${rule.path}: no access`);
-      continue;
     }
-    passable(policy, rule.path, report);
-    if (rule.access === "read") {
-      if (deep && dir) {
-        await recursive(["chown", "-R", "--no-dereference", ":0", rule.path], report);
-        await recursive(["chmod", "-R", "go-w,o+rX", rule.path], report);
-      } else {
-        chownSync(rule.path, statSync(rule.path).uid, 0);
-        chmodSync(rule.path, (statSync(rule.path).mode & 0o7777 & ~0o022) | (dir ? 0o005 : 0o004));
-      }
-      report.done.push(`${rule.path}: read-only`);
+    report.done.push(`${rule.path}: no access`);
+    return;
+  }
+  passable(policy, rule.path, report);
+  if (rule.access === "read") {
+    if (deep && dir) {
+      await recursive(["chown", "-R", "--no-dereference", ":0", rule.path], report);
+      await recursive(["chmod", "-R", "go-w,o+rX", rule.path], report);
     } else {
-      if (deep && dir) {
-        await recursive(["chown", "-R", "--no-dereference", `:${ids.group}`, rule.path], report);
-        await recursive(["chmod", "-R", "g+rwX", rule.path], report);
-        await recursive(["find", rule.path, "-type", "d", "-exec", "chmod", "g+s", "{}", "+"], report);
-      } else {
-        chownSync(rule.path, statSync(rule.path).uid, ids.group);
-        chmodSync(rule.path, (statSync(rule.path).mode & 0o7777) | (dir ? 0o2070 : 0o060));
-      }
-      report.done.push(`${rule.path}: read and write`);
+      chownSync(rule.path, statSync(rule.path).uid, 0);
+      chmodSync(rule.path, (statSync(rule.path).mode & 0o7777 & ~0o022) | (dir ? 0o005 : 0o004));
     }
+    report.done.push(`${rule.path}: read-only`);
+  } else {
+    if (deep && dir) {
+      await recursive(["chown", "-R", "--no-dereference", `:${ids.group}`, rule.path], report);
+      await recursive(["chmod", "-R", "g+rwX", rule.path], report);
+      await recursive(["find", rule.path, "-type", "d", "-exec", "chmod", "g+s", "{}", "+"], report);
+    } else {
+      chownSync(rule.path, statSync(rule.path).uid, ids.group);
+      chmodSync(rule.path, (statSync(rule.path).mode & 0o7777) | (dir ? 0o2070 : 0o060));
+    }
+    report.done.push(`${rule.path}: read and write`);
   }
 }
 
@@ -253,12 +268,14 @@ export async function applySandbox(policy: SandboxPolicy, support: SandboxSuppor
     await applyRules(policy, support.ids, report, deep);
     await applyTrusted(policy, support.ids, report);
     toolWrappers(support.ids, report);
-    writeFileSync(ON_FLAG, "on\n", { mode: 0o644 });
-    if (deep) putSetting("sandbox_applied", rulesHash(policy));
   } catch (e) {
     report.ok = false;
     report.warnings.push((e as Error).message);
   }
+  // The search wrappers follow the switch, whatever else went wrong: a rule that did not go on must not put
+  // search back on the portal's user. Only a whole apply counts as applied, so the next start tries again.
+  writeFileSync(ON_FLAG, "on\n", { mode: 0o644 });
+  if (report.ok && deep) putSetting("sandbox_applied", rulesHash(policy));
   return report;
 }
 

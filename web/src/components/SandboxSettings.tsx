@@ -20,6 +20,7 @@ export function SandboxSettings({ onError }: { onError: (message: string) => voi
   const [draft, setDraft] = useState<SandboxPolicy | null>(null);
   const [busy, setBusy] = useState(false);
   const [report, setReport] = useState<SandboxReport | null>(null);
+  const [chats, setChats] = useState<{ reloaded: number; waiting: number } | null>(null);
 
   useEffect(() => {
     api.sandbox().then((s) => {
@@ -40,6 +41,7 @@ export function SandboxSettings({ onError }: { onError: (message: string) => voi
       setState({ ...state, policy: r.policy, lastReport: r.report });
       setDraft(r.policy);
       setReport(r.report);
+      setChats(r.chats);
     } catch (e) {
       onError((e as Error).message);
     } finally {
@@ -134,6 +136,11 @@ export function SandboxSettings({ onError }: { onError: (message: string) => voi
         <Section title={t("Last applied")}>
           {report.warnings.length > 0 && (
             <ul className="mb-2 space-y-1 text-xs text-warn">{report.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>
+          )}
+          {chats && (chats.reloaded > 0 || chats.waiting > 0) && (
+            <p className="mb-2 text-xs text-fg-muted">
+              {tx("Open chats reloaded with the new tools: {reloaded}. Busy, and switched as soon as they finish: {waiting}.", { reloaded: chats.reloaded, waiting: chats.waiting })}
+            </p>
           )}
           <details className="text-xs text-fg-muted">
             <summary className="cursor-pointer">{t("What was done")} ({report.done.length})</summary>

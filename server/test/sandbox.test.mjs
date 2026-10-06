@@ -52,12 +52,15 @@ test("the sandbox holds against the ways round it", { skip: why }, async (t) => 
   const { parsePolicy, saveSandboxPolicy, sandboxSupport, defaultRules } = await import("../dist/sandbox/policy.js");
   const { applySandbox } = await import("../dist/sandbox/apply.js");
   const { bashSpawnHook, fileOperations } = await import("../dist/sandbox/exec.js");
-  const policy = parsePolicy({ enabled: true, rules: defaultRules(), trusted: [{ name: "show-key", script: "show-key" }] });
+  // /sys is read-only in a container, as /certs is on a portal that mounts it so: put on first, as the widest.
+  const policy = parsePolicy({ enabled: true, rules: [{ path: "/sys", access: "none" }, ...defaultRules()], trusted: [{ name: "show-key", script: "show-key" }] });
   saveSandboxPolicy(policy);
   const support = sandboxSupport();
   assert.equal(support.available, true, support.reason);
   const report = await applySandbox(policy, support, true);
   assert.equal(report.ok, true, report.warnings.join("\n"));
+  // A rule on a read-only filesystem is noted and the others still go on.
+  if (spawnSync("sh", ["-c", "touch /sys/x 2>&1 | grep -q 'Read-only'"]).status === 0) assert.ok(report.done.some((d) => /^\/sys: on a read-only filesystem/.test(d)), report.done.join("\n"));
 
   // What pi's bash runs, through the spawn hook, as it would.
   const hook = bashSpawnHook(support.ids);
@@ -158,6 +161,22 @@ test("the sandbox holds against the ways round it", { skip: why }, async (t) => 
     assert.doesNotMatch(found.stdout, /sk-secret-123/);
     const ok = spawnSync(rg, ["hello", path.join(WORK, "project")], { encoding: "utf8" });
     assert.match(ok.stdout, /notes\.txt/);
+  });
+
+  await t.test("the sandbox's tools follow the switch each time they are loaded, so a reload reaches open chats", async () => {
+    const { sandboxTools } = await import("../dist/sandbox/tools.js");
+    const names = (factory) => {
+      const got = [];
+      factory({ registerTool: (t) => got.push(t.name) });
+      return got.sort();
+    };
+    const fakePi = new Proxy({}, { get: (_, key) => (_cwd) => ({ name: String(key).replace(/^create(\w+)ToolDefinition$/, "$1").toLowerCase() }) });
+    const factory = await sandboxTools(fakePi, path.join(WORK, "project"));
+    assert.deepEqual(names(factory), ["bash", "edit", "grep", "ls", "read", "write"]);
+    saveSandboxPolicy({ ...policy, enabled: false });
+    assert.deepEqual(names(factory), [], "switched off: the built-ins stay");
+    saveSandboxPolicy(policy);
+    assert.equal(names(factory).length, 6, "and on again");
   });
 
   await t.test("switched off, the search wrappers run as the portal again and nothing else changes", async () => {

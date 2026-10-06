@@ -17,16 +17,18 @@ import { sandboxOn, sandboxPolicy, sandboxSupport } from "./policy.js";
  * The chat's folder is made writable for the sandbox first, where a rule says
  * so: see prepareFolder.
  *
- * Null when the sandbox is off or not possible here: the built-ins stay.
+ * Whether to is decided each time the extension is loaded, not when the chat
+ * started: switching the sandbox on or off reloads the open chats, and each
+ * then gets the tools that fit (the built-ins come back where nothing takes
+ * their place).
  */
-export async function sandboxTools(pi: any, cwd: string): Promise<((ext: any) => void) | null> {
-  if (!sandboxOn()) return null;
-  const support = sandboxSupport();
-  await prepareFolder(sandboxPolicy(), support, cwd);
-  const ids = support.ids!;
-  const ops = fileOperations(ids);
-  const settings = readPiSettings() as { shellCommandPrefix?: string; shellPath?: string; images?: { autoResize?: boolean } };
+export async function sandboxTools(pi: any, cwd: string): Promise<(ext: any) => void> {
+  if (sandboxOn()) await prepareFolder(sandboxPolicy(), sandboxSupport(), cwd);
   return (ext: any) => {
+    if (!sandboxOn()) return;
+    const ids = sandboxSupport().ids!;
+    const ops = fileOperations(ids);
+    const settings = readPiSettings() as { shellCommandPrefix?: string; shellPath?: string; images?: { autoResize?: boolean } };
     ext.registerTool(pi.createBashToolDefinition(cwd, {
       spawnHook: bashSpawnHook(ids),
       ...(settings.shellCommandPrefix ? { commandPrefix: settings.shellCommandPrefix } : {}),

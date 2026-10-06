@@ -729,7 +729,7 @@ export const api = {
     json<{ connectedAs: string | null }>("/api/browser/connect", { method: "DELETE" }),
   sandbox: () => json<SandboxState>("/api/sandbox"),
   setSandbox: (policy: SandboxPolicy) =>
-    json<{ policy: SandboxPolicy; report: SandboxReport }>("/api/sandbox", { method: "PUT", body: JSON.stringify(policy) }),
+    json<{ policy: SandboxPolicy; report: SandboxReport; chats: { reloaded: number; waiting: number } }>("/api/sandbox", { method: "PUT", body: JSON.stringify(policy) }),
   setBrowserCursor: (on: boolean) =>
     json<{ cursor: boolean }>("/api/browser/cursor", { method: "PUT", body: JSON.stringify({ on }) }),
   setBrowserAllowlist: (domains: string) =>
