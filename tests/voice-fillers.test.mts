@@ -1,6 +1,6 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import express from 'express';
@@ -10,6 +10,7 @@ process.env.DOCKER_SOCKET = join(dir, 'no-docker.sock');
 const { voiceRouter, pcmWav, fillers: shared } = await import('../server/src/api/voice.js');
 const { FillerStore, FILLERS } = await import('../server/src/voice-fillers.js');
 const { getDb } = await import('../server/src/db.js');
+const { addVoice, deleteVoice } = await import('../server/src/voice-presets.js');
 const seconds = (n: number) => Buffer.alloc(Math.round(n * 24000) * 2, 1);
 const tick = (ms = 0) => new Promise(resolve => setTimeout(resolve, ms));
 const KEY = 'a'.repeat(40);
@@ -317,9 +318,11 @@ after(async () => {
   await Promise.all([new Promise<void>(r => server.close(() => r())), new Promise<void>(r => backend.close(() => r()))]);
   getDb().close(); rmSync(dir, { recursive: true, force: true });
 });
-mkdirSync(join(dir, 'voices')); writeFileSync(join(dir, 'voices/aria.wav'), pcmWav(Buffer.alloc(32))); writeFileSync(join(dir, 'voices/aria.txt'), 'The reference words.');
+// A voice from the library, cloned from a one-second recording: what Chatterbox speaks with.
+const recording = (() => { const wav = Buffer.concat([Buffer.alloc(44), Buffer.alloc(32000)]); wav.write('RIFF', 0); wav.writeUInt32LE(wav.length - 8, 4); wav.write('WAVEfmt ', 8); wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22); wav.writeUInt32LE(16000, 24); wav.writeUInt32LE(32000, 28); wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34); wav.write('data', 36); wav.writeUInt32LE(32000, 40); return wav; })();
+const voice = addVoice({ name: 'Test voice', kind: 'clone', instruction: 'A calm voice.', transcript: 'The reference words.', audio: recording.toString('base64') });
 getDb().prepare("INSERT INTO sessions (id,title,workspace,executor,status,created_at,updated_at) VALUES ('s','Voice','/tmp','host','idle','now','now')").run();
-const save = (extra: object = {}) => fetch(`${base}/voice`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true, whisperUrl: `http://127.0.0.1:${port}/inference`, breezeUrl: `http://127.0.0.1:${port}/v1/audio/speech`, instruction: 'A calm voice.', runtime: 'chatterbox', voice: 'aria', language: 'de', ...extra }) });
+const save = (extra: object = {}) => fetch(`${base}/voice`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true, whisperUrl: `http://127.0.0.1:${port}/inference`, breezeUrl: `http://127.0.0.1:${port}/v1/audio/speech`, instruction: 'A calm voice.', runtime: 'chatterbox', voice: voice.id, language: 'de', ...extra }) });
 const fillers = async () => (await fetch(`${base}/sessions/s/voice/fillers`)).json() as Promise<{ key: string; clips: number[]; rendering: boolean }>;
 const ready = async () => { let status = await fillers(); while (status.rendering) { await tick(10); status = await fillers(); } return status; };
 
@@ -436,8 +439,9 @@ test('a portal with status speech off, or with no speech synthesis, makes and of
 });
 
 test('a voice that cannot speak has no fillers, and says why', async () => {
-  rmSync(join(dir, 'voices/aria.wav'));
   assert.equal((await save({ language: 'pl' })).status, 200);
+  // The voice is deleted: the setting falls back to the designed one, which Chatterbox cannot speak.
+  deleteVoice(voice.id);
   const status = await fillers() as { clips: number[]; error?: string };
-  assert.deepEqual(status.clips, []); assert.match(status.error ?? '', /Aria/);
+  assert.deepEqual(status.clips, []); assert.match(status.error ?? '', /reference clone/);
 });
