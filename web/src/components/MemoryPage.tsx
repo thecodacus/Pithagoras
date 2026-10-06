@@ -503,7 +503,8 @@ const conceptOf = (path: string, d: NoteDraft): MemoryConcept => ({
 });
 
 /** What a draft is started from: the note's words, and the time Understory wrote them, which it sets on every write. */
-const baseOf = (c: MemoryConcept): string => JSON.stringify([startedFrom(c), c.frontmatter?.timestamp ?? null]);
+// The body without the newlines it ends in: the file a save writes ends in one that the answer to the save does not have.
+const baseOf = (c: MemoryConcept): string => JSON.stringify([{ ...startedFrom(c), body: c.body.replace(/\n+$/, "") }, c.frontmatter?.timestamp ?? null]);
 
 /** What a note's form holds while it is edited. */
 function Note({
@@ -621,11 +622,14 @@ function Note({
         } catch (e) {
           // Deleted meanwhile: the edit is not lost with it, and "Save mine anyway" writes the note again.
           if (!(e instanceof ApiError && e.status === 404)) throw e;
+          // Given up, the edit goes back to what the read said: the note is not there to be shown.
+          missing.current = e.message;
           setGone(true);
           setChanged(true);
           return;
         }
         // It is there: written again since it was found gone, or never gone.
+        missing.current = null;
         setGone(false);
         if (baseOf(now) !== base) {
           missing.current = null;
