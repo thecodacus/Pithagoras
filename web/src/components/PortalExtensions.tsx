@@ -36,12 +36,13 @@ export function PortalExtensions({ onError }: { onError: (e: string) => void }) 
   };
   return <div>
     <p className="mb-4 text-xs text-fg-muted">{t("Install and manage the add-ons for your sessions.")}</p>
-    <div role="tablist" aria-label={t("Add-ons")} onKeyDown={tabKeys} className="flex gap-1 rounded-xl border border-line bg-raised/40 p-1">
+    {/* The tabs share the width equally while they fit, and never get narrower than their name: past that the row scrolls, where a narrower tab would let the name spill into its neighbour. */}
+    <div role="tablist" aria-label={t("Add-ons")} onKeyDown={tabKeys} className="flex gap-1 overflow-x-auto rounded-xl border border-line bg-raised/40 p-1">
       {addons.map(({ id: addon, label, Icon }) => <button
         key={addon} id={`${id}-${addon}-tab`} type="button" role="tab"
         aria-selected={selected === addon} aria-controls={`${id}-${addon}-panel`}
         tabIndex={selected === addon ? 0 : -1} onClick={() => select(addon)}
-        className={`flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-2 sm:gap-2 sm:px-4 text-xs font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${selected === addon ? 'bg-accent/12 text-accent shadow-sm ring-1 ring-inset ring-accent/25' : 'text-fg-muted hover:bg-fg/5 hover:text-fg'}`}
+        className={`flex flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-1 py-2 sm:gap-2 sm:px-4 text-xs font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${selected === addon ? 'bg-accent/12 text-accent shadow-sm ring-1 ring-inset ring-accent/25' : 'text-fg-muted hover:bg-fg/5 hover:text-fg'}`}
       ><Icon className="hidden h-4 w-4 shrink-0 sm:block" />{t(label)}</button>)}
     </div>
     {addons.map(({ id: addon }) => <div key={addon} role="tabpanel" id={`${id}-${addon}-panel`}
