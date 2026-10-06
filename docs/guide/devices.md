@@ -207,12 +207,26 @@ client's `portal_policy` allows:
 
 - `off`: the portal sees nothing of them.
 - `read` (the default): shown, not changed.
-- `write`: the portal may change them. **Mode** and the tools have controls of
-  their own; everything else is changed in the text below them. **Save on the
-  device** sends the whole document with the version it is based on: when the
-  settings changed on the device meanwhile, the save is refused and nothing
-  changes. The device checks every value, and refuses changes to the settings
-  it lists as its own (**Only the device changes**).
+- `write`: the portal may change them. Settings open as a form, in the
+  sections the client's settings have: mode and folders, Full mode, tools,
+  what is refused everywhere, command rules, hours, protected paths,
+  approvals, root and elevation, and running commands. Switches are
+  checkboxes, choices are buttons, numbers are number fields, and the lists
+  (folders, paths, rules) have a button to add an entry and one to remove it.
+  A setting the document leaves out shows the device's default and is written
+  only once you change it. **Save on the device** sends the whole document with
+  the version it is based on: when the settings changed on the device
+  meanwhile, the save is refused and nothing changes. The device checks every
+  value, and refuses changes to the settings it lists as its own (**Only the
+  device changes**): the form shows them, marked, and does not let you edit
+  them.
+- Under **Advanced (JSON)** the same draft is the whole document as text. It
+  also holds settings the form has no control for, such as ones a newer client
+  adds: the form passes them through as they are, so a change in the form never
+  drops them. A change in the text shows in the form and the other way round.
+  While the text is not valid JSON the form and **Save on the device** are off,
+  and the text opens by itself so that it can be fixed. Where the portal may
+  only read, the form and the text are shown and cannot be changed.
 
 `portal_policy` itself, the pairing, the shell, sudo's path and the elevation
 password are never in the document, and only the device's owner changes them,

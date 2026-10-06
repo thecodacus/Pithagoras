@@ -7,8 +7,9 @@ import { pollWhileVisible } from "../poll";
 import { formatDateTime, msg, t, tp } from "../i18n";
 import { serverTime, sinceThen } from "../time";
 import { confirmDialog } from "./ConfirmDialog";
+import { DevicePolicyForm } from "./DevicePolicyForm";
 import { PageHeader, Stat } from "./PageHeader";
-import { ErrorBanner, LoadFailed, Segments, codeAreaCls, ghostCls, inputSmCls, primaryCls, primarySmCls } from "./SettingsUi";
+import { ErrorBanner, LoadFailed, codeAreaCls, ghostCls, inputSmCls, primaryCls, primarySmCls } from "./SettingsUi";
 
 /**
  * The Devices add-on's page: pairing a computer, the ones that are paired and
@@ -422,17 +423,10 @@ export function ApprovalCard({ device, approval: a, onAnswered, onError }: { dev
   );
 }
 
-const TOOLS = ["read", "write", "edit", "bash", "grep", "find", "ls"] as const;
-const MODES: { id: string; label: string }[] = [
-  { id: "ask", label: msg("Ask") },
-  { id: "folders", label: msg("Folders") },
-  { id: "full", label: msg("Full") },
-];
-
 /**
  * The device's settings: shown, and changed only where its owner set
- * portal_policy = write on the device. The quick controls change the same
- * document the text below holds; the device checks every value and refuses
+ * portal_policy = write on the device. The form and the JSON below it are two
+ * views of one draft, the text; the device checks every value and refuses
  * what it does not take, settings marked as the device's own included.
  */
 function PolicyPanel({ device, policy, onError }: { device: Device; policy: DevicePolicy; onError: (e: string) => void }) {
@@ -442,23 +436,28 @@ function PolicyPanel({ device, policy, onError }: { device: Device; policy: Devi
   const [problem, setProblem] = useState<string | null>(null);
   // The version the draft is based on, so a change made on the device meanwhile is not overwritten.
   const base = useRef(policy.version);
+  const json = useRef<HTMLDetailsElement>(null);
   const writable = policy.portal_policy === "write";
   const text = draft ?? JSON.stringify(policy.settings, null, 2);
   const parsed = (() => {
     try {
-      return JSON.parse(text) as DevicePolicy["settings"];
+      const v: unknown = JSON.parse(text);
+      return typeof v === "object" && v !== null && !Array.isArray(v) ? (v as DevicePolicy["settings"]) : null;
     } catch {
       return null;
     }
   })();
-  const p = (parsed?.policy ?? {}) as { mode?: string; tools?: Record<string, boolean> };
+  // The form shows the last settings that parsed while the text does not, disabled.
+  const shown = useRef(policy.settings);
+  if (parsed) shown.current = parsed;
+  // Invalid text can only be fixed in the JSON, so that is opened.
+  useEffect(() => {
+    if (!parsed && json.current) json.current.open = true;
+  }, [parsed, open]);
 
-  const edit = (change: (s: { policy: Record<string, unknown> } & Record<string, unknown>) => void) => {
-    if (!parsed) return;
+  const change = (value: string) => {
     if (draft === null) base.current = policy.version;
-    const next = structuredClone({ ...parsed, policy: { ...(parsed.policy ?? {}) } }) as { policy: Record<string, unknown> } & Record<string, unknown>;
-    change(next);
-    setDraft(JSON.stringify(next, null, 2));
+    setDraft(value);
   };
 
   const save = async () => {
@@ -487,39 +486,20 @@ function PolicyPanel({ device, policy, onError }: { device: Device; policy: Devi
       </summary>
       {open && (
         <div className="space-y-2 border-t border-line p-2">
-          {writable && (
-            <>
-              <Segments
-                label={t("Mode")}
-                showLabel
-                value={p.mode ?? "ask"}
-                options={MODES}
-                onChange={(mode) => edit((s) => { s.policy.mode = mode; })}
-              />
-              <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-fg-muted">
-                {TOOLS.map((tool) => (
-                  <label key={tool} className="inline-flex items-center gap-1">
-                    <input
-                      type="checkbox"
-                      checked={p.tools?.[tool] !== false}
-                      onChange={(e) => edit((s) => { s.policy.tools = { ...((s.policy.tools as object) ?? {}), [tool]: e.target.checked }; })}
-                    />
-                    <code>{tool}</code>
-                  </label>
-                ))}
-              </div>
-            </>
-          )}
-          <textarea
-            aria-label={t("Device settings")}
-            className={`${codeAreaCls} h-64`}
-            readOnly={!writable}
-            value={text}
-            onChange={(e) => {
-              if (draft === null) base.current = policy.version;
-              setDraft(e.target.value);
-            }}
+          <DevicePolicyForm
+            settings={shown.current}
+            deviceOnly={policy.device_only}
+            locked={!writable || !parsed}
+            onChange={(next) => change(JSON.stringify(next, null, 2))}
           />
+          {!parsed && <p className="text-xs text-danger">{t("The settings below are not valid JSON. The form is off until they are.")}</p>}
+          <details ref={json} className="rounded-lg border border-line">
+            <summary className="cursor-pointer px-2 py-1.5 text-xs text-fg-muted">{t("Advanced (JSON)")}</summary>
+            <div className="space-y-1 border-t border-line p-2">
+              <p className="text-[11px] text-fg-faint">{t("The whole document, which also holds settings the form does not know. The form and this text show the same draft.")}</p>
+              <textarea aria-label={t("Device settings")} className={`${codeAreaCls} h-64`} readOnly={!writable} value={text} onChange={(e) => change(e.target.value)} />
+            </div>
+          </details>
           {policy.device_only.length > 0 && (
             <p className="text-[11px] text-fg-faint">{t("Only the device changes: {names}", { names: policy.device_only.join(", ") })}</p>
           )}

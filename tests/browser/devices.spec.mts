@@ -176,28 +176,157 @@ test('a device shows its state; an approval is answered from the page, for a tim
   expect(sent).toEqual([{ method: 'POST', path: '/api/devices/d0123456789abcdef/approvals/12', body: { answer: 'time', minutes: 60 } }]);
 });
 
-test('settings the device keeps to itself are only shown; where it allows it, a change is saved with the version it is based on', async ({ page }) => {
-  const { sent, state } = await portal(page);
+/** What a device shares: every setting with its value, and a key and a section a newer client might add. */
+const shared = () => ({
+  policy: {
+    mode: 'ask', folders: [{ path: '/home/alice/src', access: 'rw', execute: true }], folders_shell: 'landlock',
+    full: { expiry_hours: 8, until_ms: null, pattern_prompts: true, protected_paths: true, taint_prompts: true },
+    protected: { extra: ['~/secrets'], allow: [], tool_config: ['.git'] },
+    tools: { read: true, write: true, edit: true, bash: true, grep: true, find: true, ls: true },
+    deny: [{ path: '~/private', rights: 'rwx' }], allow_globs: [],
+    commands: { allow: [], deny: [{ prefix: 'rm -rf' }], always_ask: [], never_ask: [] }, hours: null,
+    approvals: { timeout_secs: 120, on_timeout: 'deny', remember_minutes: 60, max_minutes: 480, desktop_notifications: false },
+    privilege: { allow_root: false, elevation: 'off', sudo_path: '/usr/bin/sudo', secret_storage: 'memory' },
+    newer_policy_key: { keep: true },
+  },
+  exec: { env_passthrough: [], max_timeout_secs: 14400, output_cap_bytes: 16777216, max_running: 16, shell: null },
+  newer_section: { a: 1 },
+});
+const deviceOnly = ['exec.shell', 'policy.privilege.sudo_path', 'policy.privilege.secret_storage'];
+const withPolicy = (portal_policy: 'read' | 'write') => [device({ policy: { portal_policy, version: 'v1', settings: shared(), device_only: deviceOnly } })];
+
+async function openSettings(page: Page, portal_policy: 'read' | 'write') {
+  const ctx = await portal(page, { devices: withPolicy(portal_policy) });
   await page.goto('/devices');
   const card = page.getByRole('listitem', { name: 'laptop' });
-  await card.getByText('Settings (shown only', { exact: false }).click();
-  await expect(card.getByRole('textbox', { name: 'Device settings' })).toHaveAttribute('readonly', '');
-  await expect(card.getByRole('radiogroup', { name: 'Mode' })).toHaveCount(0);
+  await card.getByText('Settings (', { exact: false }).click();
+  return { ...ctx, card, form: card.getByRole('group', { name: 'Device settings form' }), json: card.getByRole('textbox', { name: 'Device settings' }) };
+}
 
-  state.devices = [device({ policy: { portal_policy: 'write', version: 'v1', settings: { policy: { mode: 'ask', tools: { bash: true } }, exec: {} }, device_only: ['exec.shell'] } })];
-  await page.reload();
-  await page.getByRole('listitem', { name: 'laptop' }).getByText('Settings (the device lets', { exact: false }).click();
-  const writable = page.getByRole('listitem', { name: 'laptop' });
-  await writable.getByRole('radiogroup', { name: 'Mode' }).getByRole('radio', { name: 'Full' }).click();
-  await writable.getByRole('checkbox', { name: 'bash' }).uncheck();
-  await expect(writable.getByText('Only the device changes: exec.shell')).toBeVisible();
-  await writable.getByRole('button', { name: 'Save on the device' }).click();
-  await expect(writable.getByRole('button', { name: 'Save on the device' })).toHaveCount(0);
-  const put = sent.find((s) => s.method === 'PUT')!;
-  expect(put).toEqual({
-    method: 'PUT', path: '/api/devices/d0123456789abcdef/policy',
-    body: { settings: { policy: { mode: 'full', tools: { bash: false } }, exec: {} }, ifVersion: 'v1' },
-  });
+test('settings the device keeps to itself are only shown, in the form and in the JSON', async ({ page }) => {
+  const { card, form, json } = await openSettings(page, 'read');
+  await expect(card.getByText('Settings (shown only', { exact: false })).toBeVisible();
+  await expect(form.getByRole('radiogroup', { name: 'Mode' }).getByRole('radio', { name: 'Ask', exact: true })).toHaveAttribute('aria-checked', 'true');
+  // Every control of the form is off, whatever its kind.
+  const controls = form.locator('input, select, button');
+  expect(await controls.count()).toBeGreaterThan(40);
+  for (const c of await controls.all()) await expect(c).toBeDisabled();
+  await card.getByText('Advanced (JSON)').click();
+  await expect(json).toHaveAttribute('readonly', '');
+  await expect(card.getByRole('button', { name: 'Save on the device' })).toHaveCount(0);
+});
+
+test('where the device allows it, a value set in the form is saved with the version the draft is based on, and nothing else is lost', async ({ page }) => {
+  const { sent, card, form, json } = await openSettings(page, 'write');
+  await form.getByRole('radiogroup', { name: 'Mode' }).getByRole('radio', { name: 'Full' }).click();
+  await form.getByRole('checkbox', { name: 'bash' }).uncheck();
+  await form.getByRole('spinbutton', { name: 'Seconds a call waits for an answer' }).fill('300');
+  await form.getByRole('radiogroup', { name: 'An approval nobody answers is' }).getByRole('radio', { name: 'Allow it once' }).click();
+  await form.getByRole('checkbox', { name: 'Risky commands still ask' }).uncheck();
+  await form.getByRole('spinbutton', { name: 'Hours until Full falls back to Ask' }).fill('0');
+  await expect(card.getByText('Only the device changes: exec.shell, policy.privilege.sudo_path, policy.privilege.secret_storage')).toBeVisible();
+
+  // The JSON is the same draft.
+  await card.getByText('Advanced (JSON)').click();
+  const draft = JSON.parse(await json.inputValue());
+  expect(draft.policy.mode).toBe('full');
+  expect(draft.policy.approvals.timeout_secs).toBe(300);
+
+  await card.getByRole('button', { name: 'Save on the device' }).click();
+  await expect(card.getByRole('button', { name: 'Save on the device' })).toHaveCount(0);
+  const put = sent.find((x) => x.method === 'PUT')!;
+  const want = shared();
+  Object.assign(want.policy, { mode: 'full' });
+  want.policy.tools.bash = false;
+  want.policy.approvals = { ...want.policy.approvals, timeout_secs: 300, on_timeout: 'allow' };
+  want.policy.full = { ...want.policy.full, pattern_prompts: false, expiry_hours: 0 };
+  expect(put).toEqual({ method: 'PUT', path: '/api/devices/d0123456789abcdef/policy', body: { settings: want, ifVersion: 'v1' } });
+  // The keys the form has no control for are in it, as they came.
+  expect(put.body.settings.newer_section).toEqual({ a: 1 });
+  expect(put.body.settings.policy.newer_policy_key).toEqual({ keep: true });
+});
+
+test('a change made in the JSON shows in the form, and an edit of the form keeps what the JSON added', async ({ page }) => {
+  const { sent, card, form, json } = await openSettings(page, 'write');
+  await card.getByText('Advanced (JSON)').click();
+  const doc = shared();
+  Object.assign(doc.policy, { mode: 'folders' });
+  (doc as any).brand_new = [1, 2];
+  await json.fill(JSON.stringify(doc));
+  await expect(form.getByRole('radiogroup', { name: 'Mode' }).getByRole('radio', { name: 'Folders' })).toHaveAttribute('aria-checked', 'true');
+  await form.getByRole('checkbox', { name: 'grep' }).uncheck();
+  await card.getByRole('button', { name: 'Save on the device' }).click();
+  await expect(card.getByRole('button', { name: 'Save on the device' })).toHaveCount(0);
+  const body = sent.find((x) => x.method === 'PUT')!.body;
+  expect(body.settings.brand_new).toEqual([1, 2]);
+  expect(body.settings.policy.mode).toBe('folders');
+  expect(body.settings.policy.tools.grep).toBe(false);
+});
+
+test('a setting only the device changes is shown and cannot be edited, the rest can', async ({ page }) => {
+  const { form } = await openSettings(page, 'write');
+  await expect(form.getByRole('textbox', { name: 'Shell' })).toBeDisabled();
+  await expect(form.getByRole('textbox', { name: 'The sudo the client runs' })).toBeDisabled();
+  await expect(form.getByRole('textbox', { name: 'The sudo the client runs' })).toHaveValue('/usr/bin/sudo');
+  await expect(form.getByRole('radiogroup', { name: 'Where the elevation password is kept' }).getByRole('radio', { name: 'Only in memory' })).toBeDisabled();
+  await expect(form.getByText('only the device changes this')).toHaveCount(3);
+  await expect(form.getByRole('spinbutton', { name: 'Most commands running at once' })).toBeEnabled();
+  await expect(form.getByRole('checkbox', { name: 'bash' })).toBeEnabled();
+});
+
+test('invalid JSON turns the form and Save off, and says why, until it is valid again', async ({ page }) => {
+  const { card, form, json } = await openSettings(page, 'write');
+  await form.getByRole('checkbox', { name: 'ls', exact: true }).uncheck();
+  await card.getByText('Advanced (JSON)').click();
+  const good = await json.inputValue();
+  await json.fill(good.slice(0, -3));
+  await expect(card.getByText('The settings below are not valid JSON.', { exact: false })).toBeVisible();
+  for (const c of await form.locator('input, select, button').all()) await expect(c).toBeDisabled();
+  await expect(card.getByRole('button', { name: 'Save on the device' })).toBeDisabled();
+  await json.fill(good);
+  await expect(form.getByRole('checkbox', { name: 'ls', exact: true })).toBeEnabled();
+  await expect(form.getByRole('checkbox', { name: 'ls', exact: true })).not.toBeChecked();
+  await expect(card.getByRole('button', { name: 'Save on the device' })).toBeEnabled();
+});
+
+test('the lists, rules, folders and hours are edited in the form', async ({ page }) => {
+  const { sent, card, form } = await openSettings(page, 'write');
+  await form.getByRole('button', { name: 'Add a folder: Folders' }).click();
+  const second = form.getByRole('group', { name: 'Folders 2' });
+  await second.getByRole('textbox', { name: 'Path' }).fill('/srv/data');
+  await second.getByRole('radio', { name: 'Read and write' }).click();
+  await second.getByRole('checkbox', { name: 'Commands may run here' }).check();
+  await form.getByRole('button', { name: 'Remove More protected paths 1' }).click();
+  await form.getByRole('button', { name: 'Add a path: More protected paths' }).click();
+  await form.getByRole('textbox', { name: 'More protected paths 1' }).fill('~/work/keys');
+  await form.getByRole('button', { name: 'Add a rule: Always ask' }).click();
+  await form.getByRole('group', { name: 'Always ask 1' }).getByRole('combobox').selectOption('regex');
+  await form.getByRole('group', { name: 'Always ask 1' }).getByRole('textbox').fill('^deploy');
+  await form.getByRole('group', { name: 'Paths and patterns 1' }).getByRole('checkbox', { name: 'write' }).uncheck();
+  await form.getByRole('checkbox', { name: 'Serve calls only at certain hours' }).check();
+  await form.getByRole('group', { name: 'Days' }).getByRole('checkbox', { name: 'Mon' }).check();
+  await form.getByRole('textbox', { name: 'Until' }).fill('17:30');
+  await form.getByRole('spinbutton', { name: 'Offset from UTC, in minutes' }).fill('-60');
+  await card.getByRole('button', { name: 'Save on the device' }).click();
+  await expect(card.getByRole('button', { name: 'Save on the device' })).toHaveCount(0);
+  const { policy } = sent.find((x) => x.method === 'PUT')!.body.settings;
+  expect(policy.folders).toEqual([{ path: '/home/alice/src', access: 'rw', execute: true }, { path: '/srv/data', access: 'rw', execute: true }]);
+  expect(policy.protected.extra).toEqual(['~/work/keys']);
+  expect(policy.commands.always_ask).toEqual([{ regex: '^deploy' }]);
+  expect(policy.deny).toEqual([{ path: '~/private', rights: 'rx' }]);
+  expect(policy.hours).toEqual({ days: ['mon'], from: '08:00', to: '17:30', utc_offset_minutes: -60 });
+});
+
+test('the settings form fits a phone without scrolling sideways, with a long path in it', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 800 });
+  const { form, card } = await openSettings(page, 'write');
+  await form.getByRole('button', { name: 'Add a folder: Folders' }).click();
+  await form.getByRole('textbox', { name: 'Path' }).nth(0).fill('/home/alice/' + 'a-very-long-folder-name/'.repeat(12));
+  await form.getByRole('checkbox', { name: 'Serve calls only at certain hours' }).check();
+  await card.getByText('Advanced (JSON)').click();
+  const overflow = await page.evaluate(() => [...document.querySelectorAll('main *')].filter((el) => el.getBoundingClientRect().right > window.innerWidth + 1).map((el) => el.outerHTML.slice(0, 80)));
+  expect(overflow).toEqual([]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
 test('rename, and removal after asking; a second connection with the token is said', async ({ page }) => {
