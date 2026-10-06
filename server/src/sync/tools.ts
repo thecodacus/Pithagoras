@@ -157,7 +157,7 @@ export function deviceTools(opts: DeviceToolsOptions) {
           const server = opts.serverTool(name) ?? opts.pi[FACTORY[name]](opts.cwd);
           return server.execute(toolCallId, rest, signal, onUpdate, ctx);
         }
-        return onDevice(name, String(wanted), rest, signal, onUpdate, ctx);
+        return onDevice(name, String(wanted), name === "bash" ? asWritten(rest, toolCallId, ctx) : rest, signal, onUpdate, ctx);
       },
     };
   }
@@ -380,6 +380,32 @@ export function deviceTools(opts: DeviceToolsOptions) {
       if (truncation.truncated) notices.push(`${opts.pi.formatSize(opts.pi.DEFAULT_MAX_BYTES)} limit reached`);
       return truncation.content + (notices.length ? `\n\n[${notices.join(". ")}]` : "");
     }
+  }
+}
+
+/**
+ * The call's params with the command as the model wrote it.
+ *
+ * Every extension's `tool_call` handler may rewrite `input.command` of any tool called "bash" in place, and the device's bash has
+ * that name: a command optimiser that puts `rtk` in front of it checked for rtk on the portal, and the device has none. The
+ * rewrite is made on a copy that pi validates the params into; the assistant message pi keeps in the session still has what the
+ * model wrote, and it is there before any tool runs. That, and not a handler of ours, because which handler runs first is not
+ * ours to say (installed packages' extensions go before the portal's). Without a session to read (a call outside pi), the
+ * params stay as they are.
+ */
+function asWritten(params: Record<string, unknown>, toolCallId: string, ctx: any): Record<string, unknown> {
+  try {
+    const sessions = ctx?.sessionManager;
+    // The newest assistant message is the one whose calls are running; the results of its other calls may be after it.
+    let entry = sessions?.getLeafEntry?.();
+    while (entry && !(entry.type === "message" && entry.message?.role === "assistant")) {
+      entry = entry.parentId ? sessions.getEntry(entry.parentId) : undefined;
+    }
+    const call = (entry?.message?.content ?? []).find((c: any) => c?.type === "toolCall" && c.id === toolCallId && c.name === "bash");
+    const command = call?.arguments?.command;
+    return typeof command === "string" ? { ...params, command } : params;
+  } catch {
+    return params;
   }
 }
 

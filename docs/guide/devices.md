@@ -131,7 +131,10 @@ name on its card in the chat.
   there. On Windows, `C:\Users\x` is written `/c/Users/x`; the agent may use
   either.
 - `bash` runs the device's own shell, in the device's own environment: nothing
-  of the portal's environment goes along. The agent sees the end of a long
+  of the portal's environment goes along, and the command is the one the model
+  wrote: what an installed extension rewrites in the portal's `bash` commands
+  (a prefix such as `rtk`, which only the portal may have) is not applied to
+  it. The agent sees the end of a long
   output (the last 2000 lines or 50 KB, as on the server); the full output is
   not kept, so to see more it runs the command again, narrowed.
 - `edit` writes back only if the file did not change on the device since it
