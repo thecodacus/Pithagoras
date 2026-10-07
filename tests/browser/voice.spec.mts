@@ -412,3 +412,39 @@ test('a refused microphone says how to allow it, in dictation and in voice mode,
   await page.getByRole('button', { name: 'Turn on hands-free voice' }).click();
   await expect(page.getByRole('alert')).toContainText('No microphone was found');
 });
+
+test('the orb is never painted empty while it glides beside a window and into its dock', async ({ page }) => {
+  await page.route('**/api/voice', route => route.fulfill({ json: { enabled: true } }));
+  await page.goto('/tests/voice.html');
+  await page.getByRole('button', { name: 'Turn on hands-free voice' }).click();
+  await expect(page.getByRole('button', { name: 'End voice mode' })).toBeVisible({ timeout: 25000 });
+  // What a canvas holds is what is painted when it is read in a resize observer made after the orb's own: those are
+  // told in the order they were made, after the frame's animation callbacks and before it is painted. The orb sizes
+  // its canvas as its box changes, and a canvas that is sized is cleared.
+  await page.waitForFunction(() => {
+    const canvas = document.querySelector<HTMLCanvasElement>('.voice-orb')!;
+    return canvas.width > 0 && canvas.getContext('2d')!.getImageData(0, 0, canvas.width, canvas.height).data.some((v, i) => i % 4 === 3 && v);
+  });
+  await page.evaluate(() => {
+    const canvas = document.querySelector<HTMLCanvasElement>('.voice-orb')!;
+    const seen = ((window as any).orbSteps = { steps: 0, empty: 0, same: true });
+    new ResizeObserver(() => {
+      seen.steps++;
+      seen.same &&= canvas === document.querySelector('.voice-orb');
+      if (!canvas.getContext('2d')!.getImageData(0, 0, canvas.width, canvas.height).data.some((v, i) => i % 4 === 3 && v)) seen.empty++;
+    }).observe(canvas);
+  });
+  // The first window: the orb moves from the middle to its side. The second: into its dock.
+  await page.getByRole('button', { name: 'Show the conversation' }).click();
+  await expect(page.locator('.voice-stage')).toHaveAttribute('data-orb', 'beside');
+  await settled(page);
+  const first = await page.evaluate(() => ({ ...(window as any).orbSteps }));
+  expect(first.steps).toBeGreaterThan(5);
+  await page.getByRole('button', { name: 'Show terminal' }).click();
+  await expect(page.locator('.voice-stage')).toHaveAttribute('data-orb', 'dock');
+  await settled(page);
+  const second = await page.evaluate(() => ({ ...(window as any).orbSteps }));
+  expect(second.steps).toBeGreaterThan(first.steps);
+  expect(second.same).toBe(true);
+  expect(second.empty).toBe(0);
+});
