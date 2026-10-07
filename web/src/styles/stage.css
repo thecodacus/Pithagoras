@@ -365,6 +365,11 @@
 .voice-settings { position: fixed; z-index: 55; overflow-y: auto; width: min(320px, calc(100vw - 16px)); display: flex; flex-direction: column; gap: 14px; padding: 16px; border: 1px solid #62718a; border-radius: 16px; background: rgb(var(--surface)); color: rgb(var(--fg)); box-shadow: 0 20px 60px #0006; }
 .voice-setting > span { display: block; font-size: 12px; font-weight: 500; margin-bottom: 6px; }
 .voice-setting > p { margin-top: 6px; font-size: 11px; line-height: 1.45; color: rgb(var(--fg-muted)); }
+.voice-slider { display: grid; grid-template-columns: 1fr auto; align-items: baseline; gap: 2px 8px; font-size: 12px; }
+.voice-slider + .voice-slider { margin-top: 10px; }
+.voice-slider output { color: rgb(var(--fg-muted)); font-variant-numeric: tabular-nums; }
+.voice-slider input { grid-column: 1 / -1; width: 100%; }
+.voice-slider p { grid-column: 1 / -1; font-size: 11px; line-height: 1.45; color: rgb(var(--fg-muted)); }
 .voice-segments { display: flex; gap: 2px; padding: 2px; border-radius: 10px; background: rgb(var(--fg) / .07); }
 .voice-segments button { flex: 1; padding: 5px 8px; border-radius: 8px; font-size: 12px; color: rgb(var(--fg-muted)); white-space: nowrap; }
 .voice-segments button[aria-pressed="true"] { background: rgb(var(--surface)); color: rgb(var(--fg)); box-shadow: 0 1px 4px #0003; }

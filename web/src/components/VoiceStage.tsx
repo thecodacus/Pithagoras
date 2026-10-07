@@ -10,6 +10,7 @@ import { LuMic, LuMicOff, LuX, LuGlobe, LuMaximize2, LuMinimize2, LuMinus, LuTer
 import { VoicePictures, shownPictures } from "./VoicePictures";
 import { VoiceConversation } from "./VoiceConversation";
 import { VoiceSettings, VOICE_RATES } from "./VoiceSettings";
+import type { FillerPacing } from "../voice-fillers";
 import { ACTIONS, describe, matches, useKeyLabels, useKeybindings, type ActionId } from "../keybindings";
 import { MIN, clearOfDock, dockBox, dockSize, freeStrip, placeWindows, type Orb } from "../voice-windows";
 import { ResizeHandles, WINDOWS, areaFor, clearSize, openWindows, workspaceOf } from "./ResizeHandles";
@@ -48,7 +49,7 @@ const watchWide = (changed: () => void) => {
 const editing = (target: EventTarget | null) => !!(target as Element | null)?.closest?.('input, textarea, select, [contenteditable=""], [contenteditable="true"]');
 
 export function VoiceStage({ sessionId, folder, workPhase, canvasOpen, onCanvasMinimize, onCanvasToggle, title, phase, starting, muted, speaking, levels, error, transcript, onMute, onEnd, browserAvailable, browserActivity, terminalActivity, toolEvents, sounds, onSounds, onCue,
-  waitingForTap, items, running, onStop, attachments, onAddPictures, onRemovePicture, canRepeat, onRepeat, rate, onRate, steer, onSteer, ptt, onPtt, holding, onHold }: {
+  waitingForTap, items, running, onStop, attachments, onAddPictures, onRemovePicture, canRepeat, onRepeat, rate, onRate, steer, onSteer, fillers, onFillers, pacing, onPacing, ptt, onPtt, holding, onHold }: {
   sessionId: string; folder: string;
   workPhase?: Activity | null;
   canvasOpen: boolean; onCanvasMinimize: () => void; onCanvasToggle: () => void;
@@ -63,6 +64,9 @@ export function VoiceStage({ sessionId, folder, workPhase, canvasOpen, onCanvasM
   canRepeat: boolean; onRepeat: () => void;
   rate: number; onRate: (rate: number) => void;
   steer: boolean; onSteer: (steer: boolean) => void;
+  /** Whether fillers are on, or null where they are not offered (the portal has status speech off, or runs the sequential baseline). */
+  fillers: boolean | null; onFillers: (on: boolean) => void;
+  pacing: FillerPacing; onPacing: (pacing: FillerPacing) => void;
   ptt: boolean; onPtt: (ptt: boolean) => void; holding: boolean; onHold: (down: boolean) => void;
 }) {
   const end = useRef<HTMLButtonElement>(null), browser = useRef<HTMLElement>(null), stage = useRef<HTMLElement>(null);
@@ -200,6 +204,7 @@ export function VoiceStage({ sessionId, folder, workPhase, canvasOpen, onCanvasM
     "voice.steer": () => { onSteer(!steer); },
     "voice.ptt": () => { onPtt(!ptt); },
     "voice.sounds": () => { onSounds(); },
+    "voice.fillers": () => { if (fillers === null) return false; onFillers(!fillers); },
   };
   const maximized = browserMax && shown;
   const keys = useRef({ bindings, actions, ptt, onHold, maximized }); keys.current = { bindings, actions, ptt, onHold, maximized };
@@ -399,7 +404,7 @@ export function VoiceStage({ sessionId, folder, workPhase, canvasOpen, onCanvasM
         {!terminalShown && <button type="button" aria-label={t("Show terminal")} title={`${t("Show terminal")}${hint("voice.terminal")}`} onClick={openTerminal}><LuTerminal /></button>}
         <button ref={settingsToggle} type="button" data-voice-settings-toggle onClick={() => setSettings(v => !v)} title={`${t("Voice settings")}${hint("voice.settings")}`} aria-label={t("Voice settings")} aria-expanded={settings}><LuSlidersHorizontal /></button>
       </div>
-      {settings && <VoiceSettings anchor={settingsToggle} sounds={sounds} onSounds={onSounds} rate={rate} onRate={onRate} steer={steer} onSteer={onSteer} ptt={ptt} onPtt={onPtt} onClose={() => setSettings(false)} />}
+      {settings && <VoiceSettings anchor={settingsToggle} sounds={sounds} onSounds={onSounds} rate={rate} onRate={onRate} steer={steer} onSteer={onSteer} fillers={fillers} onFillers={onFillers} pacing={pacing} onPacing={onPacing} ptt={ptt} onPtt={onPtt} onClose={() => setSettings(false)} />}
     </header>
     {attachments.length > 0 && <div className="voice-attachments" role="group" aria-label={t("Pictures for your next message")}>
       <div>{attachments.map(a => <figure key={a.id}>

@@ -36,6 +36,8 @@ function Fixture() {
   return <>
     <main data-testid="workspace" style={{ maxWidth: 980, height: 'calc(100vh - 96px)', minHeight: 540, margin: '16px auto 0' }}>
       <Chat session={session} events={events} onClientCommand={() => {}} onEditMessage={async () => {}} onDeleteMessage={async () => {}} onRename={async () => {}} onAbort={async () => { setAborted(n => n + 1); setRunning(false); }} onSend={async (message, options) => {
+        // For the tests that time what happens around a send.
+        (window as any).audioLog?.push({ e: 'send', at: performance.now() });
         setVoiceSend(options?.voice === true);
         setLastSend(JSON.stringify({ message, images: options?.images?.length ?? 0, steer: options?.steer === true }));
         setSent(n => n + 1); setRunning(true);

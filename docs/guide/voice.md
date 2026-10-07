@@ -126,6 +126,7 @@ settings**:
 | **Speaking speed** | 1×, 1.25×, 1.5× or 1.75×. Speech is made faster in the browser without raising the voice (WSOLA time stretching), so it works with every speech runtime and a streamed reply starts as early as before. |
 | **Talking while the agent works** | **Stops it** (default): speaking interrupts the task, as before. **Adds to the task**: what you say goes into the running task after its current step, and the task carries on; use Stop to stop it. |
 | **Push to talk** | Only what you say while holding <kbd>Space</kbd> (outside a text field) or the microphone button is heard. A tap, or a press with no speech in it, is not sent. Useful with background noise or other people talking. |
+| **Fillers** | **On** (default) or **Off**: short sounds from the moment you have finished until the answer starts, again and again if the wait is long. While they are on, four more settings say when they come: **First filler after**, **Time between fillers**, **Randomness** and **Most per wait**. See [Fillers](#fillers). Not shown where the portal has them switched off. |
 | **Sound effects** | The cues for connection, sending, mute and panels. |
 
 Each setting is remembered in this browser.
@@ -163,6 +164,207 @@ can be changed under **Settings → Shortcuts**.
 | <kbd>A</kbd> | Switch between stopping and adding to the task |
 | <kbd>H</kbd> | Push-to-talk on or off |
 | <kbd>Shift</kbd>+<kbd>M</kbd> | Sound effects on or off |
+| <kbd>Shift</kbd>+<kbd>F</kbd> | Fillers on or off |
+
+## Fillers
+
+After you stop talking there is a silence before the answer: your words are
+recognised, the model starts, and the first sentence has to be turned into speech.
+A **filler** is a short sound the voice makes in that gap, the "ah, okay" of someone
+who has heard you and is picking it up, so that voice mode does not go quiet. It
+replaces the spoken "let me think about that" line that used to come after about
+two seconds, in English only. The gap can be long: a model that has to read a lot
+before it starts, or an agent that thinks and works for a minute before its first
+sentence. One "oh, okay" and then silence is not much better than none, so the wait
+is filled again and again until the answer is heard, at a pace you set (see
+[When they come](#when-they-come)).
+
+**What it says.** One of eight two-sound forms: "Ah, okay.", "Oh, okay.", "Okay,
+ah.", "Ah, mhm." and "Okay, mhm.", and for a long wait "Mhm, okay.", "Oh, mhm."
+and "Okay, oh." They are the sounds people make while
+listening and the one word every language has taken over, so nothing is written
+out per language and no language has to be guessed. They are made in your voice
+and with the language set under **Settings → Add-ons → Voice**, and said as that
+language says them (a German voice says "okay" the German way, a Korean one the
+Korean way). It is always two sounds, never one: with Chatterbox a lone "Okay."
+or a wordless "Hmm." was said twice, ran on for seconds, or came out as other
+words (Polish turned "Mhm." into a sentence). All eight were rendered in all 19
+languages Chatterbox speaks and came out once, at 0.9 to 2.3 seconds, each time.
+A clip that still comes out far longer than its text takes, which is the same
+fault, is thrown away when it is made and never played, whichever speech
+runtime and language is set. Chatterbox, Kokoro and audio.cpp are seeded and would say it
+the same way again, so such a clip is not made again for that voice. The classic
+Breeze server is not seeded: there it is made again, up to three times, and only
+after that left alone, until the portal is restarted and not for good.
+
+**Made once, not at play time.** The portal makes the first five clips the first time
+voice mode starts with a voice, in the background (about ten seconds on a fast
+GPU with Chatterbox, well over twenty on a shared one: a clip takes as long as a
+sentence of an answer does), keeps them in its data folder under `voice-fillers`,
+and the page downloads them when voice mode starts. A filler is therefore a sound
+already in the browser's memory: no synthesis stands between the end of your turn
+and the sound.
+
+They are made in the voice of the agent the chat is with, as the answer is, so a
+chat with an agent that has its own voice has its own set of clips.
+
+**The other three are made in a lull.** More clips mean a longer wait for the
+first ones and more time with the speech runtime busy, so the extra three, which
+only a long wait needs, are made after the first five and only once it has been
+quiet for 30 seconds since: no recognition, no speech being made, no agent at
+work. Any of those pushes them back by another 30 seconds, so they never compete
+with a conversation, and the first set takes what it always did. They are kept
+like the others, so this happens once per voice, and the page, which asks every
+three seconds while the portal is making clips, keeps asking for up to twenty
+minutes for them to arrive. Until they have, a long wait is filled from the five
+there are.
+
+The speech runtime has one slot, and it does not give up a request it has begun:
+audio.cpp runs it to the end whatever the portal does, so a clip cannot be cut off
+for an answer. A clip under way when an answer is asked for is finished first, and
+the answer waits for it, by up to the time of one clip (the same one to five
+seconds as a sentence of the answer). To keep that rare, a clip is only started
+when no answer is near: not while your speech is being recognised or an answer is
+being synthesized, not for eight seconds after either (the gap between two
+phrases of an answer is not the end of it), and not while the agent is at work,
+which the page says with every look. The first set is made from the start of voice
+mode, before you have spoken; a clip under way when you do speak is not thrown
+away, and the clips still missing are made once it is quiet again. Until then
+you may hear fewer fillers, or none, on the first turns of a new voice.
+
+They are made only while a page is asking for them: ending voice mode, or
+switching fillers off, tells the portal, which drops the request it is on and
+makes no more (the clips still missing are made the next time voice mode starts),
+whether or not it manages the speech service, so the speech model is not loaded
+back onto the GPU for clips nobody is waiting for. A page that cannot say so, a
+tab that was closed, is given up on after ten seconds without a question. Only one
+voice is made at a time. Another voice, language, speech runtime, expressiveness
+or reference recording stops the one being made, makes a new set, and the old one
+is deleted once the first clip of the new one is made (a setting changed and
+changed back loses nothing).
+Until the first clip is ready there is no filler; one never waits for them.
+
+**When the first one plays.** By default the moment your turn is taken: what you
+said has been recognised, it is not a noise and not a request to the page ("say
+that again"), and it is on its way to the agent. This is before the agent has taken
+the message up, not after a timer, and not after the run your turn interrupts has
+wound down: with an agent at work, the filler plays while that run is still being
+stopped. (**First filler after** can hold it back, see below.) The budget:
+
+| | |
+| --- | --- |
+| The end of your turn | Detected by the silence window after your last word, one second by default; that part is unchanged. |
+| The transcript | Usually there already when the turn ends, since recognition runs while you speak; otherwise one recognition request. |
+| The filler | Within 150 ms of the transcript, with nothing to fetch and nothing to synthesize: it is played from memory. Measured against a local portal with Chatterbox: 0 to 93 ms. |
+
+So a filler is heard as soon as your turn has ended where recognition was
+ready, which is the usual case, and one recognition request later where it was
+not. A first filler that could not be played because no clip was ready is not made
+up for with a late one at once, but the timing below carries on.
+
+**When they come.** Voice settings → **Filler timing**, four numbers, kept in this
+browser and shown while fillers are on:
+
+| Setting | What it does | Default | Limits |
+| --- | --- | --- | --- |
+| **First filler after** | Seconds of silence after your turn is taken before the first filler. If the answer is audible before then, there is no filler at all. | At once (0 s) | 0 to 10 s |
+| **Time between fillers** | After a filler has ended, how long before the next. This is the base the randomness varies. | 5 s | 1 to 30 s |
+| **Randomness** | Like a temperature. At 0 % every gap is exactly the time between fillers. Above that each gap is that time made shorter or longer by a random amount of up to this share of it, evenly spread: at 20 % and 5 s, 4 to 6 s; at 100 %, 1 to 9 s. It does not apply to the first filler's time. | 20 % | 0 to 100 % |
+| **Most per wait** | At most this many fillers in one wait. After that the voice stays quiet until the answer: a long task is not filled for ever. | 8 | 1 to 20 |
+
+There is no cadence built into the page: the gaps are these numbers and nothing
+else. A change applies at once, also in the middle of a call and to a gap that is
+already running: the filler that was due is due by the new time, counting what has
+passed since the last one ended (so a gap shortened below what has passed brings it
+at once, and a lengthened one pushes it back), and a most that has been reached
+ends the wait. Where in its spread a gap falls is drawn once, when it starts: a
+change of the randomness or of the time moves the gap along with it, and a change of
+the most or of the first filler's time leaves it where it was, instead of rolling
+it again. Values are kept as numbers within the limits above, in steps (half
+seconds, 5 %, whole fillers): what was typed in or changed in the browser's
+storage that is not a number is the default, and one out of range is the nearest
+limit. The shortest gap is one second, so a wide randomness cannot put two fillers
+on top of each other: a spread that would go below it is narrowed to end there
+(5 s at 100 % is 1 to 9 s, not 0 to 10 s), still evenly and centred on the time
+set, and at one second there is none.
+
+The defaults fill about the same wait as before, about three quarters of a minute,
+with the same early density: eight fillers, five seconds apart, give or take a fifth, are
+about 45 seconds, and four of them fall in the first twenty, as with the growing
+gaps they replace. Those were 3, 4.5, 6.5, 9.5 and then 14 seconds with six at most,
+and they are gone, for two reasons. A cadence that grows by itself makes "time
+between fillers" untrue and "randomness 0" inexact, the two things these settings
+are for. And what the growth was for, keeping a long task from being filled with
+"mhm" for ever, is **Most per wait**, which is now visible and yours: to have them
+thin out, set a longer time and a smaller most, and for a wait that is filled for
+longer, a larger one (twenty at most). The first filler's time is a delay, not a
+gap, so it is exact.
+
+The timeline stops at once when:
+
+- the answer's audio is ready (see below), whether a filler is playing or the
+  wait is between two. Not before: while the first sentence of the answer is still
+  being made into speech, which on a busy speech runtime takes seconds, the wait
+  is filled all the same;
+- you say something for the agent, or the conversation is being compacted (which
+  has its own spoken notice). Speech that turns out to be none, a noise, a press
+  of the talk key taken back, or a request to the page ("say that again"), does not
+  end the wait: it goes on one gap after that sound, not at once, and the fillers
+  already played still count towards the most;
+- the agent has finished with no answer on its way (an answer that is still
+  being made into speech is one, also after the run has ended), voice mode ends,
+  or fillers are switched off.
+
+If no clip is ready at a moment when one is due, it is tried again after the next
+gap, and counts towards the most. When the page is playing something else at that
+moment, such as the repeat of the last reply, a filler does not come on top of it
+either: it is due one gap later, and that does not count. If the last sound before your next turn was a
+filler (no answer or notice since), its first filler does not come on top of it:
+it waits what is left of one gap since that filler ended, or the time to the first
+filler if that is longer. A turn more than a gap later, such as one that interrupts
+a long silent task, gets its first filler at once as any other.
+
+**It gives way to the answer.** The answer is never heard over a filler. The
+filler stops when the answer's audio is ready to play, not when its text arrives,
+so it is not cut off while the answer is still being made. It fades out within
+40 ms instead of being cut mid-wave, and the answer starts as it has gone; a
+player that does not report back is not waited for longer than 150 ms. If you
+start talking, it stops at once. Talking over it is not a turn for it to finish.
+
+**It does not repeat itself.** Of the clips ready, none of the last two played is
+chosen again (with three or fewer clips ready, not the last one), and none comes
+round again before all the others have been heard, in an order that changes each
+round. One wait does not get a clip twice while there are others it has not had,
+wherever in that round it falls: with all eight ready, six fillers are six
+different ones. With only the first five ready a sixth has to repeat one, but never
+the last two. A clip that turns up in the middle of a wait is heard before the ones
+heard already. With only one clip ready, it is played once and then silence beats
+saying it again.
+
+**Switching them off.** **Voice settings → Fillers → Off**, or
+<kbd>Shift</kbd>+<kbd>F</kbd>. The choice is remembered in this browser, and while
+it is off the page asks the portal for nothing and fetches nothing, and tells it
+to stop making them. The timing settings are hidden then, and kept for when they
+are on again. Two things switch them off for the whole portal, and then
+the setting is not shown:
+
+- `VOICE_STATUS_SPEECH=false`, which also switches off the spoken compaction
+  notices below. The portal makes none of the clips either.
+- `VOICE_PIPELINE_MODE=sequential`, the [comparison](/guide/voice-comparison)
+  baseline: it runs the stages strictly one after the other so that they can be
+  measured, and a sound during the agent's work would be a stage of its own. It
+  speaks nothing but the answer.
+
+**Compaction.** While the conversation is being compacted (which takes long
+enough to matter) the voice says so, once when it starts, again when you speak
+meanwhile, and when it is done. Those are sentences, not fillers, and they are
+said in the language the voice speaks (the input language set under **Settings →
+Add-ons → Voice**), not the interface language: a German page with an English
+voice gets the English sentence. The portal has wording for English and German.
+With **Auto-detect** the interface language is used where it has wording. For any
+other language the voice says nothing about compaction, since reading it another
+language's text is worse than silence; the stage shows "Compacting context" all
+the same. They follow the same two switches as the fillers.
 
 ## Dictation
 
@@ -544,28 +746,24 @@ and the system-prompt rule is never sent, which is what the
 your text for when the variable is removed. Any other value leaves them on.
 `VOICE_SKIP_FIRST_THINKING=false` keeps thinking on for the first call. The
 remaining `VOICE_*` variables (`VOICE_PIPELINE_MODE`, `VOICE_SENTENCE_CHUNKS`,
-`VOICE_TTS_PREFETCH`, `VOICE_STATUS_SPEECH`, `VOICE_COMPARISON`) are described in
-the comparison guide.
+`VOICE_TTS_PREFETCH`, `VOICE_COMPARISON`) are described in the comparison guide;
+`VOICE_STATUS_SPEECH` is described under [Fillers](#fillers).
 
 ## Status lines while it works
 
 Voice mode says a few short lines of its own while the agent is busy, so a silence
-is not mistaken for a hang. They come from the portal, in the language the portal
-is set to (English or German, see [Settings → Language](/guide/settings#language)),
-and not from the model; they are not part of the conversation and are not added to
-the transcript. The same goes for the short line that stands in for a code block
-when a reply is read aloud, "Code is shown in the transcript.": the code itself is
-never spoken. The lines below are given in English.
+is not mistaken for a hang. They come from the portal, not from the model; they
+are not part of the conversation and are not added to the transcript. Waiting is
+filled with [fillers](#fillers), short sounds and not sentences. The short line
+that stands in for a code block when a reply is read aloud, "Code is shown in the
+transcript.", is in the language the portal is set to (English or German, see
+[Settings → Language](/guide/settings#language)): the code itself is never spoken.
 
-- **Thinking.** When the agent has been thinking for about two seconds and has not
-  started to answer, a phrase such as "Let me think about that for a moment." is
-  spoken. It is chosen from a few, never the same one twice in a row, at most once
-  for each thing you say and no more often than every twenty seconds. It is
-  skipped once the answer has begun, and while you are talking.
 - **Compaction.** When the conversation is compacted to free context, a line
-  says so ("Let me do a quick context compaction so I can keep going."), and another
-  when it is over ("Context compaction is done. I'm ready to continue.") or when it
-  stopped before it finished.
+  says so ("My context is getting full. Let me quickly compact our conversation
+  before I continue."), and another when it is over ("Context compaction is done.
+  I'm ready to continue.") or when it stopped before it finished. These are said
+  in the language the voice speaks, see [Fillers](#fillers).
 - **Talking during compaction.** What you say while it compacts is dropped, not
   sent: the agent cannot take it in until the compaction is over. The portal says
   "I'm still compacting our conversation. Please wait a moment; I'll let you know

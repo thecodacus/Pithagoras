@@ -2,7 +2,7 @@
 
 Use the gauge button beside the microphone (**Profile voice latency**) to enable the profiler before starting a voice turn. The panel displays the latest turn and downloads up to 20 traces as JSON. Capturing is opt-in; closing the panel disables capture. Reports contain timestamps and numeric/status metadata, not audio or transcript content.
 
-The main metric runs from the last VAD frame classified as speech to estimated first generated-reply playback. A second exported metric includes speaking duration. Thinking and compaction announcements are tagged separately and do not complete the reply timer. Compaction announcements and tool events can still explain delays in the timeline.
+The main metric runs from the last VAD frame classified as speech to estimated first generated-reply playback. A second exported metric includes speaking duration. Filler and compaction announcements are tagged separately and do not complete the reply timer. Compaction announcements and tool events can still explain delays in the timeline.
 
 The percentage table partitions browser-clock wall time into turn detection, remaining transcription, dispatch/pending abort, request setup/prefill until first model token, thinking/tools until first reply text, sentence accumulation, TTS queue, TTS request to first received bytes, buffering/decoding, and playback queue/output estimate. Concurrent speculative transcription is listed in raw events rather than double-counted in percentages. These are observed intervals, not isolated CPU/GPU execution durations. Browser event delivery and React scheduling contribute small overheads.
 

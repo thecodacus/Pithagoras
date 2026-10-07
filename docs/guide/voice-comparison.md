@@ -14,12 +14,12 @@ the sequential baseline, and have **no effect** unless the mode is `sequential`.
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `VOICE_PIPELINE_MODE` | `parallel` | `sequential` is the baseline: speech is transcribed only after it has finished, the reply goes to speech synthesis only once the whole agent turn is done, and every generated chunk is buffered completely before playback starts. Thinking and compaction filler speech is suppressed so it cannot overlap the measured work. Cancelling and muting still work. |
+| `VOICE_PIPELINE_MODE` | `parallel` | `sequential` is the baseline: speech is transcribed only after it has finished, the reply goes to speech synthesis only once the whole agent turn is done, and every generated chunk is buffered completely before playback starts. The fillers and the spoken compaction notices are suppressed so it cannot overlap the measured work. Cancelling and muting still work. |
 | `VOICE_SENTENCE_CHUNKS` | `false` | Only in the sequential mode. With `true`, sentences are submitted to speech synthesis during generation, and each sentence's audio plays before the next is synthesized. Audio is still fully buffered per sentence. The first step up from the baseline. |
 | `VOICE_TTS_PREFETCH` | `false` | Only in the sequential mode. With `true`, one synthesis producer runs alongside ordered playback, with at most two prepared phrases queued ahead. Each sentence's audio is still buffered before it plays. |
 | `VOICE_SKIP_FIRST_THINKING` | `true` | `false` keeps the model's normal thinking on the first response of a voice turn, which is otherwise switched off, for a local model, to start speaking sooner. |
 | `VOICE_RESPONSE_INSTRUCTIONS` | `true` | `false` sends no speaking instructions: no `[Audio mode]` marker on the input and no voice rule in the system prompt, so replies are not asked to be brief, plain text or canvas-first. See [Speaking instructions](/guide/voice#speaking-instructions). |
-| `VOICE_STATUS_SPEECH` | `true` | `false` keeps the spoken [status lines](/guide/voice#status-lines-while-it-works) out: the thinking and compaction feedback. |
+| `VOICE_STATUS_SPEECH` | `true` | `false` keeps the spoken [status lines](/guide/voice#status-lines-while-it-works) out: the fillers and the compaction notices. |
 | `VOICE_COMPARISON` | `false` | `true` shows "Streaming pipeline" beside the voice session's title, and gives the login a cookie of its own (see below). |
 
 The voice screen's title says which stage a portal is on. In the sequential mode

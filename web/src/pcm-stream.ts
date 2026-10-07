@@ -101,6 +101,36 @@ export async function playAudioBuffer(buffer: AudioBuffer, audio: AudioContext, 
   });
 }
 
+/** How long a stopped filler takes to fade out, in seconds: too short to hear as a fade, long enough not to click. */
+const FADE = 0.04;
+/**
+ * A buffer played so that stopping it fades it out instead of cutting it mid-wave,
+ * as playAudioBuffer does: for a filler, which is stopped whenever the answer
+ * starts. Being stopped is not a failure: it resolves once the sound is gone,
+ * whichever way it went, and never later than the fade and a little more, even
+ * where the audio clock does not run (a suspended context never ends a source).
+ */
+export async function playFading(buffer: AudioBuffer, audio: AudioContext, destination: AudioNode, signal: AbortSignal, onStarted: (scheduledAt?: number) => void): Promise<void> {
+  signal.throwIfAborted();
+  const source = audio.createBufferSource(); source.buffer = buffer;
+  const gain = audio.createGain();
+  source.connect(gain); gain.connect(destination);
+  await new Promise<void>(resolve => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = () => { clearTimeout(timer); signal.removeEventListener('abort', fade); source.onended = null; source.disconnect(); gain.disconnect(); resolve(); };
+    const fade = () => {
+      const now = audio.currentTime;
+      gain.gain.cancelScheduledValues(now); gain.gain.setValueAtTime(gain.gain.value, now); gain.gain.linearRampToValueAtTime(0, now + FADE);
+      source.stop(now + FADE);
+      timer = setTimeout(finish, FADE * 1000 + 60);
+    };
+    source.onended = finish;
+    signal.addEventListener('abort', fade, { once: true });
+    source.start(); onStarted(audio.currentTime);
+    if (signal.aborted) fade();
+  });
+}
+
 /** Start from a small PCM cushion while the producer continues generating. */
 export async function preparePcmSpeech(body: ReadableStream<Uint8Array>, audio: AudioContext, signal: AbortSignal, options: SpeechOptions = {}) {
   const reader = body.getReader();

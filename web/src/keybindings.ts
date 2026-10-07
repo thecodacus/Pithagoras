@@ -42,7 +42,8 @@ export type ActionId =
   | "voice.slower"
   | "voice.steer"
   | "voice.ptt"
-  | "voice.sounds";
+  | "voice.sounds"
+  | "voice.fillers";
 
 export interface Action {
   id: ActionId;
@@ -75,6 +76,7 @@ export const ACTIONS: Action[] = [
   { id: "voice.steer", label: msg("Switch between stopping and adding to the task"), scope: "Voice mode", default: { code: "KeyA" } },
   { id: "voice.ptt", label: msg("Turn push-to-talk on or off"), scope: "Voice mode", default: { code: "KeyH" } },
   { id: "voice.sounds", label: msg("Turn sound effects on or off"), scope: "Voice mode", default: { code: "KeyM", shift: true } },
+  { id: "voice.fillers", label: msg("Turn fillers on or off"), scope: "Voice mode", default: { code: "KeyF", shift: true } },
 ];
 
 export interface FixedShortcut {
