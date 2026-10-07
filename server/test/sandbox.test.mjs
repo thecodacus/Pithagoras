@@ -103,6 +103,13 @@ test("the sandbox holds against the ways round it", { skip: why }, async (t) => 
     assert.match(env, new RegExp(`TMPDIR=${path.join(DATA, "sandbox-home", first.id, "tmp")}`));
   });
 
+  await t.test("an agent whose id the portal forgot, as a database put back from a backup has, gets its own user back", async () => {
+    const { putSetting } = await import("../dist/db.js");
+    putSetting("sandbox_agent_ids", "{}");
+    assert.equal(identityOf(first, support).uid, whoA.uid);
+    assert.equal(identityOf(second, support).uid, whoB.uid);
+  });
+
   await t.test("one agent cannot read another's home, list the homes, reach it through its processes or read its temporary files", async () => {
     const memory = path.join(second.home, "MEMORY.md");
     for (const command of [`cat ${memory}`, `ls ${second.home}`, `ls ${path.dirname(second.home)}`, `cat ${path.join(whoB.home, ".bash_history")}`]) {

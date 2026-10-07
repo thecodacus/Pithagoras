@@ -46,11 +46,20 @@ function ids(): Record<string, number> {
   }
 }
 
-/** The agent's id, given it the first time it is asked for: the next one free. */
+/**
+ * The agent's id, given it the first time it is asked for: its user's, if the
+ * system has one already (a database put back from a backup forgets the ids a
+ * container still has), else the next one free.
+ */
 function idFor(agentId: string): number {
   const all = ids();
   if (all[agentId]) return all[agentId];
   const used = new Set(Object.values(all));
+  const existing = idOf("user", userFor(agentId));
+  if (existing !== null && !used.has(existing)) {
+    putSetting(IDS_SETTING, JSON.stringify({ ...all, [agentId]: existing }));
+    return existing;
+  }
   let next = FIRST_ID;
   // Not one the system already uses for someone else: getent takes a number as well as a name.
   while (used.has(next) || idOf("user", String(next)) !== null || idOf("group", String(next)) !== null) next++;
