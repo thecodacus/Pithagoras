@@ -737,6 +737,8 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
     let texture: Grain | undefined;
     // Pixels across, to a unit, and whether it is shown as small as a thumbnail; set once it has a size.
     let pixels = 0, scale = 0, small = false;
+    // The box it is shown in has changed since the canvas was sized.
+    let stale = true;
     const fit = () => {
       const shown = element.clientWidth;
       if (!shown) return;
@@ -748,7 +750,6 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
       scale = px / size;
       ctx.setTransform(scale, 0, 0, scale, 0, 0);
     };
-    fit();
     const sparkles: Sparkle[] = Array.from({ length: 46 }, () => {
       const d = Math.sqrt(Math.random()), a = Math.random() * Math.PI * 2;
       return { x: Math.cos(a) * d, y: Math.sin(a) * d, size: Math.random(), phase: Math.random() * Math.PI * 2, back: Math.random() < 0.55 };
@@ -879,13 +880,17 @@ export function VoiceOrb({ mode, levels, look }: { mode: OrbState; levels: Mutab
     };
     const render = (timestamp: number) => {
       // Reduced motion, and an orb the size of a thumbnail, are drawn at about 15 frames a second: nobody sees more of it.
-      if (scale && !((reduced || small) && timestamp - last < 66)) {
+      if (!((reduced || small) && timestamp - last < 66)) {
         last = timestamp;
-        draw(timestamp);
+        // Sized here, right before it is drawn, and not as the observer reports it: that comes after the frame's
+        // animation callbacks and before it is painted, so a canvas cleared by it showed empty at every step of the
+        // orb gliding to its place beside a window, and the orb flickered.
+        if (stale) { stale = false; fit(); }
+        if (scale) draw(timestamp);
       }
       frame = visible ? requestAnimationFrame(render) : 0;
     };
-    const resized = new ResizeObserver(fit);
+    const resized = new ResizeObserver(() => { stale = true; });
     resized.observe(element);
     // Out of view (scrolled away, behind another page) there is nothing to draw for.
     const seen = new IntersectionObserver((entries) => {
