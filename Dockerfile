@@ -33,13 +33,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       sudo ripgrep fd-find \
     && rm -rf /var/lib/apt/lists/*
 
-# The sandbox (Settings → Sandbox, off until switched on): the agent's commands
-# and file tools run as pi-agent, trusted commands as pi-tools through sudo,
-# and pi-sandbox owns what the agent may change. Fixed ids, so what they own on
-# the data volume still belongs to them after a rebuild. sudo, rg and fd are for
-# the same: trusted commands, and pi's grep and find searching as pi-agent.
+# The sandbox (Settings → Sandbox, off until switched on): each agent's commands
+# and file tools run as a user of its own, which the portal makes as needed,
+# trusted commands as pi-tools through sudo, and pi-sandbox owns what the agents
+# share. Fixed ids, so what they own on the data volume still belongs to them
+# after a rebuild. sudo, rg and fd are for the same: trusted commands, and pi's
+# grep and find searching as the agent.
 RUN groupadd --gid 10010 pi-sandbox \
-    && useradd --uid 10001 --user-group --groups pi-sandbox --no-create-home --home-dir /data/sandbox-home --shell /bin/bash pi-agent \
     && useradd --uid 10002 --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin pi-tools
 
 # uv, so the agent can run Python tooling — a large share of MCP servers are

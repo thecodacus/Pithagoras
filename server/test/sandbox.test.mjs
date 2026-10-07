@@ -32,7 +32,6 @@ const has = (cmd) => spawnSync("sh", ["-c", `command -v ${cmd}`]).status === 0;
 function users() {
   const exists = (kind, name) => spawnSync("getent", [kind, name]).status === 0;
   if (!exists("group", "pi-sandbox")) execFileSync("groupadd", ["--gid", "10010", "pi-sandbox"]);
-  if (!exists("passwd", "pi-agent")) execFileSync("useradd", ["--uid", "10001", "--user-group", "--groups", "pi-sandbox", "--no-create-home", "--shell", "/bin/bash", "pi-agent"]);
   if (!exists("passwd", "pi-tools")) execFileSync("useradd", ["--uid", "10002", "--user-group", "--no-create-home", "--shell", "/usr/sbin/nologin", "pi-tools"]);
 }
 

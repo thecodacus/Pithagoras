@@ -46,8 +46,7 @@ export interface SandboxPolicy {
   trusted: TrustedCommand[];
 }
 
-/** The users and group the sandbox runs as; made by the image (see the Dockerfile). */
-export const AGENT_USER = "pi-agent";
+/** The user trusted commands run as; made by the image (see the Dockerfile). Each agent's own user is made as needed (see identity.ts). */
 export const TOOLS_USER = "pi-tools";
 /** Owns what the agent may change, so the portal (root) and the agent can both write there. */
 export const SANDBOX_GROUP = "pi-sandbox";
@@ -144,27 +143,27 @@ export interface SandboxSupport {
   available: boolean;
   /** Why not, in a sentence for the page. */
   reason?: string;
-  ids?: { agent: number; tools: number; group: number };
+  ids?: { tools: number; group: number };
 }
 
 /**
  * Whether this portal can sandbox at all: Linux, running as root (it has to
- * change to the sandbox user and set permissions), with the users and the
+ * change to the agents' users and set permissions), with the user, group and
  * tools the image installs. A native install without them says so instead.
  */
 export function sandboxSupport(): SandboxSupport {
   if (process.platform !== "linux") return { available: false, reason: "The sandbox needs Linux: it runs the agent as another user." };
   if (process.getuid?.() !== 0) return { available: false, reason: "The portal runs as a user that cannot change to another: the sandbox needs it to run as root, as the Docker image does." };
-  const agent = idOf("user", AGENT_USER), tools = idOf("user", TOOLS_USER), group = idOf("group", SANDBOX_GROUP);
-  if (agent === null || tools === null || group === null) {
-    return { available: false, reason: `The users ${AGENT_USER} and ${TOOLS_USER} and the group ${SANDBOX_GROUP} do not exist here. The Docker image makes them; on another install, create them as the docs describe.` };
+  const tools = idOf("user", TOOLS_USER), group = idOf("group", SANDBOX_GROUP);
+  if (tools === null || group === null) {
+    return { available: false, reason: `The user ${TOOLS_USER} and the group ${SANDBOX_GROUP} do not exist here. The Docker image makes them; on another install, create them as the docs describe.` };
   }
   for (const tool of ["setpriv", "sudo", "useradd", "groupadd"]) {
     if (!["/usr/bin", "/bin", "/usr/sbin", "/sbin"].some((d) => existsSync(path.join(d, tool)))) {
       return { available: false, reason: `${tool} is not installed.` };
     }
   }
-  return { available: true, ids: { agent, tools, group } };
+  return { available: true, ids: { tools, group } };
 }
 
 /** Whether the agent works in the sandbox now: switched on, and possible here. */

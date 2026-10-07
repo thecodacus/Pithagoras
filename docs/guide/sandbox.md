@@ -6,22 +6,37 @@ That stops the plain way to a file, not the roundabout one. A script the agent
 writes and then runs, a path put together from pieces, or a symlink all ask for
 something else, and each reaches the same file.
 
-The sandbox closes those ways too. With it on, everything the agent does to the
-system runs as an unprivileged user, `pi-agent`, and the operating system
-decides each step by the files' own permissions. A script, an interpreter or a
-link the agent makes runs as `pi-agent` as well, and meets the same
-permissions. It is off until you switch it on in **Settings → Sandbox**.
+The sandbox closes those ways too. With it on, everything an agent does to the
+system runs as an unprivileged user of that agent's own, and the operating
+system decides each step by the files' own permissions. A script, an
+interpreter or a link the agent makes runs as that user as well, and meets the
+same permissions. It is off until you switch it on in **Settings → Sandbox**.
 
 ## What runs in it
 
 - **The shell.** Every command pi's `bash` runs, and whatever that command starts.
 - **pi's file tools.** `read`, `write`, `edit` and `ls` do their reading and
-  writing as `pi-agent`. `grep` and `find` search with `rg` and `fd`, which the
-  portal runs as `pi-agent` too.
+  writing as the agent's user. `grep` and `find` run whole as that user too.
 - **The environment.** Commands get a short list of variables: `PATH`, the
   language and terminal ones, and pi's own `PI_*` session variables. The portal's
   password, its secret and the provider keys are not among them, so `env` shows
-  nothing worth taking. `HOME` is the sandbox's own folder, `/data/sandbox-home`.
+  nothing worth taking. Each agent has a `HOME` and a `TMPDIR` of its own under
+  `/data/sandbox-home`, so no cache or temporary file is shared between agents.
+
+## One user per agent
+
+Each agent runs as `pi-agent-` followed by eight characters of a hash of its id,
+shown on its page in the portal. A rename keeps it. The user and a group of the
+same name are made the first time the agent needs them, with an id from 10100 up
+that the portal keeps, so a container rebuilt from the image gets the same ids
+back. Every agent's user is also in the group `pi-sandbox`, which owns what they
+share: the projects.
+
+An agent's home belongs to its own group, so one agent cannot read another's
+memory, notes or skills, nor reach them through the other's processes or
+temporary files. The folders the homes are in, `/data/agents` and
+`/data/sandbox-home`, can be passed through but not listed. A chat in a project
+runs as the first agent's user.
 
 ## Paths
 
@@ -35,15 +50,14 @@ The most specific rule decides.
 | Read & write | everything | owned by the group `pi-sandbox`, writable by it; new files keep the group |
 
 A path no rule names keeps the permissions it has. For most of the system that
-means readable and not changeable.
+means readable and not changeable. The agents' homes and their `HOME` folders
+are not rules: each belongs to its own agent, as above.
 
 The defaults:
 
 | Path | Access | Why |
 | --- | --- | --- |
 | `/workspaces` | read & write | the projects |
-| `/data/agent-home`, `/data/agents` | read & write | the agents' homes |
-| `/data/sandbox-home` | read & write | the sandbox's `HOME`: caches, tools it installs |
 | `/data/bin` | read-only | commands on `PATH`: run, not changed |
 | `/data/.secrets` | no access | keys for trusted commands |
 | `/data/portal.db` | no access | the portal's database and settings |
@@ -94,8 +108,9 @@ of its own, and this page does not apply.
 ## Requirements
 
 The sandbox needs the portal to run as root on Linux, as the Docker image does:
-it has to change to another user and set permissions. The image makes the users
-`pi-agent` (uid 10001) and `pi-tools` (uid 10002) and the group `pi-sandbox`
-(gid 10010), and installs `sudo`, `ripgrep` and `fd-find`. On another install,
-create the same users and group and install those packages; the page says what
+it has to change to another user, make each agent's user and set permissions.
+The image makes the user `pi-tools` (uid 10002) and the group `pi-sandbox`
+(gid 10010), and installs `sudo`, `ripgrep` and `fd-find`; the agents' users are
+made with `useradd` and `groupadd` as they are needed. On another install,
+create the same user and group and install those packages; the page says what
 is missing.
