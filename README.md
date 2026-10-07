@@ -67,7 +67,7 @@ Browsers install the portal as an app (PWA) only over HTTPS or on `localhost`.
   Sync](https://github.com/Piggidragon/Pithagoras-Sync), runs on the laptop or server and
   pairs it with the portal. Each device has its own sandbox and permissions, and the portal
   asks you in the chat before a command runs where the device says to ask. See
-  [Devices](https://thecodacus.github.io/Pithagoras/guide/devices).
+  [Devices](https://thecodacus.github.io/pithagoras/guide/devices).
 - **Channels and people** — reach the agent from Telegram, Slack, Discord or a webhook, with
   roles, approvals and an audit log.
 - **Routines** — scheduled runs that report to a channel.
