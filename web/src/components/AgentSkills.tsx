@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { LuChevronDown, LuChevronRight, LuFileText } from "react-icons/lu";
-import { Streamdown } from "streamdown";
 import { api, type AgentSkill } from "../api";
 import { t, tp } from "../i18n";
 import { ago } from "../package-names";
+import { Markdown } from "./Markdown";
 
 /**
  * The skills an agent wrote for itself, on its Skills tab: what it made, when,
@@ -73,7 +73,7 @@ export function AgentSkills({ agent }: { agent: { id: string; name: string } }) 
                   ) : (
                     <div className="prose prose-sm max-w-none">
                       {/* The frontmatter is what the card's header already says; as Markdown it reads as a heading. */}
-                      <Streamdown>{content[s.id].replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "")}</Streamdown>
+                      <Markdown>{content[s.id].replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "")}</Markdown>
                     </div>
                   )}
                   {s.files.length > 0 && (
