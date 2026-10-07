@@ -31,6 +31,7 @@ import { rereadConfig } from "./model-runtime.js";
 import { UNDERSTORY_RULE, understoryOn } from "../features.js";
 import { deviceTools } from "../sync/tools.js";
 import { DEVICE_TOOLS_SOURCE } from "../sync/protocol.js";
+import { BUILT_IN_SOURCE, piToolOfDevices } from "../tool-policy.js";
 
 /** A message on its way into pi: see SdkPiClient.prompt(). */
 interface Handoff {
@@ -216,7 +217,7 @@ function sourceLabel(info: any): string {
   // pi writes its own as <builtin:read> and the portal's inline ones as
   // <inline:canvases>. The second is worth naming; the first is the agent.
   const marker = /^<(builtin|inline):([^>]+)>$/.exec(path);
-  if (marker) return marker[1] === "inline" ? marker[2] : "built in";
+  if (marker) return marker[1] === "inline" ? marker[2] : BUILT_IN_SOURCE;
 
   const pkg = /node_modules\/((?:@[^/]+\/)?[^/]+)/.exec(path);
   if (pkg) return pkg[1];
@@ -227,11 +228,11 @@ function sourceLabel(info: any): string {
     const name = file.replace(/\.[cm]?[jt]sx?$/, "");
     // An extension in a directory of its own is named by the directory, which
     // is what its author called it — "index" is not a name.
-    return name === "index" ? (parts.pop() ?? name) : name || "built in";
+    return name === "index" ? (parts.pop() ?? name) : name || BUILT_IN_SOURCE;
   }
 
   const source = typeof info?.source === "string" ? info.source.trim() : "";
-  return source || "built in";
+  return source || BUILT_IN_SOURCE;
 }
 
 /**
@@ -1238,14 +1239,20 @@ export class SdkPiClient extends EventEmitter implements PiClient {
   async getTools(): Promise<PiTool[]> {
     const all: any[] = this.session.getAllTools?.() ?? [];
     const offered = this.wanted.size ? all.filter((tool) => this.wanted.has(String(tool.name))) : all;
-    return offered.map((tool) => ({
-      name: String(tool.name),
-      description: typeof tool.description === "string" ? tool.description : undefined,
-      source: sourceLabel(tool.sourceInfo),
-      package: packageOf(tool.sourceInfo),
-      ...(isInline(tool.sourceInfo) ? { inline: true as const } : {}),
-      enabled: !this.switchedOff.has(String(tool.name)),
-    }));
+    return offered.map((tool) => {
+      const name = String(tool.name);
+      const label = sourceLabel(tool.sourceInfo);
+      // A device grant registers pi's file and shell tools again (sync/tools.ts), which are no extension's to anybody.
+      const own = piToolOfDevices(name, label, isInline(tool.sourceInfo));
+      return {
+        name,
+        description: typeof tool.description === "string" ? tool.description : undefined,
+        source: own ? BUILT_IN_SOURCE : label,
+        package: packageOf(tool.sourceInfo),
+        ...(isInline(tool.sourceInfo) && !own ? { inline: true as const } : {}),
+        enabled: !this.switchedOff.has(name),
+      };
+    });
   }
 
   /**

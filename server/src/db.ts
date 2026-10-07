@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import { inTurnWithSettings, piSetting, readPiSettings, readProjectPiSettings } from "./pi-settings.js";
 import { packageIndex, packageKey, packageLabel, toolAvailability } from "./extension-switch.js";
 import { EDIT_IMAGE_SOURCE, EDIT_IMAGE_TOOL, GENERATE_IMAGE_SOURCE, GENERATE_IMAGE_TOOL, SHOW_IMAGE_SOURCE, imageEditingReady, imageGenerationReady } from "./image-generation.js";
-import { PORTAL_BROWSER_TOOLS, browserTool, defaultsFor, mcpServerOf, toolEnabled } from "./tool-policy.js";
+import { BUILT_IN_SOURCE, PORTAL_BROWSER_TOOLS, browserTool, defaultsFor, mcpServerOf, piToolOfDevices, toolEnabled } from "./tool-policy.js";
 import { projectOf } from "./workspaces.js";
 import { browserServers, dropMcpCache, mcpServerNames, readMcpFile, serversAndBrowsers } from "./api/mcp.js";
 import { mkdirSync, realpathSync } from "node:fs";
@@ -2192,16 +2192,30 @@ export function knownTools(): KnownTool[] {
     if (!Array.isArray(parsed)) return [];
     return parsed
       .filter((t) => t && typeof t.name === "string")
-      .map((t) => ({
-        name: String(t.name),
-        source: String(t.source ?? ""),
-        ...(typeof t.description === "string" && t.description ? { description: t.description } : {}),
-        ...(typeof t.package === "string" && t.package ? { package: t.package } : t.package === null ? { package: null } : {}),
-        ...(typeof t.inline === "boolean" ? { inline: t.inline } : {}),
-      }));
+      .map((t) =>
+        ownedByPi({
+          name: String(t.name),
+          source: String(t.source ?? ""),
+          ...(typeof t.description === "string" && t.description ? { description: t.description } : {}),
+          ...(typeof t.package === "string" && t.package ? { package: t.package } : t.package === null ? { package: null } : {}),
+          ...(typeof t.inline === "boolean" ? { inline: t.inline } : {}),
+        }),
+      );
   } catch {
     return [];
   }
+}
+
+/**
+ * Pi's seven file and shell tools as the catalogue has them: built in, whatever a chat with a device reported.
+ *
+ * Such a chat registers them again as the devices extension's (see `piToolOfDevices`), and a catalogue that took
+ * that at its word filed them under "devices" and left the Built-in box with nothing in it. Read like this, a
+ * catalogue that already holds them that way is right again without anything being rewritten; the next report
+ * writes them back the right way.
+ */
+function ownedByPi(tool: KnownTool): KnownTool {
+  return piToolOfDevices(tool.name, tool.source, tool.inline) ? { ...tool, source: BUILT_IN_SOURCE, package: null, inline: false } : tool;
 }
 
 /**
@@ -2398,9 +2412,9 @@ export function rememberTools(reported: KnownTool[]): void {
     !noServerOf(t.name) &&
     // Told apart from the configured servers too: `notes` removed leaves `notes_staging_read` to the server that is still there.
     gone.includes(mcpServerOf(t.name, [...Object.keys(configured.config.mcpServers), ...gone]) ?? "");
-  const tools = reported.filter(
-    (t) => (typeof t.package !== "string" || !listed || listed.has(packageKey(t.package))) && !noServer(t),
-  );
+  const tools = reported
+    .filter((t) => (typeof t.package !== "string" || !listed || listed.has(packageKey(t.package))) && !noServer(t))
+    .map(ownedByPi);
   if (!tools.length) return;
   const merged = new Map(knownTools().map((t) => [t.name, t]));
   const fresh = tools.map((t) => t.name).filter((name) => !merged.has(name));

@@ -249,6 +249,22 @@ if (phase === 'devices' || phase === 'devices-blocked') {
         { id: 'd1', name: 'laptop', os: 'linux', online: true, granted: false, cwd: null, home: '/home/alice', mode: 'ask', folders: [{ path: '/home/alice/src', access: 'rw', execute: true }], offered: true, why: null, blocked: null },
         { id: 'd2', name: 'desk', os: 'windows', online: false, granted: false, cwd: null, home: null, mode: null, folders: [], offered: false, why: 'desk is not connected', blocked: null },
       ];
+  // The chat's tools as the portal lists them once it has a device: pi's own file and shell tools, which the grant registers again, among the rest.
+  // What the page sent is in window.sentTools.
+  (window as any).sentTools = [];
+  let off: string[] = [];
+  mockFetch((u, init) => {
+    if (!/\/api\/sessions\/preview\/tools$/.test(u)) return undefined;
+    if (init?.method === 'PUT') {
+      off = JSON.parse(init.body as string).off;
+      (window as any).sentTools.push(off);
+      return { off };
+    }
+    return { live: true, off, names: {}, tools: [
+      ...['bash', 'edit', 'find', 'grep', 'ls', 'read', 'write'].map((name) => ({ name, source: 'built in', enabled: !off.includes(name), defaultOn: true })),
+      { name: 'web_search', source: 'pi-web-access', enabled: !off.includes('web_search'), defaultOn: true },
+    ] };
+  });
   mockFetch((u, init) => {
     // The questions a device holds for the chat are the test's own: what it serves outlives a reload, as the portal's would.
     if (!u.includes('/api/sessions/preview/devices') || u.includes('/devices/approvals')) return undefined;

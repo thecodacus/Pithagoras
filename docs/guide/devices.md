@@ -157,6 +157,14 @@ one, means something else by it and is left alone, with Devices on or off. With
 Devices off, only pi's own `read`, `write`, `edit`, `bash`, `grep`, `find` and
 `ls` are still refused when they are given a `device`.
 
+In the tool menus and in **Settings → Tools** these seven stay in the **built in**
+group, once each, with a device or without: a grant changes how they run, not what
+they are. A switch there works on the tool by its name, so switching `bash` off
+turns it off in every chat that has not switched it on for itself, the one with
+a device included, and its `device` parameter with it. `grep`, `find` and `ls`
+are listed there from the first time a chat has had a device, and are switched
+the same way.
+
 When the last device is taken back, the tools stay as they are for the rest of
 the chat's session and refuse a `device`; `grep`, `find` and `ls` go away
 again. When the chat is deleted, or the device removed, the grant ends too, and
