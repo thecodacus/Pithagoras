@@ -121,8 +121,8 @@ test("activity_note says what became of the note, and an empty one is an error",
   setDefaultReportTo({ channel: "tg", target: "chat:1" });
   assert.equal(said(await run(note, { title: "Urgent", detail: "now", urgent: true })), "Noted, and sent through tg.");
   assert.match(sends.at(-1).text, /^Scout: Urgent\n\nnow$/);
-  // Kept as a note in the chat it lands in, so that chat counts as having read what the look read (security.md says so).
-  assert.notEqual(notedFlags.at(-1), false, "an urgent note is a note: the look read outside content, and the chat it goes to is tainted by it");
+  // Kept as a note in the chat it lands in, wrapped there as data (security.md says so).
+  assert.notEqual(notedFlags.at(-1), false, "an urgent note is a note: the look read outside content, and the chat it goes to has it wrapped");
   sends.failWith = "offline";
   try {
     assert.match(said(await run(note, { title: "Urgent", detail: "now", urgent: true })), /Noted, but the message could not be sent: offline/);

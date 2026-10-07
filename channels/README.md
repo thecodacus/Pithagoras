@@ -9,5 +9,5 @@ How a channel works, what its package looks like (`manifest`, `start(ctx)`, and
 `ctx.ask` with who sent the message) and how to install a third-party one are in the
 docs, and in `docs/channels/` of this repository:
 
-- [Agent and channels](https://thecodacus.github.io/Pithagoras/channels/): what a channel is, sessions, the supervisor.
-- [Writing a channel](https://thecodacus.github.io/Pithagoras/channels/writing-a-channel): the package, `ctx`, and the identity every message has to carry.
+- [Agent and channels](https://thecodacus.github.io/pithagoras/channels/): what a channel is, sessions, the supervisor.
+- [Writing a channel](https://thecodacus.github.io/pithagoras/channels/writing-a-channel): the package, `ctx`, and the identity every message has to carry.

@@ -376,7 +376,7 @@ GitHub Actions**.
 
 The site is served from `/<repository name>/`, so the workflow sets `base` to
 that, spelled as the repository is: GitHub Pages paths are case-sensitive, and a
-fork has a name of its own. A build by hand uses `/Pithagoras/`, the upstream's,
+fork has a name of its own. A build by hand uses `/pithagoras/`, the upstream's,
 unless `DOCS_BASE` says otherwise. On a custom domain, where the site sits at the
 root, set it to `/` in the workflow's build step:
 

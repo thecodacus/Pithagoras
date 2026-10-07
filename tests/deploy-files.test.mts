@@ -203,7 +203,7 @@ test('the docs site names its favicon under the base it is served from, whatever
   };
   const had = process.env.DOCS_BASE;
   try {
-    assert.deepEqual(await faviconFor(undefined), { base: '/Pithagoras/', href: '/Pithagoras/favicon.png' });
+    assert.deepEqual(await faviconFor(undefined), { base: '/pithagoras/', href: '/pithagoras/favicon.png' });
     assert.deepEqual(await faviconFor('/'), { base: '/', href: '/favicon.png' });
     assert.deepEqual(await faviconFor('/fork'), { base: '/fork/', href: '/fork/favicon.png' });
   } finally {
@@ -213,12 +213,12 @@ test('the docs site names its favicon under the base it is served from, whatever
 });
 
 test('the docs are built under the path they are served from, and the links to them are written the way that path is spelled', () => {
-  // GitHub Pages paths are case-sensitive: the upstream repository is Pithagoras, and a fork has its own name.
+  // GitHub Pages paths are case-sensitive: the upstream repository is pithagoras, and a fork has its own name.
   assert.match(jobsOf('.github/workflows/docs.yml').build, /- run: npm run docs:build\n\s+env:\n\s+DOCS_BASE: \/\$\{\{ github\.event\.repository\.name \}\}\//);
   for (const file of ['README.md', 'channels/README.md']) {
     const links = [...read(file).matchAll(/thecodacus\.github\.io\/([^/\s)"]+)\//g)].map((m) => m[1]);
     assert.ok(links.length, `${file} links to the docs`);
-    for (const name of links) assert.equal(name, 'Pithagoras', `${file} links to the docs under the repository's own spelling`);
+    for (const name of links) assert.equal(name, 'pithagoras', `${file} links to the docs under the repository's own spelling`);
   }
 });
 

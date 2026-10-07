@@ -13,7 +13,7 @@ import {
 import { resolveChannelSession, scopeKey, unscopeKey } from "../agent.js";
 import { EXECUTOR_KIND } from "../executor-kind.js";
 import { sessions, CommandFailed, stripThinkingMarkers } from "../session-manager.js";
-import { ruleApplies, taintSession } from "../pi/guard.js";
+import { ruleApplies } from "../pi/guard.js";
 import { readAnswer, recordAnswer, type QuestionRow } from "../questions.js";
 import { recordApproval } from "../approvals.js";
 import {
@@ -394,7 +394,6 @@ class ChannelSupervisor {
     try {
       const reply = stripThinkingMarkers((await sessions.ask(sessionId, () => {
         const pending = pendingNotes(sessionId);
-        if (pending.length) taintSession(sessionId);
         const full = pending.length ? `${prompt}\n\n${notesBlock(pending.map((n) => n.text))}` : prompt;
         return { message: full, onAccepted: () => consumeNotes(sessionId, pending.map(n => n.id)) };
       })) ?? "");
@@ -679,7 +678,6 @@ class ChannelSupervisor {
 
     const reply = await sessions.ask(session.id, () => {
       const pending = pendingNotes(session.id);
-      if (pending.length) taintSession(session.id);
       return {
         message: withInstructions(text, row.instructions, person, pending.map(n => n.text)),
         onAccepted: () => consumeNotes(session.id, pending.map(n => n.id)),
