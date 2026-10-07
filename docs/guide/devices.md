@@ -130,8 +130,10 @@ name on its card in the chat.
 - `~` is the device's home, and a relative path starts in the chat's folder
   there. On Windows, `C:\Users\x` is written `/c/Users/x`; the agent may use
   either.
-- `bash` runs the device's own shell (on Windows PowerShell, `pwsh` if it is
-  installed, and the agent is told so, so it does not write `cmd` syntax), in the device's own environment: nothing
+- `bash` runs the device's own shell. On Windows that is PowerShell: `pwsh` if
+  it is installed, else Windows PowerShell 5.1, unless the device's owner set
+  another shell. The agent is told so, so that it writes PowerShell and not
+  `cmd` syntax. It runs in the device's own environment: nothing
   of the portal's environment goes along, and the command is the one the model
   wrote: what an installed extension rewrites in the portal's `bash` commands
   (a prefix such as `rtk`, which only the portal may have) is not applied to
