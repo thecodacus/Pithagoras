@@ -135,11 +135,17 @@ export function deviceTools(opts: DeviceToolsOptions) {
     // Said once, with read: the tools' guidelines are one list in the prompt. Online state stays out, so the prompt does not change with it.
     // The folder is quoted: it is the device's own text, and a quoted one cannot read as an instruction of its own.
     const listed = granted.map(({ device: d, grant }) => `${d.name} (${d.os}, folder ${grant.cwd ? JSON.stringify(grant.cwd) : "its home"})`).join("; ");
+    // The client's shell on Windows is pwsh, else Windows PowerShell, which a model otherwise takes for cmd. From the stored os, not the hello: that one is online state.
+    const windows = granted.filter(({ device: d }) => d.os === "windows").map(({ device: d }) => d.name);
+    const onWindows = windows.length === granted.length ? "a Windows device" : `the Windows device${windows.length > 1 ? "s" : ""} ${windows.join(", ")}`;
+    const powershell = windows.length
+      ? ` On ${onWindows}, bash runs PowerShell (pwsh if installed, else Windows PowerShell 5.1), not cmd.exe, unless the device's owner chose another shell: write PowerShell syntax (Get-ChildItem, $env:NAME, ";" between commands, no && or || in 5.1).`
+      : "";
     const guidelines = [
       ...(base.promptGuidelines ?? []),
       ...(name === "read" && listed
         ? [
-            `Devices granted to this chat: ${listed}. Pass device: "<name>" to read, write, edit, bash, grep, find or ls to act there; without it read, write, edit and bash act on the server, and grep, find and ls need a device. A device's bash runs that device's shell. Subagents, background jobs and MCP tools always act on the server.`,
+            `Devices granted to this chat: ${listed}. Pass device: "<name>" to read, write, edit, bash, grep, find or ls to act there; without it read, write, edit and bash act on the server, and grep, find and ls need a device. A device's bash runs that device's shell.${powershell} Subagents, background jobs and MCP tools always act on the server.`,
           ]
         : []),
     ];

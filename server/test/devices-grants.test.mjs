@@ -56,10 +56,10 @@ const api = async (method, route, body) => {
 };
 
 /** A paired device, connected and said what it is. */
-async function online(name, answers = {}, info = {}) {
+async function online(name, answers = {}, info = {}, os = "linux") {
   const { code } = store.newPairingCode();
-  const r = await fetch(`http://${base}/sync/v1/pair`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code, name, os: "linux", arch: "x86_64" }) }).then((x) => x.json());
-  const { device } = await connectTo(base, r.connector_token, { answers: { "device.info": { ...INFO, name, ...info }, ...answers } });
+  const r = await fetch(`http://${base}/sync/v1/pair`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code, name, os, arch: "x86_64" }) }).then((x) => x.json());
+  const { device } = await connectTo(base, r.connector_token, { answers: { "device.info": { ...INFO, name, os, ...info }, ...answers } });
   await until(() => linkOf(r.device_id)?.info && linkOf(r.device_id).sameMachine !== undefined, "the device's info");
   return { id: r.device_id, token: r.connector_token, device };
 }
@@ -331,6 +331,36 @@ function extensionApi() {
 }
 
 const textOf = (result) => result.content.map((c) => c.text ?? `[${c.type}]`).join("");
+
+test("the prompt says a Windows device's bash is PowerShell, and names it when the grant is mixed", async () => {
+  const guidelinesOf = (sessionId) => {
+    const ext = extensionApi();
+    deviceTools({ sessionId, cwd: home, pi, serverTool: () => undefined })(ext);
+    return ext.tools.get("read").promptGuidelines.join("\n");
+  };
+  const linux = await online("tux");
+  const win = await online("wsdesk", {}, { home: "C:\\Users\\bob" }, "windows");
+  const win2 = await online("wslap", {}, { home: "C:\\Users\\amy" }, "windows");
+
+  // Linux only: the prompt is what it was.
+  const plain = chat();
+  grants.grantDevice(plain, linux.id, "/home/alice/src");
+  assert.doesNotMatch(guidelinesOf(plain), /PowerShell|cmd\.exe/);
+
+  // Windows only: told once, without names.
+  const only = chat();
+  grants.grantDevice(only, win.id, "C:\\Users\\bob");
+  assert.match(guidelinesOf(only), /A device's bash runs that device's shell\. On a Windows device, bash runs PowerShell \(pwsh if installed, else Windows PowerShell 5\.1\), not cmd\.exe/);
+
+  // Mixed: the Windows ones are named, the Linux one is not.
+  const mixed = chat();
+  grants.grantDevice(mixed, linux.id, "/home/alice/src");
+  grants.grantDevice(mixed, win.id, "C:\\Users\\bob");
+  assert.match(guidelinesOf(mixed), /On the Windows device wsdesk, bash runs PowerShell/);
+  grants.grantDevice(mixed, win2.id, "C:\\Users\\bob");
+  assert.match(guidelinesOf(mixed), /On the Windows devices (wsdesk, wslap|wslap, wsdesk), bash runs PowerShell/);
+  assert.doesNotMatch(guidelinesOf(mixed), /Windows devices[^.]*tux/);
+});
 
 test("the tools take a device once the chat has one; without one, nothing of theirs reaches a device", async () => {
   const files = { "/home/alice/src/notes.txt": "first line\nsecond line\n", "/home/alice/src/app.rs": "fn main() {\n    old();\n}\n" };
