@@ -68,10 +68,30 @@ export function Modal({
   const leaving = useLeaveRef<HTMLDivElement>("dialog");
   const dialog = useDialogFocus<HTMLDivElement>();
   // Only for its first moment, so that what comes in with it (the rail's lines) does not come in again when it is drawn again.
+  // Over when what came in has come in, not after a time about as long: a search started and ended in between
+  // drew the rail anew while the dialog was still fresh, and its lines came in again.
   const [fresh, setFresh] = useState(true);
   useEffect(() => {
-    const timer = window.setTimeout(() => setFresh(false), 1000);
-    return () => window.clearTimeout(timer);
+    let done = false;
+    const over = () => {
+      if (done) return;
+      done = true;
+      setFresh(false);
+    };
+    const frame = requestAnimationFrame(() => {
+      const entrance = (dialog.current?.getAnimations?.({ subtree: true }) ?? []).filter(
+        (a) => a.effect?.getComputedTiming().iterations !== Infinity
+      );
+      if (!entrance.length) return over();
+      void Promise.allSettled(entrance.map((a) => a.finished)).then(over);
+    });
+    // Whatever happens to the animations, it does not stay fresh for long.
+    const timer = window.setTimeout(over, 3000);
+    return () => {
+      done = true;
+      cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+    };
   }, []);
   const drafts = useRef(new Set<object>());
   const unsavedNow = useRef(unsaved);
