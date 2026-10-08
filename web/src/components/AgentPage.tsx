@@ -24,6 +24,7 @@ import { PageHeader, Stat } from "./PageHeader";
 import { RowsSkeleton } from "./Skeleton";
 import { api, ApiError, type Agent, type AgentSession, type AgentSetup as Setup } from "../api";
 import { AgentSetup } from "./AgentSetup";
+import { ToolSwitches } from "./ToolSwitches";
 import { confirmDeleteSession } from "./SessionActions";
 import { Modal } from "./Modal";
 import { ErrorBanner, LoadFailed, primarySmCls } from "./SettingsUi";
@@ -464,6 +465,7 @@ function AgentView({
 
           {tab === "activity" && <ActivityFeed agent={agent} onChanged={onChanged} onSelect={onSelect} />}
           {tab === "heartbeat" && <HeartbeatSettings agent={agent} onChanged={onChanged} />}
+          {tab === "tools" && <AgentTools agent={agent.id} />}
           {tab === "skills" && <AgentSkills agent={agent} />}
           {tab === "files" && setup?.initialised && <AgentFiles agent={agent.id} setup={setup} onSaved={setSetup} />}
           {tab === "files" && !setup && setupFailed && (
@@ -592,6 +594,7 @@ const AGENT_TABS = [
   ["conversations", msg("Conversations")],
   ["activity", msg("Activity")],
   ["heartbeat", msg("Heartbeat")],
+  ["tools", msg("Tools")],
   ["skills", msg("Skills")],
   ["files", msg("Files")],
 ] as const;
@@ -866,6 +869,22 @@ function AgentFiles({ agent, setup, onSaved }: { agent: string; setup: Setup; on
           )}
         </div>
       )}
+    </section>
+  );
+}
+
+/**
+ * The agent's own tool switches: exceptions to the portal-wide default for every
+ * chat in its home and every run it does on its own. Saved as each switch is
+ * flipped, as a project's are.
+ */
+function AgentTools({ agent }: { agent: string }) {
+  return (
+    <section className="mt-4 rounded-xl border border-line bg-surface">
+      <p className="border-b border-line px-3 py-2 text-xs text-fg-subtle">
+        {t("What this agent's chats and its own runs — its heartbeat, the routines that run in its home — start with, against Settings → Tools. A project and a routine can switch tools again for their own, and a chat for itself.")}
+      </p>
+      <ToolSwitches agent={agent} />
     </section>
   );
 }

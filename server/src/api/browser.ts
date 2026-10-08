@@ -1,5 +1,6 @@
 import express, { type Router } from "express";
 import {
+  agentTools,
   browserAllowlist,
   browserByDefault,
   browserConfigured,
@@ -11,11 +12,14 @@ import {
   portalBrowserOn,
   portalBrowserState,
   projectTools,
+  routineTools,
   sessionTools,
   setBrowserAllowlist,
   setBrowserCursor,
   setPortalBrowser,
+  setAgentTools,
   setProjectTools,
+  setRoutineTools,
   setSessionTools,
   setToolDefaultsOff,
   toolDefaultsOff,
@@ -156,6 +160,14 @@ export function adoptPortalBrowser(): void {
       for (const { project } of getDb().prepare("SELECT project FROM project_tools").all() as { project: string }[]) {
         const tools = projectTools(project);
         setProjectTools(project, { off: carry(tools.off), on: carry(tools.on) });
+      }
+      for (const { agent } of getDb().prepare("SELECT agent FROM agent_tools").all() as { agent: string }[]) {
+        const tools = agentTools(agent);
+        setAgentTools(agent, { off: carry(tools.off), on: carry(tools.on) });
+      }
+      for (const { slug } of getDb().prepare("SELECT slug FROM routines").all() as { slug: string }[]) {
+        const tools = routineTools(slug);
+        if (tools.off.length || tools.on.length) setRoutineTools(slug, { off: carry(tools.off), on: carry(tools.on) });
       }
     })();
   }

@@ -491,6 +491,26 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ off }),
     }),
+  /** What an agent's chats and own runs start with: its exceptions to the portal-wide default, `live` always false. */
+  agentTools: (id: string) =>
+    json<{ tools: PortalTool[]; live: boolean; off: string[]; names: Record<string, string> }>(
+      `/api/agents/${encodeURIComponent(id)}/tools`
+    ),
+  setAgentTools: (id: string, off: string[]) =>
+    json<{ off: string[]; applied: number }>(`/api/agents/${encodeURIComponent(id)}/tools`, {
+      method: "PUT",
+      body: JSON.stringify({ off }),
+    }),
+  /** What every run of a routine starts with: its exceptions to what its agent and project leave. */
+  routineTools: (id: string) =>
+    json<{ tools: PortalTool[]; live: boolean; off: string[]; names: Record<string, string> }>(
+      `/api/routines/${encodeURIComponent(id)}/tools`
+    ),
+  setRoutineTools: (id: string, off: string[]) =>
+    json<{ off: string[]; applied: number }>(`/api/routines/${encodeURIComponent(id)}/tools`, {
+      method: "PUT",
+      body: JSON.stringify({ off }),
+    }),
   /** `discard` says that unsaved work in the folder (see ProjectContents) may go with it; without it the server refuses. */
   deleteProject: (name: string, discard = false) =>
     json<{ ok: true; sessionsDeleted: number; jobsStopped: number }>(`/api/projects/${encodeURIComponent(name)}${discard ? "?discard=1" : ""}`, {
