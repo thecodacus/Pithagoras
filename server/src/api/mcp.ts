@@ -5,7 +5,6 @@ import { writeFileAtomic } from "../atomic-write.js";
 import { isSwitchedOff, sourceOf } from "../extension-switch.js";
 import { piAgentDir, readPiSettings } from "../pi-settings.js";
 import { BROWSER_MCP } from "../tool-policy.js";
-import { mcpServersRemoved } from "../db.js";
 
 /**
  * MCP servers, as configured for `pi-mcp-adapter`.
@@ -82,6 +81,22 @@ function stripComments(text: string): string {
     out += c;
   }
   return out;
+}
+
+let lastReadable: McpFile | undefined;
+
+/**
+ * The configuration as it last could be read: the file now, or, while it
+ * cannot be parsed, what it was before. What the servers offer is judged by
+ * this (db.ts mcpView), and so is which servers a write took out: a typo in
+ * the file must neither withdraw a tool nor hand back one that was withdrawn,
+ * nor make the write that fixes it forget the servers it leaves out.
+ * Undefined where the file has not been readable since the portal started.
+ */
+export function readableMcpConfig(): McpFile | undefined {
+  const { config, error } = readMcpFile();
+  if (!error) lastReadable = config;
+  return lastReadable;
 }
 
 export function readMcpFile(): { config: McpFile; raw: string; error?: string } {
@@ -209,32 +224,31 @@ export function serversAndBrowsers(): { servers: string[]; browsers: string[] } 
  */
 export function writeMcpText(text: string): void {
   const file = mcpConfigPath();
-  const before = mcpServerNames();
+  const before = Object.keys(readableMcpConfig()?.mcpServers ?? {});
   mkdirSync(path.dirname(file), { recursive: true });
   writeFileAtomic(file, text.endsWith("\n") ? text : text + "\n", 0o600);
-  // Whoever wrote it — a route of the panel, a feature switched off, the browser moved over — a server
-  // that is gone takes its tools with it, and the chats that are running are told.
-  const after = mcpServerNames();
-  if (before.some((name) => !after.includes(name)) || after.some((name) => !before.includes(name))) {
-    mcpServersRemoved(before, after);
-  }
-  try {
-    afterWrite();
-  } catch (e) {
-    console.error(`[portal] could not apply the MCP configuration to running chats: ${(e as Error).message}`);
+  for (const listener of [...writtenListeners]) {
+    try {
+      listener(before);
+    } catch (e) {
+      console.error(`[portal] could not take in the MCP configuration that was written: ${(e as Error).message}`);
+    }
   }
 }
 
-let afterWrite: () => void = () => {};
+const writtenListeners = new Set<(before: string[]) => void>();
 
 /**
- * Told after every write of the file: what the configuration offers decides
- * which tools a running chat may still use (see mcp-offer.ts), and a chat that
- * has to be restarted to notice a server switched off is a switch that looks
- * broken.
+ * Told after every write of the file, whoever wrote it — a route of the panel,
+ * a feature switched off, the browser moved over — with the servers it had
+ * before: what the configuration offers decides which tools a running chat may
+ * still use (see mcp-offer.ts), and a chat that has to be restarted to notice
+ * a server switched off is a switch that looks broken. Returns the way to stop
+ * listening.
  */
-export function onMcpWritten(listener: () => void): void {
-  afterWrite = listener;
+export function onMcpWritten(listener: (before: string[]) => void): () => void {
+  writtenListeners.add(listener);
+  return () => writtenListeners.delete(listener);
 }
 
 export function writeMcpFile(config: McpFile): void {

@@ -13,7 +13,6 @@ import path from "node:path";
 import type { Draft, PiClient, PiTool, PromptTaken } from "./pi/types.js";
 import { effectiveOff, exceptionsFor, toolEnabled, toolSource } from "./tool-policy.js";
 import { unlisted } from "./mcp-offer.js";
-import { mcpServerNames } from "./api/mcp.js";
 import { projectOf } from "./workspaces.js";
 import { findServerBuiltin, picturesRefused, runBuiltin } from "./pi/builtins.js";
 import { dropMessage, SessionEditError, userTexts, type Scope } from "./pi/session-edit.js";
@@ -2480,7 +2479,7 @@ class SessionManager extends EventEmitter {
     // What the chat's agent, project and routine start it with, which is what it is "default" against.
     const defaults = toolDefaultsForSession(session);
     const exceptions = sessionTools(sessionId);
-    const servers = mcpServerNames();
+    const servers = view.servers;
     const shown: { name: string; source: string; description?: string; inline?: true; cached?: true }[] = listed.length ? listed : shownTools(workspace, view);
     return {
       tools: shown.map(({ name, source, description, inline, cached }) => ({
@@ -2533,7 +2532,7 @@ class SessionManager extends EventEmitter {
     // otherwise have, so a project that switches a tool off needs no entry for it
     // in every chat, and one that is switched back on in the chat needs one.
     setSessionTools(sessionId, exceptionsFor(wantedOff, toolDefaultsForSession(getSession(sessionId)), answered, held));
-    const off = this.offFor(sessionId, listed.map((t) => t.name));
+    const off = this.offFor(sessionId, listed.map((t) => t.name), view.known().keys());
     await client?.setToolsOff?.(this.piOff(sessionId, reported.map((t) => t.name), view));
     return off;
   }
