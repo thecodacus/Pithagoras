@@ -6,9 +6,9 @@ import { fileURLToPath } from "node:url";
 import { inlineBrowserScreenshot } from "./browser-screenshot.js";
 import { cleanBrowserSnapshot, isBrowserSnapshot } from "./browser-snapshot-format.js";
 import { bareRef } from "../browser/ref.js";
-import { listToolRules, recordAudit, useGrant, type ToolRule } from "../db.js";
+import { listToolRules, mcpView, recordAudit, useGrant, type McpView, type ToolRule } from "../db.js";
 import { EDIT_IMAGE_TOOL } from "../image-generation.js";
-import { PORTAL_BROWSER_TOOLS } from "../tool-policy.js";
+import { PORTAL_BROWSER_TOOLS, mcpServerOf } from "../tool-policy.js";
 import { DEVICE_TOOLS_SOURCE, PI_TOOLS } from "../sync/protocol.js";
 import { devicesEnabled } from "../sync/store.js";
 import { isWithinText, pathBelow, realPath, realPathAhead } from "../within.js";
@@ -59,6 +59,57 @@ function untrustedResult(toolName: string, input: Record<string, unknown>): bool
   if (toolName === "bash") return UNTRUSTED_COMMAND.test(cmd(input));
   if (browserCall(toolName, input).isBrowser) return true;
   return /^mcp(_|$)/.test(toolName);
+}
+
+/**
+ * The switched-off tool a call reaches by another way, if it does.
+ *
+ * The MCP adapter offers every tool of every server it knows through its own
+ * `mcp` tool as well as, where a server registers them directly, under their
+ * own names: `mcp({ tool: "jira_create_issue" })` is the same call as
+ * `jira_create_issue`. Switching the tool off took it out of what the model is
+ * offered and left this way to it open, from the adapter's cache whether or
+ * not the server was running. So the proxy is held to the switches too: a call
+ * or a description of a tool that is off here is refused. The adapter finds a
+ * tool by its full name, hyphens or underscores; the bare name with a server is
+ * matched as well, whatever the adapter makes of it. Only against a server's
+ * tools: `bash` switched off is no reason to refuse a server's `shell_bash`,
+ * and the adapter sends a call for one of pi's own tools back to it anyway.
+ *
+ * A script (`mcp_script`, where the adapter's script mode is on) can call any
+ * tool and says which only as it runs, so it is refused while a tool the
+ * adapter reaches on a server is switched off here: it cannot be held to the
+ * switches one call at a time. Only such a tool: one the configuration leaves
+ * out is off for pi too, and the adapter would not reach it anyway; a tool of
+ * another extension whose name merely starts like a server's is no script's.
+ */
+export function switchedOffVia(
+  toolName: string,
+  input: Record<string, unknown>,
+  off: ReadonlySet<string>,
+  given?: Pick<McpView, "servers" | "serverTool">,
+): string | undefined {
+  if (!off.size || (toolName !== "mcp" && toolName !== "mcp_script" && toolName !== "mcpScript")) return undefined;
+  const mcp = given ?? mcpView();
+  // The adapter takes a name with hyphens for underscores (findToolByName); dots as well, which it
+  // writes as underscores, so a name it might take one day is not a way round.
+  const same = (name: string) => name.replace(/[-.]/g, "_");
+  if (toolName === "mcp") {
+    const server = typeof input.server === "string" && input.server ? same(input.server) : undefined;
+    for (const key of ["tool", "describe"]) {
+      const asked = input[key];
+      if (typeof asked !== "string" || !asked) continue;
+      const wanted = [same(asked), ...(server ? [`${server}_${same(asked)}`] : [])];
+      const hit = [...off].find((name) => wanted.includes(same(name)) && mcpServerOf(name, mcp.servers) !== undefined);
+      if (hit) return hit;
+    }
+    return undefined;
+  }
+  // `mcpScript` too: the name the portal's own lists have for it, should an adapter register it so.
+  if (toolName === "mcp_script" || toolName === "mcpScript") {
+    return [...off].find((name) => mcp.serverTool(name));
+  }
+  return undefined;
 }
 
 interface Rule {
@@ -829,7 +880,9 @@ export function guardExtension(
    */
   workspace?: string,
   /** Other places they may read as well: the skills the agent offers, which are instructions for anybody it serves. */
-  alsoReadable: string[] = []
+  alsoReadable: string[] = [],
+  /** What this conversation has switched off, read at each call: see switchedOffVia. */
+  offNow: () => ReadonlySet<string> = () => new Set(),
 ) {
   return (pi: any): void => {
     // Per session, not global: a taint belongs to the conversation that read the
@@ -889,6 +942,22 @@ export function guardExtension(
           personKey: key,
           sessionId: portalSessionId,
         });
+
+      // Before anything that could allow it: a tool switched off is off for
+      // everybody, and no rule or approval switches it back on.
+      const offTool = switchedOffVia(event.toolName, event.input ?? {}, offNow());
+      if (offTool) {
+        note("refused", `Switched off in this conversation: ${offTool}`);
+        return {
+          block: true,
+          reason:
+            event.toolName !== "mcp"
+              ? `Refused: "${offTool}" is switched off in this conversation, and an MCP script could reach it. ` +
+                "Call the MCP tools you need one at a time instead."
+              : `Refused: "${offTool}" is switched off in this conversation, and the mcp tool does not reach it ` +
+                "either. Say that it is switched off rather than looking for another way to it.",
+        };
+      }
 
       // A paired computer is the primary user's: nobody else's message reaches it, whatever a rule or the read-only tools would
       // let them run on the server. And only the devices extension's own tools act on one: any other tool would drop the

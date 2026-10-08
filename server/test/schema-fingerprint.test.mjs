@@ -17,7 +17,7 @@ import { freePort, inProcessHome } from "./server-harness.mjs";
 // src/schema-version.ts (once for the release, not once for each change),
 // pin the new version and fingerprint here, and have an upgrade test for what
 // changed (below) that starts from a database made before it.
-const PINNED = { version: 4, fingerprint: "1f76ac5cce9909b4c5bdaace9fb5b027d7a8161086ec8851addfcb0d41df11e2" };
+const PINNED = { version: 4, fingerprint: "711770588b2ec1297c8c665c572be78387f751101651666ca73cd5ad3fb04c67" };
 
 const home = inProcessHome("pithagoras-schema-");
 
@@ -97,7 +97,7 @@ function startUpgrade(dataDir, port) {
 // A database in WAL mode (bytes 18 and 19 of its header are 2) leaves a -shm and a -wal file beside it when it is only
 // read, which the next `git add -A` commits. The fixtures are kept with a rollback journal; the upgrade turns WAL on itself.
 test("the fixtures are kept without a write-ahead log, so that looking into one in place leaves no files beside it", () => {
-  for (const name of ["portal-v2.db", "portal-unversioned.db"]) {
+  for (const name of ["portal-v2.db", "portal-v3.db", "portal-unversioned.db"]) {
     const header = readFileSync(new URL(`./fixtures/${name}`, import.meta.url)).subarray(0, 20);
     assert.deepEqual([header[18], header[19]], [1, 1], name);
   }
@@ -105,7 +105,7 @@ test("the fixtures are kept without a write-ahead log, so that looking into one 
 
 // A fixture is made on somebody's machine, and ships with the repository: nothing in it may say whose, or where.
 test("the fixtures carry no folder of the machine they were made on", () => {
-  for (const name of ["portal-v2.db", "portal-unversioned.db"]) {
+  for (const name of ["portal-v2.db", "portal-v3.db", "portal-unversioned.db"]) {
     const bytes = readFileSync(new URL(`./fixtures/${name}`, import.meta.url)).toString("latin1");
     assert.doesNotMatch(bytes, /\/(?:home|tmp|Users|root)\/[\w.-]/, name);
   }
@@ -166,10 +166,64 @@ test("a database at the schema before this one is checked and backed up, brought
   assert.equal(existsSync(path.join(dir, "backups")), true);
 });
 
+/** Runs prepareDatabase() as the server would, then reads what each routine of fixtures/portal-v3.db says about tools. */
+function startToolsUpgrade(dataDir, port) {
+  const dist = (f) => JSON.stringify(new URL(`../dist/${f}`, import.meta.url).href);
+  const script = `
+    const m = await import(${dist("db-upgrade.js")});
+    await m.prepareDatabase();
+    const db = await import(${dist("db.js")});
+    // The browser's tools, as a chat would have reported them.
+    db.rememberTools([{ name: "browser_navigate", source: "browser", package: null }, { name: "bash", source: "built in", package: null }]);
+    console.log("RESULT " + JSON.stringify({
+      news: db.routineTools("news"),
+      tidy: db.routineTools("tidy"),
+      project: db.projectTools("research"),
+      defaults: db.toolDefaultsOff(),
+      agentTools: db.getDb().prepare("SELECT COUNT(*) AS n FROM agent_tools").get().n,
+    }));`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
+    env: { ...process.env, DATA_DIR: dataDir, WORKSPACE_ROOT: path.join(dataDir, "ws"), AGENT_HOME: path.join(dataDir, "home"), PORT: String(port), PORTAL_PASSWORD: "", ALLOW_OPEN: "" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let out = "";
+  child.stdout.on("data", (c) => { out += c; });
+  child.stderr.on("data", (c) => { out += c; });
+  return { child, output: () => out };
+}
+
+// fixtures/portal-v3.db was made by the code of v0.1.0 (SCHEMA_VERSION 3): a routine with its Browser switch on (news), one
+// with it off in a project (tidy), a project that switches bash off, and web_search off by default. Version 4 gives routines
+// tool switches of their own and agents a table of them (#81).
+test("a database of v0.1.0 is brought to the pinned schema, and each routine keeps the browser it had", async () => {
+  const dir = path.join(home, "from-v3");
+  mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, "portal.db");
+  copyFileSync(new URL("./fixtures/portal-v3.db", import.meta.url), file);
+  assert.deepEqual(upgradeCheck(file), { needed: true, from: 3 });
+
+  const run = startToolsUpgrade(dir, await freePort());
+  const exited = await new Promise((resolve) => run.child.on("exit", resolve));
+  assert.equal(exited, 0, run.output());
+  assert.match(run.output(), new RegExp(`upgrading the database from version 3 to ${SCHEMA_VERSION}`));
+  assert.equal(backupsIn(path.join(dir, "backups")).length, 1);
+
+  const d = new Database(file, { readonly: true });
+  assert.equal(schemaFingerprint(d), PINNED.fingerprint);
+  d.close();
+
+  const result = JSON.parse(/RESULT (.*)/.exec(run.output())[1]);
+  assert.deepEqual(result.news, { off: [], on: ["browser_navigate"] }, "Browser on stays on");
+  assert.deepEqual(result.tidy, { off: ["browser_navigate"], on: [] }, "Browser off stays off");
+  assert.deepEqual(result.project, { off: ["bash"], on: [] });
+  assert.deepEqual(result.defaults, ["web_search"]);
+  assert.equal(result.agentTools, 0, "no agent says anything yet");
+});
+
 // Version 4 added the paired devices and which chat may use which (the Devices add-on). A database of version 3 is the
 // fresh one of this version without them; it is upgraded like any other, and has them after.
 test("a database of version 3 gets the device tables, after its backup", async () => {
-  const dir = path.join(home, "from-v3");
+  const dir = path.join(home, "from-v3-devices");
   mkdirSync(dir, { recursive: true });
   const file = path.join(dir, "portal.db");
   await getDb().backup(file);

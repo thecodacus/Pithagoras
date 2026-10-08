@@ -32,6 +32,14 @@ import {
   listSessions,
   projectTools,
   projectsWithTools,
+  agentTools,
+  setAgentTools,
+  clearAgentTools,
+  routineTools,
+  setRoutineTools,
+  setRoutineBrowserSwitch,
+  seenBrowserTools,
+  toolDefaultsFor,
   setContextLimit,
   setDefaultContextLimit,
   setProjectTools,
@@ -57,8 +65,8 @@ import { deleteNotesOf } from "./activity.js";
 import { EXECUTOR_KIND } from "./executor-kind.js";
 import { sessions, CommandFailed, IMAGE_ROOT } from "./session-manager.js";
 import { ImageError, MAX_IMAGE_BYTES, MAX_IMAGES, imagePath, mimeOf, parseImages, saveImages } from "./prompt-images.js";
-import { defaultsFor, exceptionsFor, toolEnabled, toolSource } from "./tool-policy.js";
-import { mcpRouter, mcpServerNames } from "./api/mcp.js";
+import { defaultsFor, exceptionsFor, heldOffUnshown, toolEnabled, toolSource } from "./tool-policy.js";
+import { mcpRouter, mcpServerNames, onMcpWritten } from "./api/mcp.js";
 import { authEnabled, checkPassword, isAuthed, issueCookie, keptShortPassword, requireAuth, signOut } from "./auth.js";
 import { packagesRouter } from "./api/packages.js";
 import { extensionsRouter } from "./api/extensions.js";
@@ -85,6 +93,9 @@ import { pairRouter } from "./sync/pair.js";
 import { devicesRouter } from "./api/devices.js";
 import { watchBrowserFrames } from "./extensions/browser-frames.js";
 import { startLlamaProxy } from "./llama-progress.js";
+import { applyOnStart } from "./sandbox/apply.js";
+import { sandboxPolicy, sandboxSupport } from "./sandbox/policy.js";
+import { sandboxRouter } from "./api/sandbox.js";
 import { scheduleDreams } from "./extensions/understory-service.js";
 import { routineSupervisor } from "./routines/supervisor.js";
 import { channelSupervisor } from "./channels/supervisor.js";
@@ -344,14 +355,12 @@ const isToolList = (value: unknown): value is string[] => Array.isArray(value) &
 
 /**
  * Stores what a project's chats start with, given the tools it wants off: the
- * difference from the portal-wide default, which is all that is kept. What the
- * page was shown is what the portal has seen registered, and what the project
- * already holds an exception for.
+ * difference from what the layers under it leave (the portal-wide default, and
+ * an agent whose home it were in), which is all that is kept.
  */
 function saveProjectTools(project: { name: string; path: string }, off: string[]) {
-  const held = projectTools(project.name);
-  const answered = [...shownTools(project.path).map((t) => t.name), ...held.off, ...held.on];
-  return setProjectTools(project.name, exceptionsFor(off, toolDefaultsOff(), answered, held));
+  const below = toolDefaultsFor(project.path, null, "project");
+  return setProjectTools(project.name, layerExceptions(project.path, below, projectTools(project.name), off));
 }
 
 /**
@@ -427,31 +436,16 @@ app.put("/api/projects/:name/instructions", (req, res) => {
 });
 
 /**
- * The tools a chat in this project starts with, and whether each is on: the
- * portal-wide default, bent by what the project says. Shaped like a chat's own
- * list, so the page draws both the same way; `defaultOn` is the portal-wide
- * default, which is what the project disagrees with. No pi is running for a
- * project, so what is listed is what the portal has seen registered.
+ * The tools a chat in this project starts with, and whether each is on: what
+ * the layers under it leave (layerTools), bent by what the project says. No pi
+ * is running for a project, so what is listed is what the portal has seen
+ * registered.
  */
 app.get("/api/projects/:name/tools", (req, res) => {
   try {
     const project = getProject(WORKSPACE_ROOT, req.params.name);
     if (EXECUTOR_KIND === "container") return res.status(400).json(toolsUnsupported);
-    const defaults = toolDefaultsOff();
-    const exceptions = projectTools(project.name);
-    const servers = mcpServerNames();
-    res.json({
-      tools: shownTools(project.path).map((tool) => ({
-        ...tool,
-        source: toolSource(tool.name, tool.source, servers),
-        enabled: toolEnabled(tool.name, defaults, exceptions),
-        defaultOn: !defaults.includes(tool.name),
-      })),
-      live: false,
-      names: toolGroupNames(),
-      // The whole picture, as for a chat: the page sends it back on the next flip.
-      off: defaultsFor(defaults, exceptions),
-    });
+    res.json(layerTools(project.path, toolDefaultsFor(project.path, null, "project"), projectTools(project.name)));
   } catch (e) {
     projectFailure(res, e);
   }
@@ -459,8 +453,8 @@ app.get("/api/projects/:name/tools", (req, res) => {
 
 /**
  * Say which tools chats in this project start with: what is not named is on.
- * What is stored is the difference from the portal-wide default, as for a chat,
- * so a change to that default still reaches every tool the project never
+ * What is stored is the difference from the layers under it, as for a chat,
+ * so a change to the default still reaches every tool the project never
  * disagreed about. Chats running in the project are told at once; what a chat
  * itself switched stays as it was.
  */
@@ -472,9 +466,117 @@ app.put("/api/projects/:name/tools", async (req, res) => {
     if (EXECUTOR_KIND === "container") return res.status(400).json(toolsUnsupported);
     const stored = saveProjectTools(project, off);
     const applied = await sessions.applyToolDefaults(project.name);
-    res.json({ off: defaultsFor(toolDefaultsOff(), stored), applied });
+    res.json({ off: defaultsFor(toolDefaultsFor(project.path, null, "project"), stored), applied });
   } catch (e) {
     projectFailure(res, e);
+  }
+});
+
+/**
+ * A layer's tools as its page shows them: what the portal has seen registered
+ * where the layer's chats and runs work (`folder`), on or off by `below` — every
+ * layer under this one — bent by what this one says. `defaultOn` is what the
+ * layers under it say, which is what this one disagrees with. Shaped like a
+ * project's and a chat's, so the page draws them all the same way.
+ */
+function layerTools(folder: string, below: string[], exceptions: { off: string[]; on: string[] }) {
+  const servers = mcpServerNames();
+  return {
+    tools: shownTools(folder).map((tool) => ({
+      ...tool,
+      source: toolSource(tool.name, tool.source, servers),
+      enabled: toolEnabled(tool.name, below, exceptions),
+      defaultOn: !below.includes(tool.name),
+    })),
+    live: false,
+    names: toolGroupNames(),
+    off: defaultsFor(below, exceptions),
+  };
+}
+
+/** The exceptions to store for a layer, given what it wants off: as for a project. */
+function layerExceptions(folder: string, below: string[], held: { off: string[]; on: string[] }, off: string[]) {
+  const shown = shownTools(folder).map((t) => t.name);
+  const answered = [...shown, ...held.off, ...held.on];
+  return exceptionsFor(heldOffUnshown(off, shown, held), below, answered, held);
+}
+
+/**
+ * An agent's tools: its exceptions to the portal-wide default, for every chat in
+ * its home and every run it does on its own (its heartbeat, the routines that
+ * run in its home). Its chats in a project are not in its home, and follow the
+ * project.
+ */
+app.get("/api/agents/:id/tools", (req, res) => {
+  const agent = getAgent(req.params.id);
+  if (!agent) return res.status(404).json({ error: "No such agent" });
+  if (EXECUTOR_KIND === "container") return res.status(400).json(toolsUnsupported);
+  res.json(layerTools(agent.home, toolDefaultsFor(agent.home, null, "agent"), agentTools(agent.id)));
+});
+
+app.put("/api/agents/:id/tools", async (req, res) => {
+  const off = req.body?.off;
+  if (!isToolList(off)) return res.status(400).json({ error: "off must be a list of tool names" });
+  const agent = getAgent(req.params.id);
+  if (!agent) return res.status(404).json({ error: "No such agent" });
+  if (EXECUTOR_KIND === "container") return res.status(400).json(toolsUnsupported);
+  try {
+    const below = toolDefaultsFor(agent.home, null, "agent");
+    const stored = setAgentTools(agent.id, layerExceptions(agent.home, below, agentTools(agent.id), off));
+    const applied = await sessions.applyToolDefaults({ agent: agent.id });
+    res.json({ off: defaultsFor(below, stored), applied });
+  } catch (e) {
+    res.status(500).json({ error: (e as Error).message });
+  }
+});
+
+/** A routine, and where its runs happen: its project, or Home. */
+function routineFor(id: string): { slug: string; folder: string } | { slug: string; error: string } | undefined {
+  const row = getDb().prepare("SELECT slug, workspace FROM routines WHERE id = ?").get(id) as { slug: string; workspace: string | null } | undefined;
+  if (!row) return undefined;
+  // Where its runs work, found as the supervisor finds it: the layers under the routine are that place's.
+  const where = row.workspace ? checkWorkspace(row.workspace) : { path: agentHome() };
+  return "error" in where ? { slug: row.slug, error: `Its project ${row.workspace} cannot be used (${where.error}).` } : { slug: row.slug, folder: where.path };
+}
+
+/**
+ * A routine's tools: its exceptions to what its agent and project leave, for
+ * every run of it. A run's own chat can still switch a tool for itself.
+ */
+app.get("/api/routines/:id/tools", (req, res) => {
+  const routine = routineFor(req.params.id);
+  if (!routine) return res.status(404).json({ error: "Not found" });
+  if (EXECUTOR_KIND === "container") return res.status(400).json(toolsUnsupported);
+  if ("error" in routine) return res.status(409).json({ error: routine.error });
+  res.json(layerTools(routine.folder, toolDefaultsFor(routine.folder, null, "routine"), routineTools(routine.slug)));
+});
+
+app.put("/api/routines/:id/tools", async (req, res) => {
+  const off = req.body?.off;
+  if (!isToolList(off)) return res.status(400).json({ error: "off must be a list of tool names" });
+  const routine = routineFor(req.params.id);
+  if (!routine) return res.status(404).json({ error: "Not found" });
+  if (EXECUTOR_KIND === "container") return res.status(400).json(toolsUnsupported);
+  if ("error" in routine) return res.status(409).json({ error: routine.error });
+  try {
+    const below = toolDefaultsFor(routine.folder, null, "routine");
+    const browser = seenBrowserTools();
+    const wanted = layerExceptions(routine.folder, below, routineTools(routine.slug, browser), off);
+    // The browser's tools its lists do not name follow its old switch (routineTools). So what the page said of each
+    // is written down, even where the layers under it agree: left out, a browser switched on here would go back to
+    // what the switch says.
+    const shown = new Set(shownTools(routine.folder).map((t) => t.name));
+    for (const name of browser) {
+      if (!shown.has(name) || wanted.off.includes(name) || wanted.on.includes(name)) continue;
+      (off.includes(name) ? wanted.off : wanted.on).push(name);
+    }
+    const stored = setRoutineTools(routine.slug, wanted);
+    // And the switch says what a browser tool that turns up later starts with: what the browser has here now.
+    if (browser.length) setRoutineBrowserSwitch(routine.slug, browser.some((name) => toolEnabled(name, below, stored)));
+    const applied = await sessions.applyToolDefaults({ routine: routine.slug });
+    res.json({ off: defaultsFor(below, stored), applied });
+  } catch (e) {
+    res.status(500).json({ error: (e as Error).message });
   }
 });
 
@@ -587,6 +689,8 @@ app.delete("/api/agents/:id", async (req, res) => {
       // The jobs they started go with them, in a folder that is kept as well: nothing would be left to list or stop them.
       const jobsStopped = await stopJobsIn(agent.home);
       deleteAgent(agent.id, { deleteFolder: req.query.folder === "delete" });
+      // What it said about tools: an agent made later under the same name starts from the default.
+      clearAgentTools(agent.id);
       // The pictures of every chat that worked there, the routine runs the folder's removal leaves behind too: no file of them is left to show.
       if (req.query.folder === "delete") forgetPicturesIn(agent.home);
       deleteNotesOf(agent.id);
@@ -1328,14 +1432,24 @@ app.use("/api", imagesRouter());
 app.use("/api", memoryRouter());
 app.use("/api", channelsRouter());
 app.use("/api", agentsRouter());
-app.use("/api", routinesRouter());
+app.use(
+  "/api",
+  routinesRouter((routine) => {
+    sessions.applyToolDefaults({ routine }).catch((e) => console.error(`[portal] could not apply a routine's tools to its runs: ${(e as Error).message}`));
+  })
+);
 app.use("/api", skillsRouter());
 app.use("/api", filesRouter());
 app.use("/api", gitRouter());
+// What the configuration offers is what a running chat may use: told at once, as a default is.
+onMcpWritten(() => {
+  sessions.applyToolDefaults().catch((e) => console.error(`[portal] could not apply the MCP configuration to running chats: ${(e as Error).message}`));
+});
 app.use("/api", mcpRouter());
 app.use("/api", providersRouter());
 app.use("/api", peopleRouter());
 app.use("/api", browserRouter());
+app.use("/api", sandboxRouter(sessions));
 app.use("/api", voiceRouter());
 app.use("/api", terminalRouter());
 app.use("/api", canvasesRouter());
@@ -1473,6 +1587,10 @@ sweepRemoved(agentsRoot());
 interruptCanvasWrites();
 pinConnection();
 adoptPortalBrowser();
+// The sandbox's sudo rules live outside the data volume, so a new container needs them put back.
+void applyOnStart(sandboxPolicy(), sandboxSupport()).then((r) => {
+  if (sandboxPolicy().enabled) console.log(`[sandbox] ${r.ok ? "on" : "not applied"}${r.warnings.length ? `: ${r.warnings.join("; ")}` : ""}`);
+});
 // The memory tidied up at its set time, when the portal runs Understory.
 scheduleDreams();
 

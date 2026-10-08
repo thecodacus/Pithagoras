@@ -4,8 +4,11 @@ import { packageIndex, packageKey, packageLabel, toolAvailability } from "./exte
 import { EDIT_IMAGE_SOURCE, EDIT_IMAGE_TOOL, GENERATE_IMAGE_SOURCE, GENERATE_IMAGE_TOOL, SHOW_IMAGE_SOURCE, imageEditingReady, imageGenerationReady } from "./image-generation.js";
 import { BUILT_IN_SOURCE, PORTAL_BROWSER_TOOLS, browserTool, defaultsFor, mcpServerOf, piToolOfDevices, toolEnabled } from "./tool-policy.js";
 import { projectOf } from "./workspaces.js";
-import { browserServers, dropMcpCache, mcpServerNames, readMcpFile, serversAndBrowsers } from "./api/mcp.js";
-import { mkdirSync, realpathSync } from "node:fs";
+import { browserServers, dropMcpCache, mcpAdapter, mcpCachePath, mcpConfigPath, mcpServerNames, onMcpWritten, readMcpCache, readMcpFile, readableMcpConfig, serversAndBrowsers } from "./api/mcp.js";
+import { mcpCatalogue, mcpOffer, unlisted, type McpOffer } from "./mcp-offer.js";
+import { mkdirSync, realpathSync, statSync } from "node:fs";
+import path from "node:path";
+import { isWithinText } from "./within.js";
 import { agentHome, agentHomePath, homeAgentName } from "./agent-home.js";
 import { DATA_DIR } from "./data-dir.js";
 import { EXECUTOR_KIND } from "./executor-kind.js";
@@ -361,6 +364,16 @@ function schema(db: Database.Database): void {
       tools_on TEXT NOT NULL DEFAULT ''
     );
 
+    -- An agent's exceptions to the portal-wide tool default, for every chat in
+    -- its home and every run it does on its own: the first layer above the
+    -- default. Here for the same reason as a project's: the agent can write to
+    -- its home, and must not be able to give itself tools back.
+    CREATE TABLE IF NOT EXISTS agent_tools (
+      agent TEXT PRIMARY KEY,
+      tools_off TEXT NOT NULL DEFAULT '',
+      tools_on TEXT NOT NULL DEFAULT ''
+    );
+
     -- Background subagents started and not yet ended, kept as their events
     -- are written: what a server that went left open is read from here at
     -- start, not dug out of every event there ever was.
@@ -639,6 +652,13 @@ function migrate(d: Database.Database): void {
   }
   if (routineCols.length && !routineCols.includes("browser")) {
     d.exec("ALTER TABLE routines ADD COLUMN browser INTEGER NOT NULL DEFAULT 0");
+  }
+  // A routine's exceptions to what its agent and project leave, as a chat keeps
+  // them. The `browser` column above stays: it answers for the browser's tools
+  // where these say nothing about them (see routineTools).
+  // Each on its own, as for sessions: a database with one of them is given the other.
+  for (const col of ["tools_off", "tools_on"]) {
+    if (routineCols.length && !routineCols.includes(col)) d.exec(`ALTER TABLE routines ADD COLUMN ${col} TEXT NOT NULL DEFAULT ''`);
   }
   d.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_routines_slug ON routines(slug)");
   // Where a picture that was found in a folder lies (see image-gallery.ts). The
@@ -1823,8 +1843,10 @@ export interface BrowserPolicy {
   /** With none of its tools seen: whether the old column is what answers. */
   columnDecides: boolean;
   defaultsOff: string[];
-  /** The defaults of a project, worked out the first time a conversation of it is asked about. */
+  /** What a place starts with, by agent, project and routine, worked out the first time a conversation there is asked about. */
   projects: Map<string, string[]>;
+  /** The agents' homes, read the first time a conversation is asked about. */
+  homes?: AgentHome[];
 }
 
 export function browserPolicy(): BrowserPolicy {
@@ -1834,31 +1856,37 @@ export function browserPolicy(): BrowserPolicy {
 
 /** `browserAllowed`, against a policy asked for once; `exceptions` are the conversation's own, where the caller has them already. */
 export function browserAllowedWith(session: SessionRow, policy: BrowserPolicy, exceptions?: SessionTools): boolean {
-  if (session.kind === "routine" && session.routine_slug) {
-    const row = getDb().prepare("SELECT browser FROM routines WHERE slug = ?").get(
-      session.routine_slug
-    ) as { browser: number } | undefined;
-    return row ? row.browser === 1 : false;
-  }
-  if (!policy.names.length) return session.browser === 1 || !policy.columnDecides;
-  const project = projectOf(session.workspace);
-  let defaults = policy.defaultsOff;
-  if (project) {
-    let found = policy.projects.get(project);
-    if (!found) policy.projects.set(project, (found = defaultsFor(policy.defaultsOff, projectTools(project))));
-    defaults = found;
-  }
+  const routine = routineOf(session);
+  if (routine) {
+    const row = getDb().prepare("SELECT browser FROM routines WHERE slug = ?").get(routine) as { browser: number } | undefined;
+    // A routine that is gone gets nothing; with no browser tool seen, its old switch is all there is to go by.
+    if (!row) return false;
+    if (!policy.names.length) return row.browser === 1;
+  } else if (!policy.names.length) return session.browser === 1 || !policy.columnDecides;
+  // Every layer under the conversation's own: its agent, its project, its routine.
+  // By what decides it, not by folder: the chats in one project's subfolders share it.
+  const homes = (policy.homes ??= agentHomes());
+  const key = `${agentIdOf(session.workspace, homes) ?? ""}\u0000${projectOf(session.workspace) ?? ""}\u0000${routine ?? ""}`;
+  let defaults = policy.projects.get(key);
+  if (!defaults) policy.projects.set(key, (defaults = toolDefaultsFor(session.workspace, routine, undefined, policy.defaultsOff, homes)));
   const own = exceptions ?? sessionTools(session.id);
   return policy.names.some((name) => toolEnabled(name, defaults, own));
 }
 
 /** The browser's tools, as far as any session has registered them. */
-function seenBrowserTools(): string[] {
+export function seenBrowserTools(): string[] {
+  // Asked for by every routine's tools, so kept until the MCP file or the settings (what was seen) are written.
+  const stamp = `${fileStamp(mcpConfigPath())}|${settingsWrites}`;
+  if (lastBrowserTools?.stamp === stamp) return lastBrowserTools.names;
   const { servers, browsers } = serversAndBrowsers();
-  return knownTools()
+  const names = knownTools()
     .map((t) => t.name)
     .filter((name) => browserTool(name, servers, browsers));
+  lastBrowserTools = { stamp, names };
+  return names;
 }
+
+let lastBrowserTools: { stamp: string; names: string[] } | undefined;
 
 /**
  * With no browser tool seen there is no switch to read, and three situations
@@ -1930,17 +1958,21 @@ export function browserExceptions(): SessionRow[] {
        ORDER BY updated_at DESC`
     )
     .all() as SessionRow[];
-  // And the chats of a project that says something about tools, which differ
-  // from the default through it without having said anything themselves. Not
-  // routines: they answer for their own runs, project or not.
+  // And the chats of a project or in the home of an agent that says something
+  // about tools, which differ from the default through it without having said
+  // anything themselves. Not routines: they answer for their own runs, project
+  // or not.
   const projects = projectsWithTools();
-  if (projects.size) {
+  const agents = new Set((getDb().prepare("SELECT agent FROM agent_tools").all() as { agent: string }[]).map((r) => r.agent));
+  if (projects.size || agents.size) {
+    const homes = agents.size ? agentHomes() : [];
     const own = new Set(rows.map((row) => row.id));
     const all = getDb().prepare("SELECT * FROM sessions WHERE kind != 'routine' ORDER BY updated_at DESC").all() as SessionRow[];
     for (const row of all) {
       if (own.has(row.id)) continue;
       const project = projectOf(row.workspace);
-      if (project && projects.has(project)) rows.push(row);
+      const agent = agents.size ? agentIdOf(row.workspace, homes) : undefined;
+      if ((project && projects.has(project)) || (agent && agents.has(agent))) rows.push(row);
     }
     rows.sort((a, b) => (a.updated_at < b.updated_at ? 1 : a.updated_at > b.updated_at ? -1 : 0));
   }
@@ -2041,14 +2073,159 @@ export function projectsWithTools(): Set<string> {
 }
 
 /**
- * The tools that are off by default for a chat in `workspace`: the portal-wide
- * default, bent by its project's exceptions where it is in a project. A chat's
- * own exceptions are held against this.
+ * What an agent says about tools, as exceptions to the portal-wide default:
+ * for every chat in its home and every run it does on its own — its heartbeat,
+ * the routines that run there. Nothing for an agent that never said anything.
  */
-export function toolDefaultsFor(workspace: string | null | undefined): string[] {
-  const off = toolDefaultsOff();
+export function agentTools(agent: string): SessionTools {
+  const row = getDb().prepare("SELECT tools_off, tools_on FROM agent_tools WHERE agent = ?").get(
+    agent
+  ) as { tools_off: string; tools_on: string } | undefined;
+  return { off: parseToolsOff(row?.tools_off), on: parseToolsOff(row?.tools_on) };
+}
+
+export function setAgentTools(agent: string, tools: SessionTools): SessionTools {
+  const stored = { off: clean(tools.off), on: clean(tools.on) };
+  if (!stored.off.length && !stored.on.length) clearAgentTools(agent);
+  else
+    getDb()
+      .prepare(
+        `INSERT INTO agent_tools (agent, tools_off, tools_on) VALUES (?, ?, ?)
+         ON CONFLICT(agent) DO UPDATE SET tools_off = excluded.tools_off, tools_on = excluded.tools_on`
+      )
+      .run(agent, stored.off.join("\n"), stored.on.join("\n"));
+  return stored;
+}
+
+/** Forgets what an agent said about tools, as when it is deleted. */
+export function clearAgentTools(agent: string): void {
+  getDb().prepare("DELETE FROM agent_tools WHERE agent = ?").run(agent);
+}
+
+/**
+ * The agent whose home this is or is in, by id: read from the table rather
+ * than through agents.ts, which reads this module. The first agent's home is
+ * wherever AGENT_HOME says now.
+ */
+export function agentIdOf(workspace: string | null | undefined, homes: AgentHome[] = agentHomes()): string | undefined {
+  if (!workspace) return undefined;
+  const at = path.resolve(workspace);
+  const exact = homes.find((a) => path.resolve(a.home) === at);
+  if (exact) return exact.id;
+  // A project's chats follow the project, also where the projects' folder were inside an agent's home.
+  if (projectOf(workspace)) return undefined;
+  return homes.find((a) => isWithinText(a.home, at))?.id;
+}
+
+export interface AgentHome {
+  id: string;
+  home: string;
+}
+
+/** Every agent's home, read once for a pass over many conversations (agentIdOf). */
+export function agentHomes(): AgentHome[] {
+  // In the order agents.ts lists them (listAgents), so a folder is told to the same agent either way.
+  const rows = getDb().prepare("SELECT id, home FROM agents ORDER BY id = 'home' DESC, created_at ASC, name ASC").all() as AgentHome[];
+  return rows.map((a) => ({ id: a.id, home: a.id === "home" ? agentHomePath() : a.home }));
+}
+
+/**
+ * What a routine says about tools, as exceptions to what its agent and project
+ * leave: the same two lists a chat keeps.
+ *
+ * Its old **Browser** switch (the `browser` column) answers for every browser
+ * tool its lists do not name: off unless it is on, as it always was for a
+ * routine. It is read here, as the lists are, rather than written into them
+ * ahead of time: a tool that comes to count as the browser's later — a server
+ * pointed at the browser, a catalogue that could not be read for a while — is
+ * then held to it as well, with nothing to copy and nothing to miss. The
+ * routine's page writes down what it showed of each browser tool, so what was
+ * switched there is the lists' to answer.
+ */
+export function routineTools(slug: string, browser: string[] = seenBrowserTools()): SessionTools {
+  const row = getDb().prepare("SELECT tools_off, tools_on, browser FROM routines WHERE slug = ?").get(slug) as
+    | { tools_off: string; tools_on: string; browser: number }
+    | undefined;
+  if (!row) return { off: [], on: [] };
+  const own = { off: parseToolsOff(row.tools_off), on: parseToolsOff(row.tools_on) };
+  const unnamed = browser.filter((name) => !own.off.includes(name) && !own.on.includes(name));
+  return row.browser === 1 ? { off: own.off, on: [...own.on, ...unnamed] } : { off: [...own.off, ...unnamed], on: own.on };
+}
+
+/** Only the switch: what the browser tools a routine's lists do not name follow. */
+export function setRoutineBrowserSwitch(slug: string, on: boolean): void {
+  getDb().prepare("UPDATE routines SET browser = ? WHERE slug = ?").run(on ? 1 : 0, slug);
+}
+
+/**
+ * The routine's Browser switch, as the API still takes it: every browser tool
+ * taken out of its lists, so that all of them follow the switch.
+ */
+export function setRoutineBrowser(slug: string, on: boolean): void {
+  const names = new Set(seenBrowserTools());
+  const row = getDb().prepare("SELECT tools_off, tools_on FROM routines WHERE slug = ?").get(slug) as
+    | { tools_off: string; tools_on: string }
+    | undefined;
+  if (!row) return;
+  setRoutineBrowserSwitch(slug, on);
+  setRoutineTools(slug, {
+    off: parseToolsOff(row.tools_off).filter((name) => !names.has(name)),
+    on: parseToolsOff(row.tools_on).filter((name) => !names.has(name)),
+  });
+}
+
+export function setRoutineTools(slug: string, tools: SessionTools): SessionTools {
+  const stored = { off: clean(tools.off), on: clean(tools.on) };
+  getDb()
+    .prepare("UPDATE routines SET tools_off = ?, tools_on = ? WHERE slug = ?")
+    .run(stored.off.join("\n"), stored.on.join("\n"), slug);
+  return stored;
+}
+
+/**
+ * The tools that are off by default for a chat in `workspace`, or a run of the
+ * routine `routine` there: the layers under a chat's own switches, each an
+ * exception to the one before it.
+ *
+ * 1. the portal-wide default (Settings → Tools);
+ * 2. the agent whose home it is in, for its chats and its own runs;
+ * 3. the project it is in;
+ * 4. the routine, for its runs.
+ *
+ * A chat's own switches are held against this, and stay the last word. An agent
+ * and a project do not meet in practice — a project is under the workspace root,
+ * an agent's home is not — but where they did, the project is the nearer, and
+ * says it last. A routine is nearer still: it is one task within either.
+ *
+ * `upTo` stops before a layer, for the page of that layer, which shows what is
+ * under it. `base` is the portal-wide default, where the caller has read it
+ * already for a pass over many conversations.
+ */
+export function toolDefaultsFor(
+  workspace: string | null | undefined,
+  routine?: string | null,
+  upTo?: "agent" | "project" | "routine",
+  base: string[] = toolDefaultsOff(),
+  homes?: AgentHome[],
+): string[] {
+  let off = base;
+  if (upTo === "agent") return off;
+  const agent = agentIdOf(workspace, homes);
+  if (agent) off = defaultsFor(off, agentTools(agent));
+  if (upTo === "project") return off;
   const project = projectOf(workspace);
-  return project ? defaultsFor(off, projectTools(project)) : off;
+  if (project) off = defaultsFor(off, projectTools(project));
+  if (upTo === "routine") return off;
+  return routine ? defaultsFor(off, routineTools(routine)) : off;
+}
+
+/** The routine a session is a run of, if it is one: its layer is in its tools. */
+export const routineOf = (session: Pick<SessionRow, "kind" | "routine_slug"> | undefined): string | null =>
+  session?.kind === "routine" ? (session.routine_slug ?? null) : null;
+
+/** What a session starts with off, every layer under its own switches. */
+export function toolDefaultsForSession(session: Pick<SessionRow, "kind" | "routine_slug" | "workspace"> | undefined, homes?: AgentHome[]): string[] {
+  return toolDefaultsFor(session?.workspace, routineOf(session), undefined, undefined, homes);
 }
 
 /**
@@ -2058,7 +2235,11 @@ export function toolDefaultsFor(workspace: string | null | undefined): string[] 
  * pi's, so they go straight to the table rather than widening a type that
  * every launch reads.
  */
+/** Counts the writes to the settings, which hold what the portal remembers of the tools: what a view read before one is not reused after it (mcpView). */
+let settingsWrites = 0;
+
 export function putSetting(key: string, value: string): void {
+  settingsWrites++;
   const db = getDb();
   if (value)
     db.prepare(
@@ -2226,8 +2407,13 @@ function ownedByPi(tool: KnownTool): KnownTool {
  * For a chat, `folder` is where it runs, whose project may bring packages of
  * its own.
  */
-export function shownTools(folder?: string): (Omit<KnownTool, "package" | "inline"> & { inline?: true })[] {
+export function shownTools(folder?: string, view: McpView = mcpView()): (Omit<KnownTool, "package" | "inline"> & { inline?: true; cached?: true })[] {
+  const user = readPiSettings().packages;
   const project = folder ? readProjectPiSettings(folder).packages : undefined;
+  // An MCP server's tool that the adapter's configuration no longer registers
+  // is not there to be switched: listing it was the list saying otherwise.
+  const { offers } = view;
+  const catalogue = mcpCatalogueIn(view, user, project);
   // The portal's own tools belong to no package, so the packages cannot say
   // that one is not offered: image generation and image editing say so
   // themselves, while they are off.
@@ -2236,13 +2422,23 @@ export function shownTools(folder?: string): (Omit<KnownTool, "package" | "inlin
   // called image-generation.ts has the label the portal's factory has.
   const images = imageGenerationReady();
   const editing = imageEditingReady();
-  const available = knownTools().filter(toolAvailability(readPiSettings().packages, project));
+  const known = [...view.known().values()];
+  // Every MCP server's tools, from the adapter's cache, whether a chat has had them one by one or not: a server is a
+  // group like any other, whole or tool by tool. A tool a chat reported is listed as it reported it.
+  const seen = new Set(known.map((t) => t.name));
+  const available = [...known, ...catalogue.filter((t) => !seen.has(t.name))].filter(toolAvailability(user, project));
   return [...available, ...notYetSeen(available, images, editing)]
     .filter((tool) => images || !(tool.name === GENERATE_IMAGE_TOOL && tool.inline))
     .filter((tool) => editing || !(tool.name === EDIT_IMAGE_TOOL && tool.inline))
-    .map((known) => {
+    .flatMap((known) => {
+      const offer = offers(known);
+      if (unlisted(offer)) return [];
       const { package: _package, inline: _inline, ...tool } = known;
-      return portalOwned(known) ? { ...tool, inline: true as const } : tool;
+      return [{
+        ...tool,
+        ...(portalOwned(known) ? { inline: true as const } : {}),
+        ...(offer === "cached" ? { cached: true as const } : {}),
+      }];
     });
 }
 
@@ -2362,11 +2558,156 @@ function setRemovedMcpServers(names: string[]): void {
 const ADAPTER_LABEL = "pi-mcp-adapter";
 
 /** The tools that carry no server's name: the adapter's own and the portal's browser tools, which a server's name can start without them being its. */
-const noServerOf = (name: string): boolean => (PORTAL_BROWSER_TOOLS as readonly string[]).includes(name) || name === "mcp" || name === "mcpScript";
+const noServerOf = (name: string): boolean => (PORTAL_BROWSER_TOOLS as readonly string[]).includes(name) || name === "mcp" || name === "mcp_script" || name === "mcpScript";
 
 /** Does the MCP adapter register this tool? By its package where it is recorded, by the label it is filed under where it is not. */
 function adapterTool(t: Pick<KnownTool, "source" | "package">): boolean {
   return typeof t.package === "string" ? packageLabel(t.package) === ADAPTER_LABEL : t.source === ADAPTER_LABEL;
+}
+
+/**
+ * The MCP adapter's configuration and cache as they stand now, read once for a
+ * pass over a list or over every running chat (see mcp-offer.ts):
+ * - `offers`: what the adapter does with each tool, undefined for a tool that
+ *   is not a server's;
+ * - `catalogue`: every tool of the servers the configuration has on, from the
+ *   cache, as the portal remembers a tool: filed under the adapter's package,
+ *   which brings them, so they go with it when it is switched off;
+ * - `serverTool`: whether a name is a tool the adapter reaches on a server now,
+ *   which is what an MCP script could call;
+ * - `servers` and `gone`: the servers configured, and those the portal removed
+ *   that are not configured again.
+ *
+ * A configuration that cannot be read is taken as it last could be: the panel
+ * offers the file to be fixed, and a typo in it must neither withdraw a tool
+ * nor hand back one that was withdrawn — a running chat is told its tools
+ * again on any change of a default, and would otherwise get them back.
+ */
+export interface McpView {
+  offers: (tool: Pick<KnownTool, "name" | "source" | "package">) => McpOffer | undefined;
+  /** Filed under the adapter by its label; `mcpCatalogueIn` files them under its package where a chat would load it. */
+  catalogue: KnownTool[];
+  serverTool: (name: string) => boolean;
+  servers: string[];
+  gone: string[];
+  /** What the portal remembers of every tool, read when first asked for. */
+  known: () => Map<string, KnownTool>;
+}
+
+/** Which file this is now: the adapter and the portal both put theirs in place by renaming, which makes a new one. */
+function fileStamp(file: string): string {
+  try {
+    const s = statSync(file);
+    return `${s.ino}:${s.mtimeMs}:${s.size}`;
+  } catch {
+    return "-";
+  }
+}
+
+let lastView: { stamp: string; view: McpView } | undefined;
+
+/**
+ * Asked for on every call of the `mcp` tools (pi/guard.ts) and for every list,
+ * so kept until one of the files it reads, or the settings, are written.
+ */
+export function mcpView(): McpView {
+  const stamp = `${fileStamp(mcpConfigPath())}|${fileStamp(mcpCachePath())}|${settingsWrites}`;
+  if (lastView?.stamp === stamp) return lastView.view;
+  const view = readMcpView();
+  lastView = { stamp, view };
+  return view;
+}
+
+function readMcpView(): McpView {
+  const config = readableMcpConfig();
+  let known: Map<string, KnownTool> | undefined;
+  const knownNow = () => (known ??= new Map(knownTools().map((t) => [t.name, t])));
+  if (!config) {
+    return { offers: () => undefined, catalogue: [], serverTool: () => false, servers: [], gone: [], known: knownNow };
+  }
+  const cache = readMcpCache();
+  const offer = mcpOffer(config, cache);
+  const catalogue: KnownTool[] = mcpCatalogue(config, cache).map((t) => ({
+    name: t.name,
+    source: ADAPTER_LABEL,
+    ...(t.description ? { description: t.description } : {}),
+  }));
+  const offers = (tool: Pick<KnownTool, "name" | "source" | "package">) =>
+    adapterTool(tool) && !noServerOf(tool.name) ? offer(tool.name) : undefined;
+  let reachable: Set<string> | undefined;
+  const serverTool = (name: string) => {
+    if (!reachable) {
+      reachable = new Set(catalogue.map((t) => t.name));
+      for (const tool of knownNow().values()) {
+        const state = offers(tool);
+        if (state !== undefined && state !== "withdrawn") reachable.add(tool.name);
+      }
+    }
+    return reachable.has(name);
+  };
+  const servers = Object.keys(config.mcpServers ?? {});
+  const gone = removedMcpServers().filter((name) => !servers.includes(name));
+  return { offers, catalogue, serverTool, servers, gone, known: knownNow };
+}
+
+/**
+ * The servers' tools from the adapter's cache as a chat in this folder would
+ * have them: filed under the adapter's package as pi's settings list it (the
+ * user's, or the folder's project's), so a package switched off takes them
+ * with it whatever it was installed from. None where the adapter is in
+ * neither: nothing would register them.
+ */
+function mcpCatalogueIn(view: McpView, packages: unknown, projectPackages: unknown): KnownTool[] {
+  if (!view.catalogue.length) return [];
+  const adapter = mcpAdapter(packages) ?? mcpAdapter(projectPackages);
+  if (!adapter) return [];
+  return view.catalogue.map((t) => ({ ...t, package: adapter.source }));
+}
+
+// A server taken out of the file, whoever wrote it, takes its tools with it.
+onMcpWritten((before) => {
+  const after = Object.keys(readableMcpConfig()?.mcpServers ?? {});
+  if (before.some((name) => !after.includes(name)) || after.some((name) => !before.includes(name))) mcpServersRemoved(before, after);
+});
+
+/**
+ * The tools of these that the MCP adapter no longer registers, by name: what a
+ * chat's pi is told to have off on top of its switches, so that one still
+ * holding such a tool from before the configuration changed cannot use it.
+ * Told by what the portal remembers of each, which is what says it is the
+ * adapter's; a name it has never seen is not judged — unless a server the
+ * portal removed claims it: removing a server forgets its tools, and a chat
+ * still running with it would otherwise go on using the tools of a server that
+ * is gone, where one merely switched off would have them off.
+ */
+export function withdrawnMcpTools(names: Iterable<string> = [], view: McpView = mcpView()): string[] {
+  const known = view.known();
+  const { servers, gone } = view;
+  const withdrawn = new Set<string>();
+  for (const name of new Set([...names, ...known.keys()])) {
+    const tool = known.get(name);
+    if (tool) {
+      if (view.offers(tool) === "withdrawn") withdrawn.add(name);
+    } else if (gone.length && !noServerOf(name) && gone.includes(mcpServerOf(name, [...servers, ...gone]) ?? "")) {
+      withdrawn.add(name);
+    }
+  }
+  return [...withdrawn].sort();
+}
+
+/**
+ * The servers' tools from the adapter's cache that a chat in this folder would
+ * have with its packages, each marked where it is listed from the cache: what a
+ * running chat's list adds to what it registered one by one.
+ */
+export function mcpCatalogueFor(folder: string | undefined, view: McpView): (Omit<KnownTool, "package" | "inline"> & { cached?: true })[] {
+  if (!view.catalogue.length) return [];
+  const user = readPiSettings().packages;
+  const project = folder ? readProjectPiSettings(folder).packages : undefined;
+  const available = toolAvailability(user, project);
+  return mcpCatalogueIn(view, user, project)
+    .filter(available)
+    .map(({ package: _package, ...tool }) => ({ ...tool, ...(view.offers(tool) === "cached" ? { cached: true as const } : {}) }));
 }
 
 /**

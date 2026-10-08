@@ -11,8 +11,8 @@ import { agentAt } from "./agents.js";
 import { HEARTBEAT_ROLE } from "./pi/heartbeat-names.js";
 import path from "node:path";
 import type { Draft, PiClient, PiTool, PromptTaken } from "./pi/types.js";
-import { effectiveOff, exceptionsFor, toolEnabled, toolSource } from "./tool-policy.js";
-import { mcpServerNames } from "./api/mcp.js";
+import { effectiveOff, exceptionsFor, heldOffUnshown, toolEnabled, toolSource } from "./tool-policy.js";
+import { unlisted } from "./mcp-offer.js";
 import { projectOf } from "./workspaces.js";
 import { findServerBuiltin, picturesRefused, runBuiltin } from "./pi/builtins.js";
 import { dropMessage, SessionEditError, userTexts, type Scope } from "./pi/session-edit.js";
@@ -62,12 +62,20 @@ import {
   browserAllowed,
   sessionTools,
   setSessionTools,
-  toolDefaultsFor,
+  toolDefaultsForSession,
+  agentHomes,
+  agentIdOf,
+  type AgentHome,
+  routineOf,
   remembered,
   rememberTools,
   knownTools,
   recordAudit,
   shownTools,
+  mcpCatalogueFor,
+  mcpView,
+  withdrawnMcpTools,
+  type McpView,
   browserAllowlist,
   routineGuards,
   updateSession,
@@ -1032,7 +1040,7 @@ class SessionManager extends EventEmitter {
       // The session's settled role picks the context files; the live one gates
       // each tool call, so a group conversation follows whoever is speaking.
       role: session.role,
-      toolsOff: this.offFor(sessionId),
+      toolsOff: this.piOff(sessionId),
       subagentModel: () => sessionSubagentModel(sessionId) ?? undefined,
       // Only a chat in the portal: its owner answers a device's approvals there, which a channel cannot.
       devices: session.kind === "task",
@@ -2416,12 +2424,46 @@ class SessionManager extends EventEmitter {
    * tools that are not loaded right now — which is what the page has to be
    * given, or its next answer would drop the exceptions it was never shown.
    */
-  offFor(sessionId: string, names: string[] = []): string[] {
+  offFor(
+    sessionId: string,
+    names: string[] = [],
+    known: Iterable<string> = knownTools().map((t) => t.name),
+    homes?: AgentHome[]
+  ): string[] {
     return effectiveOff(
-      [...names, ...knownTools().map((t) => t.name)],
-      toolDefaultsFor(getSession(sessionId)?.workspace),
+      [...names, ...known],
+      toolDefaultsForSession(getSession(sessionId), homes),
       sessionTools(sessionId)
     );
+  }
+
+  /**
+   * What pi is told to have off: the switches (offFor), and the MCP servers'
+   * tools that the adapter's configuration no longer registers. Those are not
+   * the switches' — they are listed nowhere, and nothing is written down for
+   * them — but a chat that loaded one before the configuration changed still
+   * has it, and the configuration is what has the last word over it.
+   */
+  piOff(sessionId: string, names: string[] = [], view: McpView = mcpView(), homes?: AgentHome[]): string[] {
+    return [...new Set([...this.offFor(sessionId, names, view.known().keys(), homes), ...withdrawnMcpTools(names, view)])].sort();
+  }
+
+  /**
+   * What a running chat reported, less the MCP servers' tools the adapter's
+   * configuration says no to — still loaded from before it changed, and off
+   * (piOff) — with those it lists from its cache marked. And the servers' tools
+   * the chat has not registered one by one, which it reaches through `mcp`: a
+   * server is a group like any other, switched whole or tool by tool.
+   */
+  private offered(reported: PiTool[], workspace: string | null | undefined, view: McpView): Omit<PiTool, "enabled">[] {
+    if (!reported.length) return [];
+    const listed = reported.flatMap(({ enabled: _enabled, ...tool }) => {
+      const offer = view.offers(tool);
+      if (unlisted(offer)) return [];
+      return [offer === "cached" ? { ...tool, cached: true as const } : tool];
+    });
+    const have = new Set(listed.map((t) => t.name));
+    return [...listed, ...mcpCatalogueFor(workspace ?? undefined, view).filter((t) => !have.has(t.name))];
   }
 
   /**
@@ -2438,21 +2480,25 @@ class SessionManager extends EventEmitter {
    */
   async getTools(sessionId: string): Promise<{ tools: PiTool[]; live: boolean }> {
     const client = this.live.get(sessionId)?.client;
-    const listed = client?.getTools ? await client.getTools() : [];
-    if (listed.length) rememberTools(listed.map(remembered));
-    const workspace = getSession(sessionId)?.workspace;
-    // What the chat's project starts it with, which is what it is "default" against.
-    const defaults = toolDefaultsFor(workspace);
+    const reported = client?.getTools ? await client.getTools() : [];
+    if (reported.length) rememberTools(reported.map(remembered));
+    const session = getSession(sessionId);
+    const workspace = session?.workspace;
+    const view = mcpView();
+    const listed = this.offered(reported, workspace, view);
+    // What the chat's agent, project and routine start it with, which is what it is "default" against.
+    const defaults = toolDefaultsForSession(session);
     const exceptions = sessionTools(sessionId);
-    const servers = mcpServerNames();
-    const shown: { name: string; source: string; description?: string; inline?: true }[] = listed.length ? listed : shownTools(workspace);
+    const servers = view.servers;
+    const shown: { name: string; source: string; description?: string; inline?: true; cached?: true }[] = listed.length ? listed : shownTools(workspace, view);
     return {
-      tools: shown.map(({ name, source, description, inline }) => ({
+      tools: shown.map(({ name, source, description, inline, cached }) => ({
         name,
         ...(description !== undefined ? { description } : {}),
         source: toolSource(name, source, servers),
         // The portal's own tools are told from an extension's of the same name, so the page can group its picture tools.
         ...(inline ? { inline: true as const } : {}),
+        ...(cached ? { cached: true as const } : {}),
         enabled: toolEnabled(name, defaults, exceptions),
         defaultOn: !defaults.includes(name),
       })),
@@ -2469,7 +2515,12 @@ class SessionManager extends EventEmitter {
    */
   async setTools(sessionId: string, wantedOff: string[]): Promise<string[]> {
     const client = this.live.get(sessionId)?.client;
-    const listed = client?.getTools ? await client.getTools() : [];
+    const reported = client?.getTools ? await client.getTools() : [];
+    const session = getSession(sessionId);
+    const workspace = session?.workspace;
+    const view = mcpView();
+    // Not what the adapter no longer registers: the page did not show it, so it said nothing about it.
+    const listed = this.offered(reported, workspace, view);
     // What this call is answering about: the tools this session registered,
     // plus the ones it already holds an exception for. Not the portal-wide
     // catalogue — a tool that is merely not loaded in this run was not on the
@@ -2483,17 +2534,14 @@ class SessionManager extends EventEmitter {
     // exception would be written, and the write would answer 200 while the
     // tool went on following the default.
     const held = sessionTools(sessionId);
-    const answered = [
-      ...(listed.length ? listed : shownTools(getSession(sessionId)?.workspace)).map((t) => t.name),
-      ...held.off,
-      ...held.on,
-    ];
+    const shown = (listed.length ? listed : shownTools(workspace, view)).map((t) => t.name);
+    const answered = [...shown, ...held.off, ...held.on];
     // Against the project's default: an exception here is to what the chat would
     // otherwise have, so a project that switches a tool off needs no entry for it
     // in every chat, and one that is switched back on in the chat needs one.
-    setSessionTools(sessionId, exceptionsFor(wantedOff, toolDefaultsFor(getSession(sessionId)?.workspace), answered, held));
-    const off = this.offFor(sessionId, listed.map((t) => t.name));
-    await client?.setToolsOff?.(off);
+    setSessionTools(sessionId, exceptionsFor(heldOffUnshown(wantedOff, shown, held), toolDefaultsForSession(session), answered, held));
+    const off = this.offFor(sessionId, listed.map((t) => t.name), view.known().keys());
+    await client?.setToolsOff?.(this.piOff(sessionId, reported.map((t) => t.name), view));
     return off;
   }
 
@@ -2502,13 +2550,23 @@ class SessionManager extends EventEmitter {
    * is affected, including the ones running right now — otherwise the setting
    * would only mean anything to chats started afterwards.
    *
-   * `project` when it was a project's exceptions that changed: only the chats
-   * in it are told, the others have nothing new to hear.
+   * `layer` when it was one layer's exceptions that changed — a project's, an
+   * agent's, a routine's: only the chats under it are told, the others have
+   * nothing new to hear.
    */
-  async applyToolDefaults(project?: string): Promise<number> {
-    const affected = [...this.live.entries()].filter(
-      ([sessionId]) => project === undefined || projectOf(getSession(sessionId)?.workspace) === project
-    );
+  async applyToolDefaults(layer?: string | { project?: string; agent?: string; routine?: string }): Promise<number> {
+    const only = typeof layer === "string" ? { project: layer } : layer;
+    // The agents' homes read once for all of them, not once for each chat.
+    const homes = agentHomes();
+    const affected = [...this.live.entries()].filter(([sessionId]) => {
+      if (!only) return true;
+      const session = getSession(sessionId);
+      if (only.project !== undefined) return projectOf(session?.workspace) === only.project;
+      if (only.agent !== undefined) return agentIdOf(session?.workspace, homes) === only.agent;
+      if (only.routine !== undefined) return routineOf(session) === only.routine;
+      return true;
+    });
+    const view = mcpView();
     const done = await Promise.all(
       affected.map(async ([sessionId, { client }]) => {
         // Per session, like refreshSettings: the default is already stored, so
@@ -2516,7 +2574,7 @@ class SessionManager extends EventEmitter {
         // page showing the opposite of what the database now holds.
         try {
           const listed = client.getTools ? await client.getTools() : [];
-          await client.setToolsOff?.(this.offFor(sessionId, listed.map((t) => t.name)));
+          await client.setToolsOff?.(this.piOff(sessionId, listed.map((t) => t.name), view, homes));
           return true;
         } catch (e) {
           console.error(`[portal] could not apply the tool defaults to ${sessionId}: ${(e as Error).message}`);
