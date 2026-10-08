@@ -6,6 +6,11 @@ import { EDIT_IMAGE_SOURCE, EDIT_IMAGE_TOOL, GENERATE_IMAGE_SOURCE, GENERATE_IMA
 import { GENERATED_PICTURE_MARK } from "../generated-picture.js";
 import { acceptPrompt } from "./accept-prompt.js";
 import { AUDIO_MESSAGE_PREFIX, AudioRule, VoiceFirstTurn, audioMessage, spokenIn } from "./voice-first.js";
+import { sandboxTools } from "../sandbox/tools.js";
+import { sandboxOn } from "../sandbox/policy.js";
+import { projectSkillPaths, withoutFolderMcp } from "../sandbox/project-trust.js";
+import { agentSkillsDir, skillsLine } from "../agent-skills.js";
+import { agentOf, defaultAgent } from "../agents.js";
 import { crossModelThinkingExtension } from "./cross-model-thinking.js";
 import { BROWSER_READING_RULE, BROWSER_SCREENSHOT_RULE } from "./browser-mcp-rules.js";
 import { browserTools } from "../browser/tools.js";
@@ -159,10 +164,25 @@ function portalLoader(pi: any): new (options: unknown, rule: AudioRule, said?: (
     private readonly rule: AudioRule;
     /** Lines that depend on how the portal is set up now, asked each time like the rule. */
     private readonly said: () => string[];
+    /** The skill paths the portal gives, before a folder's own are added to them. */
+    private readonly portalSkillPaths: string[];
     constructor(options: unknown, rule: AudioRule, said: () => string[] = () => []) {
       super(options);
       this.rule = rule;
       this.said = said;
+      this.portalSkillPaths = [...((options as { additionalSkillPaths?: string[] }).additionalSkillPaths ?? [])];
+    }
+    /**
+     * While the sandbox is on, the chat's folder is the agent's to write, and
+     * pi runs inside the portal: its extensions, packages and settings are not
+     * taken from there, and its skills are (see sandbox/project-trust.ts).
+     * Decided at each load, as switching the sandbox reloads the open chats.
+     */
+    async reload(options?: unknown): Promise<void> {
+      const sandboxed = sandboxOn();
+      this.settingsManager.setProjectTrusted(!sandboxed);
+      this.additionalSkillPaths = [...this.portalSkillPaths, ...(sandboxed ? projectSkillPaths(this.cwd) : [])];
+      return super.reload(options);
     }
     getAppendSystemPrompt(): string[] {
       return [...super.getAppendSystemPrompt(), ...this.said(), ...(this.rule?.lines() ?? [])];
@@ -375,6 +395,7 @@ export class SdkPiClient extends EventEmitter implements PiClient {
     // The CLI wires this up for you; here it has to be asked for.
     const voiceFirst = new VoiceFirstTurn(getSkipThinkingProviders);
     let resourceLoader: any;
+    const settingsManager = pi.SettingsManager.create(opts.cwd, pi.getAgentDir());
     // What the conversation has switched off: the client's, once there is one.
     let switchedOff: () => ReadonlySet<string> = () => new Set(opts.toolsOff ?? []);
     // Whether the model has the tool is settled when pi loads it and by the tool switches: the rule says
@@ -393,6 +414,8 @@ export class SdkPiClient extends EventEmitter implements PiClient {
       // Both are required: the constructor resolves each and throws on
       // undefined, which previously left every session with no extensions.
       const builtinSkills = builtinSkillsDir();
+      // The skills the agent wrote for itself, in its own home: a chat in a project is the first agent's.
+      const skillsOf = agentOf(opts.cwd) ?? defaultAgent();
       // Every session, unconditionally: the point is to limit what a turn can do
       // after it reads something untrusted, and any session can read something.
       const factories: { name: string; factory: (pi: any) => void }[] = [
@@ -410,6 +433,8 @@ export class SdkPiClient extends EventEmitter implements PiClient {
             () => switchedOff(),
           ) },
       ];
+      // While the sandbox is on, pi's own tools do what they do to the system as the sandbox user: see sandbox/.
+      factories.push({ name: "sandbox", factory: await sandboxTools(pi, opts.cwd) });
       if (canvases) factories.push({ name: "canvases", factory: canvases.extension });
       // Beside the canvases: both are how the agent puts something on the screen.
       if (opts.sessionId) factories.push({ name: SHOW_IMAGE_SOURCE, factory: showImageTool(opts.cwd) });
@@ -439,12 +464,17 @@ export class SdkPiClient extends EventEmitter implements PiClient {
       }
       resourceLoader = new (portalLoader(pi))({
         cwd: opts.cwd,
+        // One for the loader and the session, so the folder's trust the loader decides holds for both.
+        settingsManager,
+        // The MCP adapter reads no config from the folder, and starts no server there, while the sandbox is on.
+        extensionsOverride: (loaded: { extensions: any[] }) => (sandboxOn() ? withoutFolderMcp(loaded) : loaded),
         ...(eventBus ? { eventBus } : {}),
         agentDir: pi.getAgentDir(),
         // Available everywhere without being installed, and not editable in
         // place: they belong to the image, so an edit would be lost on the next
         // deploy without saying so.
-        ...(builtinSkills ? { additionalSkillPaths: [builtinSkills] } : {}),
+        // Its own only once it has one: pi reports a skill path that is not there as an error.
+        additionalSkillPaths: [...(builtinSkills ? [builtinSkills] : []), ...(skillsOf && existsSync(agentSkillsDir(skillsOf)) ? [agentSkillsDir(skillsOf)] : [])],
         // The portal's own extensions, inline rather than an installed package:
         // the portal owns routines, so a package would have to call back over
         // HTTP to reach the database it sits beside. The list is built above,
@@ -470,6 +500,8 @@ export class SdkPiClient extends EventEmitter implements PiClient {
         // A conversation with anyone else had no memory to replace.
       }, audioRule, () => [
         ...ownFiles(opts.cwd, opts.role),
+        // Where its own skills go: only for the person it works for; a look or a colleague does not write them.
+        ...(skillsOf && (!opts.role || opts.role === "primary") && !opts.heartbeatAgent ? [skillsLine(skillsOf)] : []),
         ...((!opts.role || opts.role === "primary") && understoryOn() ? [UNDERSTORY_RULE] : []),
       ]);
       await resourceLoader.reload();
@@ -512,7 +544,7 @@ export class SdkPiClient extends EventEmitter implements PiClient {
       cwd: opts.cwd,
       sessionManager,
       modelRuntime,
-      ...(resourceLoader ? { resourceLoader } : {}),
+      ...(resourceLoader ? { resourceLoader, settingsManager } : {}),
       ...(model ? { model } : {}),
       ...(opts.thinkingLevel ? { thinkingLevel: opts.thinkingLevel } : {}),
     });
