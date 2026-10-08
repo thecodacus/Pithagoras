@@ -101,7 +101,8 @@ a tool left out by `Only these tools` or `Except these tools`, or one the server
 no longer has. A chat that is running is told at once: one that had such a tool
 loaded from before has it off from then on, through the `mcp` tool too. Nothing
 is written down against it, so it comes back the way it was when the
-configuration allows it again.
+configuration allows it again. A file that cannot be read is taken as it last
+could be, so a typo neither hides a tool nor hands back one it had taken away.
 
 A tool marked **cached** is listed from the adapter's cache: its server starts
 only when one of its tools is first used (`lifecycle` lazy, the default), so the
@@ -112,7 +113,9 @@ list is what the server had when it last ran.
 The toggle on each row sets `disabled: true` — the server stays configured and
 visible but is never connected. Better than deleting a server you are debugging.
 Deleting one, or renaming it, also takes its tools out of the Tools list, and a
-chat still running with it has them off from then on, as with one switched off.
+chat still running with it has them off from then on, as with one switched off —
+whatever took it out of the file, this panel or switching a feature such as
+Understory off.
 
 ::: tip The adapter has its own commands
 `/mcp` opens its status panel, `/mcp tools` lists what is available, and

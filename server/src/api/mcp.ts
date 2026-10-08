@@ -209,8 +209,32 @@ export function serversAndBrowsers(): { servers: string[]; browsers: string[] } 
  */
 export function writeMcpText(text: string): void {
   const file = mcpConfigPath();
+  const before = mcpServerNames();
   mkdirSync(path.dirname(file), { recursive: true });
   writeFileAtomic(file, text.endsWith("\n") ? text : text + "\n", 0o600);
+  // Whoever wrote it — a route of the panel, a feature switched off, the browser moved over — a server
+  // that is gone takes its tools with it, and the chats that are running are told.
+  const after = mcpServerNames();
+  if (before.some((name) => !after.includes(name)) || after.some((name) => !before.includes(name))) {
+    mcpServersRemoved(before, after);
+  }
+  try {
+    afterWrite();
+  } catch (e) {
+    console.error(`[portal] could not apply the MCP configuration to running chats: ${(e as Error).message}`);
+  }
+}
+
+let afterWrite: () => void = () => {};
+
+/**
+ * Told after every write of the file: what the configuration offers decides
+ * which tools a running chat may still use (see mcp-offer.ts), and a chat that
+ * has to be restarted to notice a server switched off is a switch that looks
+ * broken.
+ */
+export function onMcpWritten(listener: () => void): void {
+  afterWrite = listener;
 }
 
 export function writeMcpFile(config: McpFile): void {
@@ -251,21 +275,8 @@ function validateEntry(entry: unknown): string | null {
   return null;
 }
 
-/**
- * `changed` is told after every write: what the configuration offers decides
- * which tools a running chat may still use (see mcp-offer.ts), and a chat that
- * has to be restarted to notice a server switched off is a switch that looks
- * broken.
- */
-export function mcpRouter(changed: () => void = () => {}): Router {
+export function mcpRouter(): Router {
   const router = express.Router();
-  const written = () => {
-    try {
-      changed();
-    } catch (e) {
-      console.error(`[portal] could not apply the MCP configuration to running chats: ${(e as Error).message}`);
-    }
-  };
 
   router.get("/mcp", async (_req, res) => {
     try {
@@ -307,14 +318,11 @@ export function mcpRouter(changed: () => void = () => {}): Router {
     if (name !== from && Object.prototype.hasOwnProperty.call(config.mcpServers, name)) {
       return res.status(409).json({ error: `A server called ${name} already exists`, code: "exists" });
     }
-    const before = Object.keys(config.mcpServers);
+    // A rename removes the old name, and its tools are not the new one's (see writeMcpText).
     if (from && from !== name) delete config.mcpServers[from];
     config.mcpServers[name] = req.body.entry;
     try {
       writeMcpFile(config);
-      // A rename removes the old name; its tools are not the new one's.
-      mcpServersRemoved(before, Object.keys(config.mcpServers));
-      written();
       res.json({ ok: true });
     } catch (e) {
       res.status(500).json({ error: (e as Error).message });
@@ -324,12 +332,9 @@ export function mcpRouter(changed: () => void = () => {}): Router {
   router.delete("/mcp/servers/:name", (req, res) => {
     const { config, error } = readMcpFile();
     if (error) return res.status(409).json({ error: `Fix the file first: ${error}` });
-    const before = Object.keys(config.mcpServers);
     delete config.mcpServers[req.params.name];
     try {
       writeMcpFile(config);
-      mcpServersRemoved(before, Object.keys(config.mcpServers));
-      written();
       res.json({ ok: true });
     } catch (e) {
       res.status(500).json({ error: (e as Error).message });
@@ -348,7 +353,6 @@ export function mcpRouter(changed: () => void = () => {}): Router {
     else config.settings = settings;
     try {
       writeMcpFile(config);
-      written();
       res.json({ ok: true });
     } catch (e) {
       res.status(500).json({ error: (e as Error).message });
@@ -407,7 +411,6 @@ export function mcpRouter(changed: () => void = () => {}): Router {
     try {
       if (added.length) {
         writeMcpFile(config);
-        written();
       }
       res.json({ ok: true, added, skipped });
     } catch (e) {
@@ -419,18 +422,13 @@ export function mcpRouter(changed: () => void = () => {}): Router {
   router.put("/mcp/raw", (req, res) => {
     const content = req.body?.content;
     if (typeof content !== "string") return res.status(400).json({ error: "content required" });
-    let parsed: unknown;
     try {
-      parsed = JSON.parse(stripComments(content));
+      JSON.parse(stripComments(content));
     } catch (e) {
       return res.status(400).json({ error: `Not valid JSON: ${(e as Error).message}` });
     }
-    const before = mcpServerNames();
     try {
       writeMcpText(content);
-      const kept = (parsed as McpFile | null)?.mcpServers;
-      mcpServersRemoved(before, kept && typeof kept === "object" ? Object.keys(kept) : []);
-      written();
       res.json({ ok: true });
     } catch (e) {
       res.status(500).json({ error: (e as Error).message });

@@ -161,9 +161,8 @@ export function adoptPortalBrowser(): void {
     })();
   }
   delete config.mcpServers[name];
+  // The old server's tools, and the adapter's cache of them, go with it (see writeMcpText): the portal's own are listed by their own names.
   writeMcpFile(config);
-  // The old server's tools, and the adapter's cache of them: the portal's own are listed by their own names.
-  mcpServersRemoved(servers, servers.filter((s) => s !== name));
   setPortalBrowser(true);
   console.log(`[portal] the browser now uses the portal's own tools; the "${name}" Playwright MCP entry was replaced, with its settings carried over`);
 }

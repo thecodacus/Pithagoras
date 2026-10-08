@@ -4,8 +4,8 @@ import { packageIndex, packageKey, packageLabel, toolAvailability } from "./exte
 import { EDIT_IMAGE_SOURCE, EDIT_IMAGE_TOOL, GENERATE_IMAGE_SOURCE, GENERATE_IMAGE_TOOL, SHOW_IMAGE_SOURCE, imageEditingReady, imageGenerationReady } from "./image-generation.js";
 import { PORTAL_BROWSER_TOOLS, browserTool, defaultsFor, mcpServerOf, toolEnabled } from "./tool-policy.js";
 import { projectOf } from "./workspaces.js";
-import { browserServers, dropMcpCache, mcpServerNames, readMcpCache, readMcpFile, serversAndBrowsers } from "./api/mcp.js";
-import { mcpCatalogue, mcpOffer, unlisted, type McpOffer } from "./mcp-offer.js";
+import { browserServers, dropMcpCache, mcpAdapter, mcpServerNames, readMcpCache, readMcpFile, serversAndBrowsers } from "./api/mcp.js";
+import { mcpCatalogue, mcpOffer, unlisted, type McpConfigLike, type McpOffer } from "./mcp-offer.js";
 import { mkdirSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { isWithinText } from "./within.js";
@@ -2295,7 +2295,7 @@ export function shownTools(folder?: string, view: McpView = mcpView()): (Omit<Kn
   // called image-generation.ts has the label the portal's factory has.
   const images = imageGenerationReady();
   const editing = imageEditingReady();
-  const known = knownTools();
+  const known = [...view.known().values()];
   // Every MCP server's tools, from the adapter's cache, whether a chat has had them one by one or not: a server is a
   // group like any other, whole or tool by tool. A tool a chat reported is listed as it reported it.
   const seen = new Set(known.map((t) => t.name));
@@ -2440,32 +2440,51 @@ function adapterTool(t: Pick<KnownTool, "source" | "package">): boolean {
 
 /**
  * The MCP adapter's configuration and cache as they stand now, read once for a
- * pass over a list (see mcp-offer.ts):
+ * pass over a list or over every running chat (see mcp-offer.ts):
  * - `offers`: what the adapter does with each tool, undefined for a tool that
  *   is not a server's;
  * - `catalogue`: every tool of the servers the configuration has on, from the
- *   cache, as the portal remembers a tool: filed under the adapter, which
- *   brings them, so they go with it when it is switched off;
+ *   cache, as the portal remembers a tool: filed under the adapter's package,
+ *   which brings them, so they go with it when it is switched off;
  * - `serverTool`: whether a name is a tool the adapter reaches on a server now,
- *   which is what an MCP script could call.
+ *   which is what an MCP script could call;
+ * - `servers` and `gone`: the servers configured, and those the portal removed
+ *   that are not configured again.
  *
- * A configuration that cannot be read says nothing about any tool: the panel
- * offers the file to be fixed, and until it is, nothing is withdrawn over it.
+ * A configuration that cannot be read is taken as it last could be: the panel
+ * offers the file to be fixed, and a typo in it must neither withdraw a tool
+ * nor hand back one that was withdrawn — a running chat is told its tools
+ * again on any change of a default, and would otherwise get them back.
  */
 export interface McpView {
   offers: (tool: Pick<KnownTool, "name" | "source" | "package">) => McpOffer | undefined;
   catalogue: KnownTool[];
   serverTool: (name: string) => boolean;
+  servers: string[];
+  gone: string[];
+  /** What the portal remembers of every tool, read when first asked for. */
+  known: () => Map<string, KnownTool>;
 }
 
+let lastReadableMcp: McpConfigLike | undefined;
+
 export function mcpView(): McpView {
-  const { config, error } = readMcpFile();
-  if (error) return { offers: () => undefined, catalogue: [], serverTool: () => false };
+  const file = readMcpFile();
+  if (!file.error) lastReadableMcp = file.config;
+  const config = file.error ? lastReadableMcp : file.config;
+  let known: Map<string, KnownTool> | undefined;
+  const knownNow = () => (known ??= new Map(knownTools().map((t) => [t.name, t])));
+  if (!config) {
+    return { offers: () => undefined, catalogue: [], serverTool: () => false, servers: [], gone: [], known: knownNow };
+  }
   const cache = readMcpCache();
   const offer = mcpOffer(config, cache);
+  // Under the adapter's package where pi's settings list it, so a package switched off takes them with it whatever it was installed from.
+  const adapter = mcpAdapter();
   const catalogue: KnownTool[] = mcpCatalogue(config, cache).map((t) => ({
     name: t.name,
     source: ADAPTER_LABEL,
+    ...(adapter ? { package: adapter.source } : {}),
     ...(t.description ? { description: t.description } : {}),
   }));
   const offers = (tool: Pick<KnownTool, "name" | "source" | "package">) =>
@@ -2474,14 +2493,16 @@ export function mcpView(): McpView {
   const serverTool = (name: string) => {
     if (!reachable) {
       reachable = new Set(catalogue.map((t) => t.name));
-      for (const tool of knownTools()) {
+      for (const tool of knownNow().values()) {
         const state = offers(tool);
         if (state !== undefined && state !== "withdrawn") reachable.add(tool.name);
       }
     }
     return reachable.has(name);
   };
-  return { offers, catalogue, serverTool };
+  const servers = Object.keys(config.mcpServers ?? {});
+  const gone = removedMcpServers().filter((name) => !servers.includes(name));
+  return { offers, catalogue, serverTool, servers, gone, known: knownNow };
 }
 
 /**
@@ -2495,10 +2516,8 @@ export function mcpView(): McpView {
  * is gone, where one merely switched off would have them off.
  */
 export function withdrawnMcpTools(names: Iterable<string> = [], view: McpView = mcpView()): string[] {
-  const known = new Map(knownTools().map((t) => [t.name, t]));
-  const configured = readMcpFile();
-  const servers = configured.error ? [] : Object.keys(configured.config.mcpServers);
-  const gone = configured.error ? [] : removedMcpServers().filter((name) => !servers.includes(name));
+  const known = view.known();
+  const { servers, gone } = view;
   const withdrawn = new Set<string>();
   for (const name of new Set([...names, ...known.keys()])) {
     const tool = known.get(name);
@@ -2509,6 +2528,20 @@ export function withdrawnMcpTools(names: Iterable<string> = [], view: McpView = 
     }
   }
   return [...withdrawn].sort();
+}
+
+/**
+ * The servers' tools from the adapter's cache that a chat in this folder would
+ * have with its packages, each marked where it is listed from the cache: what a
+ * running chat's list adds to what it registered one by one.
+ */
+export function mcpCatalogueFor(folder: string | undefined, view: McpView): (Omit<KnownTool, "package" | "inline"> & { cached?: true })[] {
+  if (!view.catalogue.length) return [];
+  const available = toolAvailability(readPiSettings().packages, folder ? readProjectPiSettings(folder).packages : undefined);
+  return view.catalogue.filter(available).map(({ package: _package, ...tool }) => ({
+    ...tool,
+    ...(view.offers({ ...tool, package: _package }) === "cached" ? { cached: true as const } : {}),
+  }));
 }
 
 /**

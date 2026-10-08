@@ -71,6 +71,7 @@ import {
   knownTools,
   recordAudit,
   shownTools,
+  mcpCatalogueFor,
   mcpView,
   withdrawnMcpTools,
   type McpView,
@@ -2419,9 +2420,9 @@ class SessionManager extends EventEmitter {
    * tools that are not loaded right now — which is what the page has to be
    * given, or its next answer would drop the exceptions it was never shown.
    */
-  offFor(sessionId: string, names: string[] = []): string[] {
+  offFor(sessionId: string, names: string[] = [], known: Iterable<string> = knownTools().map((t) => t.name)): string[] {
     return effectiveOff(
-      [...names, ...knownTools().map((t) => t.name)],
+      [...names, ...known],
       toolDefaultsForSession(getSession(sessionId)),
       sessionTools(sessionId)
     );
@@ -2434,8 +2435,8 @@ class SessionManager extends EventEmitter {
    * them — but a chat that loaded one before the configuration changed still
    * has it, and the configuration is what has the last word over it.
    */
-  piOff(sessionId: string, names: string[] = [], view?: McpView): string[] {
-    return [...new Set([...this.offFor(sessionId, names), ...withdrawnMcpTools(names, view)])].sort();
+  piOff(sessionId: string, names: string[] = [], view: McpView = mcpView()): string[] {
+    return [...new Set([...this.offFor(sessionId, names, view.known().keys()), ...withdrawnMcpTools(names, view)])].sort();
   }
 
   /**
@@ -2453,9 +2454,7 @@ class SessionManager extends EventEmitter {
       return [offer === "cached" ? { ...tool, cached: true as const } : tool];
     });
     const have = new Set(listed.map((t) => t.name));
-    const catalogue = new Set(view.catalogue.map((t) => t.name));
-    const proxied = shownTools(workspace ?? undefined, view).filter((t) => catalogue.has(t.name) && !have.has(t.name));
-    return [...listed, ...proxied];
+    return [...listed, ...mcpCatalogueFor(workspace ?? undefined, view).filter((t) => !have.has(t.name))];
   }
 
   /**
