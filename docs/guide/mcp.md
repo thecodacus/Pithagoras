@@ -89,8 +89,8 @@ with the group's switch, or tool by tool. Every tool the server offers is listed
 whether the model gets it registered directly or reaches it through the `mcp`
 tool, and a switch holds for both ways in: `mcp({ tool: "…" })` and
 `mcp({ describe: "…" })` of a tool that is off are refused. With the adapter's
-script mode on, `mcp_script` is refused while any server's tool is switched off,
-since a script says which tools it calls only as it runs.
+script mode on, `mcp_script` is refused while one of the servers' tools is switched
+off, since a script says which tools it calls only as it runs.
 
 The tools are read from the adapter's cache, so a server is listed once it has run
 at least once. Only the adapter's default tool names (`<server>_<tool>`) are
@@ -111,7 +111,8 @@ list is what the server had when it last ran.
 
 The toggle on each row sets `disabled: true` — the server stays configured and
 visible but is never connected. Better than deleting a server you are debugging.
-Deleting one, or renaming it, also takes its tools out of the Tools list.
+Deleting one, or renaming it, also takes its tools out of the Tools list, and a
+chat still running with it has them off from then on, as with one switched off.
 
 ::: tip The adapter has its own commands
 `/mcp` opens its status panel, `/mcp tools` lists what is available, and

@@ -7,8 +7,7 @@
  * a tool by what the portal remembers: it registers a server's tools directly
  * from its own cache file (`mcp-cache.json`), and only those its configuration
  * still allows. A server switched off, a tool left out by `Only these tools` or
- * `Except these tools`, a server no longer registering its tools directly, a
- * tool the server no longer has: each is a tool the portal went on listing,
+ * `Except these tools`, a tool the server no longer has: each is a tool the portal went on listing,
  * and a chat that had it loaded went on offering, after the configuration had
  * said no. This is where that is read, kept apart from the files so the rule
  * can be tested on its own.
@@ -81,25 +80,40 @@ function matchesAny(patterns: unknown, candidates: string[]): boolean {
   });
 }
 
+/** A tool of a server's cache entry: the name the adapter registers it under (without the prefix), the server's own, and what it says it does. */
+interface CachedTool {
+  bare: string;
+  original: string;
+  description?: string;
+}
+
 /**
- * The names a server's cache entry lists, as the adapter would register them
- * (without the prefix), or undefined where there is no entry to go by.
+ * The tools a server's cache entry lists, as the adapter would register them,
+ * or undefined where there is no entry to go by. The adapter writes an entry
+ * only once it has connected, with all the server has; one that lists nothing
+ * at all is taken as nothing to go by rather than as a server without tools,
+ * which would have every tool of it withdrawn.
  */
-function cachedNames(entry: { tools?: unknown; resources?: unknown } | undefined, definition: Record<string, unknown>): Set<string> | undefined {
+function cachedTools(entry: { tools?: unknown; resources?: unknown } | undefined, definition: Record<string, unknown>): Map<string, CachedTool> | undefined {
   if (!entry || !Array.isArray(entry.tools)) return undefined;
-  const names = new Set<string>();
+  const out = new Map<string, CachedTool>();
+  const add = (bare: string, original: string, description: unknown) =>
+    out.set(bare, { bare, original, ...(typeof description === "string" && description.trim() ? { description: description.trim().slice(0, 300) } : {}) });
   for (const tool of entry.tools) {
-    const name = (tool as { name?: unknown } | null)?.name;
-    if (typeof name === "string") names.add(sanitized(name));
+    const t = tool as { name?: unknown; description?: unknown } | null;
+    if (typeof t?.name === "string") add(sanitized(t.name), t.name, t.description);
   }
   if (definition.exposeResources !== false && Array.isArray(entry.resources)) {
     for (const resource of entry.resources) {
-      const name = (resource as { name?: unknown } | null)?.name;
-      if (typeof name === "string") names.add(resourceTool(name));
+      const r = resource as { name?: unknown; description?: unknown } | null;
+      if (typeof r?.name === "string") add(resourceTool(r.name), r.name, r.description);
     }
   }
-  return names;
+  return out.size ? out : undefined;
 }
+
+const prefixOf = (definition: Record<string, unknown>, settings: Record<string, unknown>): unknown =>
+  definition.toolPrefix ?? settings.toolPrefix ?? "server";
 
 /**
  * What the adapter does with a tool of this name, or undefined for a name no
@@ -110,26 +124,35 @@ export function mcpOffer(config: McpConfigLike, cache: McpCacheLike | null): (na
   const servers = config.mcpServers ?? {};
   const settings = config.settings ?? {};
   const names = Object.keys(servers);
+  // Each server's entry walked once, not once per tool asked about.
+  const tools = new Map<string, Map<string, CachedTool> | undefined>();
+  const toolsOf = (server: string, definition: Record<string, unknown>) => {
+    if (!tools.has(server)) tools.set(server, cachedTools(cache?.servers?.[server], definition));
+    return tools.get(server);
+  };
   return (name) => {
     const server = mcpServerOf(name, names);
     if (server === undefined) return undefined;
     const definition = servers[server] ?? {};
-    if ((definition.toolPrefix ?? settings.toolPrefix ?? "server") !== "server") return undefined;
+    if (prefixOf(definition, settings) !== "server") return undefined;
     const bare = name.slice(server.replace(/-/g, "_").length + 1);
 
     if (definition.disabled === true) return "withdrawn";
 
-    const candidates = [bare, name];
+    // The cache is what the adapter registers from. A server it has an entry
+    // for and which no longer lists the tool does not have it any more; one it
+    // has none for is not judged on that.
+    const listed = toolsOf(server, definition);
+    const tool = listed?.get(bare);
+    if (listed && !tool) return "withdrawn";
+
+    // As the adapter matches them: the server's own name for the tool (dots and
+    // all), the one it registers, and the prefixed one.
+    const candidates = [...new Set([tool?.original ?? bare, bare, name])];
     if (Array.isArray(definition.includeTools) && definition.includeTools.length && !matchesAny(definition.includeTools, candidates)) {
       return "withdrawn";
     }
     if (matchesAny(definition.excludeTools, candidates)) return "withdrawn";
-
-    // The cache is what the adapter registers from. A server it has an entry
-    // for and which no longer lists the tool does not have it any more; one it
-    // has none for is not judged on that.
-    const listed = cachedNames(cache?.servers?.[server], definition);
-    if (listed && !listed.has(bare)) return "withdrawn";
 
     const lifecycle = definition.lifecycle ?? "lazy";
     return listed && (lifecycle === "lazy" || lifecycle === "lazy-keep-alive") ? "cached" : "offered";
@@ -146,31 +169,19 @@ export function mcpOffer(config: McpConfigLike, cache: McpCacheLike | null): (na
 export function mcpCatalogue(config: McpConfigLike, cache: McpCacheLike | null): { name: string; server: string; description?: string; offer: McpOffer }[] {
   const servers = config.mcpServers ?? {};
   const settings = config.settings ?? {};
+  const names = Object.keys(servers);
   const offer = mcpOffer(config, cache);
   const out: { name: string; server: string; description?: string; offer: McpOffer }[] = [];
   for (const [server, definition] of Object.entries(servers)) {
-    if ((definition?.toolPrefix ?? settings.toolPrefix ?? "server") !== "server") continue;
-    const entry = cache?.servers?.[server];
-    if (!entry) continue;
+    if (prefixOf(definition ?? {}, settings) !== "server") continue;
     const prefix = server.replace(/-/g, "_");
-    const listed: { bare: string; description?: string }[] = [];
-    for (const tool of Array.isArray(entry.tools) ? entry.tools : []) {
-      const t = tool as { name?: unknown; description?: unknown } | null;
-      if (typeof t?.name === "string") listed.push({ bare: sanitized(t.name), description: typeof t.description === "string" ? t.description : undefined });
-    }
-    if (definition?.exposeResources !== false) {
-      for (const resource of Array.isArray(entry.resources) ? entry.resources : []) {
-        const r = resource as { name?: unknown; description?: unknown } | null;
-        if (typeof r?.name === "string") listed.push({ bare: resourceTool(r.name), description: typeof r.description === "string" ? r.description : undefined });
-      }
-    }
-    for (const { bare, description } of listed) {
+    for (const { bare, description } of cachedTools(cache?.servers?.[server], definition ?? {})?.values() ?? []) {
       const name = `${prefix}_${bare}`;
       // Claimed by a server with a longer name, whose tool it would be taken for.
-      if (mcpServerOf(name, Object.keys(servers)) !== server) continue;
+      if (mcpServerOf(name, names) !== server) continue;
       const state = offer(name);
       if (state === undefined || state === "withdrawn") continue;
-      out.push({ name, server, ...(description ? { description: description.trim().slice(0, 300) } : {}), offer: state });
+      out.push({ name, server, ...(description ? { description } : {}), offer: state });
     }
   }
   return out;
