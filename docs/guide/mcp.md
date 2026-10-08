@@ -83,26 +83,29 @@ keep a large server from crowding the prompt.
 
 ## What the tool lists show
 
-The Tools lists (Settings → Tools, a project's, a chat's) show a server's tools
-only while its configuration registers them one by one. A tool goes from every
-list as soon as the configuration says no to it: its server is switched off,
-`Only these tools` or `Except these tools` leave it out, or the server no longer
-has it in the adapter's cache. A chat that is running is told at once: one that
-had the tool loaded from before has it off from then on, and neither the tool
-nor the `mcp` tool reaches it. Nothing is written down against it, so it comes
-back the way it was when the configuration allows it again. A server whose tools
-are no longer registered directly lists none: they are reached through the `mcp`
-tool, which is switched as itself.
+In the Tools lists (Settings → Tools, an agent's, a project's, a routine's, a
+chat's) an MCP server is a group like any other: switched on or off as a whole
+with the group's switch, or tool by tool. Every tool the server offers is listed,
+whether the model gets it registered directly or reaches it through the `mcp`
+tool, and a switch holds for both ways in: `mcp({ tool: "…" })` and
+`mcp({ describe: "…" })` of a tool that is off are refused. With the adapter's
+script mode on, `mcp_script` is refused while any server's tool is switched off,
+since a script says which tools it calls only as it runs.
+
+The tools are read from the adapter's cache, so a server is listed once it has run
+at least once. Only the adapter's default tool names (`<server>_<tool>`) are
+listed this way.
+
+What the configuration says no to is not listed at all: a server switched off,
+a tool left out by `Only these tools` or `Except these tools`, or one the server
+no longer has. A chat that is running is told at once: one that had such a tool
+loaded from before has it off from then on, through the `mcp` tool too. Nothing
+is written down against it, so it comes back the way it was when the
+configuration allows it again.
 
 A tool marked **cached** is listed from the adapter's cache: its server starts
 only when one of its tools is first used (`lifecycle` lazy, the default), so the
 list is what the server had when it last ran.
-
-A tool switched off in a chat, a project or Settings → Tools is off through the
-`mcp` tool as well: `mcp({ tool: "…" })` and `mcp({ describe: "…" })` of it are
-refused. With the adapter's script mode on, `mcp_script` is refused while any
-server's tool is switched off, since a script says which tools it calls only as
-it runs.
 
 ## Disabling
 

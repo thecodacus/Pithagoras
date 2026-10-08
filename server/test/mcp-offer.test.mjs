@@ -12,7 +12,7 @@ writeFileSync(path.join(agent, "settings.json"), JSON.stringify({ packages: ["np
 const mcpFile = (config) => writeFileSync(path.join(agent, "mcp.json"), JSON.stringify(config));
 const cacheFile = (servers) => writeFileSync(path.join(agent, "mcp-cache.json"), JSON.stringify({ version: 1, servers }));
 
-const { mcpOffer } = await import("../dist/mcp-offer.js");
+const { mcpCatalogue, mcpOffer } = await import("../dist/mcp-offer.js");
 const { switchedOffVia, guardExtension } = await import("../dist/pi/guard.js");
 const { createSession, rememberTools, shownTools, withdrawnMcpTools } = await import("../dist/db.js");
 const { sessions } = await import("../dist/session-manager.js");
@@ -25,7 +25,7 @@ const cache = {
 };
 
 test("a server's tool is offered while its configuration registers it, and from the cache while the server starts only when used", () => {
-  const offer = mcpOffer({ mcpServers: { jira: { command: "j", directTools: true }, "brave-search": { command: "b", directTools: true, lifecycle: "eager" } } }, { servers: cache }, undefined);
+  const offer = mcpOffer({ mcpServers: { jira: { command: "j", directTools: true }, "brave-search": { command: "b", directTools: true, lifecycle: "eager" } } }, { servers: cache });
   assert.equal(offer("jira_search"), "cached", "lazy is the adapter's default");
   assert.equal(offer("jira_admin_delete"), "cached", "a dotted name is registered with underscores");
   assert.equal(offer("jira_read_project_list"), "cached", "a resource is a tool too");
@@ -35,24 +35,25 @@ test("a server's tool is offered while its configuration registers it, and from 
 
 test("a server switched off, a tool left out or no longer there is withdrawn", () => {
   const servers = (jira) => ({ mcpServers: { jira: { command: "j", directTools: true, ...jira } } });
-  assert.equal(mcpOffer(servers({ disabled: true }), { servers: cache }, undefined)("jira_search"), "withdrawn");
-  assert.equal(mcpOffer(servers({ excludeTools: ["create_*"] }), { servers: cache }, undefined)("jira_create_issue"), "withdrawn");
-  assert.equal(mcpOffer(servers({ excludeTools: ["jira_create_issue"] }), { servers: cache }, undefined)("jira_create_issue"), "withdrawn", "by its full name as well");
-  assert.equal(mcpOffer(servers({ includeTools: ["search"] }), { servers: cache }, undefined)("jira_create_issue"), "withdrawn");
-  assert.equal(mcpOffer(servers({ includeTools: ["search"] }), { servers: cache }, undefined)("jira_search"), "cached");
-  assert.equal(mcpOffer(servers({}), { servers: cache }, undefined)("jira_gone"), "withdrawn", "the cache is what the adapter registers from");
-  assert.equal(mcpOffer(servers({}), null, undefined)("jira_gone"), "offered", "without a cache there is nothing to go by");
+  assert.equal(mcpOffer(servers({ disabled: true }), { servers: cache })("jira_search"), "withdrawn");
+  assert.equal(mcpOffer(servers({ excludeTools: ["create_*"] }), { servers: cache })("jira_create_issue"), "withdrawn");
+  assert.equal(mcpOffer(servers({ excludeTools: ["jira_create_issue"] }), { servers: cache })("jira_create_issue"), "withdrawn", "by its full name as well");
+  assert.equal(mcpOffer(servers({ includeTools: ["search"] }), { servers: cache })("jira_create_issue"), "withdrawn");
+  assert.equal(mcpOffer(servers({ includeTools: ["search"] }), { servers: cache })("jira_search"), "cached");
+  assert.equal(mcpOffer(servers({}), { servers: cache })("jira_gone"), "withdrawn", "the cache is what the adapter registers from");
+  assert.equal(mcpOffer(servers({}), null)("jira_gone"), "offered", "without a cache there is nothing to go by");
 });
 
-test("a tool no longer registered one by one is reached through the proxy, not withdrawn", () => {
-  const offer = (jira, settings) => mcpOffer({ mcpServers: { jira: { command: "j", ...jira } }, settings }, { servers: cache }, undefined)("jira_search");
-  assert.equal(offer({}), "proxied");
-  assert.equal(offer({ directTools: false }, { directTools: true }), "proxied", "the server's own setting wins");
-  assert.equal(offer({}, { directTools: true }), "cached");
-  assert.equal(offer({ directTools: ["create_issue"] }), "proxied");
-  assert.equal(offer({ directTools: ["search"] }), "cached");
-  assert.equal(mcpOffer({ mcpServers: { jira: { command: "j" } } }, { servers: cache }, "jira")("jira_search"), "cached", "MCP_DIRECT_TOOLS replaces the configuration");
-  assert.equal(mcpOffer({ mcpServers: { jira: { command: "j", toolPrefix: "short" } } }, { servers: cache }, undefined)("jira_search"), undefined, "a prefix it cannot read is not judged");
+test("a server's tools are listed whether the model is offered them one by one or through the mcp tool", () => {
+  const config = (jira, settings) => ({ mcpServers: { jira: { command: "j", ...jira }, "brave-search": { command: "b", disabled: true } }, settings });
+  const names = (c) => mcpCatalogue(c, { servers: cache }).map((t) => t.name);
+  assert.deepEqual(names(config({})), ["jira_search", "jira_create_issue", "jira_admin_delete", "jira_read_project_list"], "behind the proxy only");
+  assert.deepEqual(names(config({ directTools: true })), names(config({})), "registered one by one: the same tools");
+  assert.deepEqual(names(config({ excludeTools: ["create_issue"], exposeResources: false })), ["jira_search", "jira_admin_delete"], "less what the configuration says no to");
+  assert.deepEqual(names({ mcpServers: { jira: { command: "j", toolPrefix: "short" } } }), [], "a prefix it cannot read is not listed");
+  assert.equal(mcpCatalogue(config({}), { servers: cache })[0].offer, "cached");
+  assert.equal(mcpCatalogue(config({}), null).length, 0, "a server that never ran has nothing to list");
+  assert.equal(mcpOffer(config({}), { servers: cache })("jira_search"), "cached", "not registered one by one is no reason to withdraw it");
 });
 
 test("the mcp tool does not reach a tool that is switched off, by any of its names", () => {
@@ -83,6 +84,7 @@ test("the guard refuses it before anything could allow it, and an MCP script whi
   assert.equal(h.tool_call({ toolName: "mcp_script", input: { code: "" } }), undefined, "no server's tool is off");
 });
 
+const names = (list) => list.map((t) => t.name).sort();
 test("what the configuration says no to is not listed, is off in pi, and what comes from the cache is marked", async () => {
   cacheFile(cache);
   mcpFile({ mcpServers: { jira: { command: "j", directTools: true, excludeTools: ["create_issue"] }, "brave-search": { command: "b", disabled: true } } });
@@ -94,14 +96,15 @@ test("what the configuration says no to is not listed, is off in pi, and what co
     { name: "bash", source: "built in", package: null },
   ]);
   const shown = shownTools();
-  assert.deepEqual(shown.map((t) => t.name), ["bash", "jira_search", "mcp"]);
+  // jira's other tools are listed from the cache, as every server's are; create_issue is excluded, brave-search is off.
+  assert.deepEqual(names(shown), ["bash", "jira_admin_delete", "jira_read_project_list", "jira_search", "mcp"]);
   assert.equal(shown.find((t) => t.name === "jira_search").cached, true);
   assert.equal(shown.find((t) => t.name === "bash").cached, undefined);
   assert.deepEqual(withdrawnMcpTools(), ["brave_search_web_search", "jira_create_issue"]);
 
   createSession({ id: "idle", title: "idle", workspace: home, executor: "host" });
   const { tools } = await sessions.getTools("idle");
-  assert.deepEqual(tools.map((t) => t.name), ["bash", "jira_search", "mcp"]);
+  assert.deepEqual(names(tools), ["bash", "jira_admin_delete", "jira_read_project_list", "jira_search", "mcp"]);
   assert.equal(tools.find((t) => t.name === "jira_search").cached, true);
   // What pi is told is off includes them; what the page is told, and what is written down, does not.
   assert.deepEqual(sessions.piOff("idle"), ["brave_search_web_search", "jira_create_issue"]);
@@ -111,8 +114,29 @@ test("what the configuration says no to is not listed, is off in pi, and what co
 
   // Allowed again: listed again, and nothing was written down against it meanwhile.
   mcpFile({ mcpServers: { jira: { command: "j", directTools: true }, "brave-search": { command: "b", directTools: true } } });
-  assert.deepEqual(shownTools().map((t) => t.name), ["bash", "brave_search_web_search", "jira_create_issue", "jira_search", "mcp"]);
+  assert.deepEqual(names(shownTools()), ["bash", "brave_search_web_search", "jira_admin_delete", "jira_create_issue", "jira_read_project_list", "jira_search", "mcp"]);
   assert.deepEqual(sessions.piOff("idle"), ["bash"]);
+});
+
+test("a server behind the mcp tool only is switched like any other: whole, or tool by tool, and the switch holds through mcp", async () => {
+  cacheFile(cache);
+  mcpFile({ mcpServers: { jira: { command: "j" } } });
+  createSession({ id: "proxy", title: "proxy", workspace: home, executor: "host" });
+  const listed = (await sessions.getTools("proxy")).tools.filter((t) => t.name.startsWith("jira_"));
+  assert.deepEqual(names(listed), ["jira_admin_delete", "jira_create_issue", "jira_read_project_list", "jira_search"]);
+  assert.ok(listed.every((t) => t.source === "jira" && t.enabled));
+
+  // One tool off: off for pi, and so for the guard, which holds the mcp tool to it.
+  await sessions.setTools("proxy", ["jira_create_issue"]);
+  assert.deepEqual(sessions.piOff("proxy"), ["jira_create_issue"]);
+  assert.equal(switchedOffVia("mcp", { tool: "jira_create_issue" }, new Set(sessions.piOff("proxy"))), "jira_create_issue");
+  assert.equal(switchedOffVia("mcp", { tool: "jira_search" }, new Set(sessions.piOff("proxy"))), undefined);
+
+  // The whole server off, as the group's switch sends it.
+  const all = listed.map((t) => t.name);
+  await sessions.setTools("proxy", all);
+  assert.deepEqual(sessions.piOff("proxy"), [...all].sort());
+  assert.ok((await sessions.getTools("proxy")).tools.filter((t) => t.name.startsWith("jira_")).every((t) => !t.enabled));
 });
 
 test("a configuration that cannot be read withdraws nothing", () => {
