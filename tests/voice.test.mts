@@ -296,9 +296,9 @@ test('VAD settings preserve defaults, accept tuning and reject invalid threshold
 });
 
 test('Smart Turn is on by default, keeps its tuning and refuses settings out of range', () => {
-  assert.deepEqual(validateConfig(settings).smartTurn, { enabled: true, checkMs: 200, threshold: 0.5, fallbackMs: 2000 });
-  assert.deepEqual(validateConfig({...settings, smartTurn:{enabled:false, threshold:0.7}}).smartTurn, { enabled: false, checkMs: 200, threshold: 0.7, fallbackMs: 2000 });
-  for (const smartTurn of [{enabled:'yes'}, {checkMs:50}, {checkMs:NaN}, {threshold:0}, {threshold:1}, {fallbackMs:500}, {fallbackMs:6000}, {checkMs:1000, fallbackMs:1000}]) {
+  assert.deepEqual(validateConfig(settings).smartTurn, { enabled: true, checkMs: 400, recheck: false, threshold: 0.5, fallbackMs: 2000 });
+  assert.deepEqual(validateConfig({...settings, smartTurn:{enabled:false, threshold:0.7, recheck:true}}).smartTurn, { enabled: false, checkMs: 400, recheck: true, threshold: 0.7, fallbackMs: 2000 });
+  for (const smartTurn of [{enabled:'yes'}, {recheck:'yes'}, {checkMs:50}, {checkMs:NaN}, {threshold:0}, {threshold:1}, {fallbackMs:500}, {fallbackMs:6000}, {checkMs:1000, fallbackMs:1000}]) {
     assert.throws(() => validateConfig({...settings,smartTurn}), JSON.stringify(smartTurn));
   }
 });

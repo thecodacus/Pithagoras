@@ -34,6 +34,8 @@ export interface SmartTurnSettings {
   enabled: boolean;
   /** The silence after which the model is asked. */
   checkMs: number;
+  /** Whether it is asked again each time the pause grows by `checkMs`, while its last answer was that the turn goes on. */
+  recheck: boolean;
   /** How sure it has to be that the turn is over. */
   threshold: number;
   /** The silence that ends a turn whatever the model said. */
@@ -177,9 +179,10 @@ export const FRAME_MS = 32;
 /**
  * When a turn ends, for hands-free voice: fed Silero's frames, it keeps the
  * turn's audio as Silero does (from the first frame of speech, with the
- * frames before it), asks the model once a pause is `checkMs` long, and has
- * Silero end the turn at its next silent frame when the model says it is
- * finished. Silero itself ends it after `fallbackMs` of silence.
+ * frames before it), asks the model once a pause is `checkMs` long (and, with
+ * `recheck`, again each time it grows by that much), and has Silero end the
+ * turn at its next silent frame when the model says it is finished. Silero
+ * itself ends it after `fallbackMs` of silence.
  *
  * Until `ready`, and again after `failed`, turns end as they always did,
  * after the speech detection settings' silence.
@@ -192,6 +195,8 @@ export class TurnEnd {
   /** Counts pauses and turns, so that an answer about one that is over is dropped. */
   private pause = 0;
   private ending = false;
+  /** The pause an answer is still awaited for: one question at a time. */
+  private asking = -1;
   private on = false;
   private readonly preRoll: number;
 
@@ -233,7 +238,10 @@ export class TurnEnd {
     }
     if (!this.quiet && probability >= this.detection.negativeSpeechThreshold) return;
     this.quiet++;
-    if (this.on && this.quiet * FRAME_MS >= this.settings.checkMs && (this.quiet - 1) * FRAME_MS < this.settings.checkMs) this.check();
+    // Due when the pause reaches `checkMs`, and with `recheck` each further `checkMs`: the frame that crosses one.
+    const due = Math.floor((this.quiet * FRAME_MS) / this.settings.checkMs);
+    const crossed = due >= 1 && due > Math.floor(((this.quiet - 1) * FRAME_MS) / this.settings.checkMs) && (due === 1 || this.settings.recheck);
+    if (this.on && crossed && !this.ending && this.asking !== this.pause) this.check();
   }
 
   /** Silero ended the turn, or dropped it as too short, or was reset: the next one starts afresh. */
@@ -247,12 +255,14 @@ export class TurnEnd {
 
   private check() {
     const pause = this.pause;
+    this.asking = pause;
     this.io.predict(turnWindow(this.frames)).then(probability => {
+      if (this.asking === pause) this.asking = -1;
       if (pause !== this.pause || !this.on || probability < this.settings.threshold) return;
       this.ending = true;
       // Nothing to wait for: the next silent frame ends it.
       this.io.redemption(0);
-    }, () => { if (this.on) this.failed(); });
+    }, () => { if (this.asking === pause) this.asking = -1; if (this.on) this.failed(); });
   }
 }
 

@@ -200,12 +200,15 @@ test('Smart Turn is on until it is switched off, and its timing saves and resets
  const on=page.getByRole('checkbox',{name:/Smart Turn/});
  const check=page.getByRole('slider',{name:/Pause before checking/});
  await expect(on).toBeChecked();
- await expect(check).toHaveValue('200');
+ await expect(check).toHaveValue('400');
+ const again=page.getByRole('checkbox',{name:/Ask again while the pause lasts/});
+ await expect(again).not.toBeChecked();
  await expect(page.getByRole('slider',{name:/Finished-turn threshold/})).toHaveValue('0.5');
  await expect(page.getByRole('slider',{name:/Longest pause/})).toHaveValue('2000');
  await check.fill('300');
+ await again.check();
  await page.getByRole('button',{name:'Save voice settings'}).click();
- await expect.poll(()=>config.smartTurn).toEqual({enabled:true,checkMs:300,threshold:0.5,fallbackMs:2000});
+ await expect.poll(()=>config.smartTurn).toEqual({enabled:true,checkMs:300,recheck:true,threshold:0.5,fallbackMs:2000});
  await on.uncheck();
  await expect(check).toBeHidden();
  await page.getByRole('button',{name:'Save voice settings'}).click();
@@ -214,7 +217,8 @@ test('Smart Turn is on until it is switched off, and its timing saves and resets
  await expect(on).not.toBeChecked();
  await page.getByRole('button',{name:'Reset speech detection'}).click();
  await expect(on).toBeChecked();
- await expect(check).toHaveValue('200');
+ await expect(check).toHaveValue('400');
+ await expect(again).not.toBeChecked();
  // Without speech synthesis there is no voice mode, and nothing for it to time.
  config={...config,runtime:'none',breezeUrl:''};
  await page.reload();await page.locator('summary').filter({hasText:'Speech detection'}).click();

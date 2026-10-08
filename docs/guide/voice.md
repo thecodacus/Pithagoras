@@ -83,7 +83,7 @@ quiet. Waiting a fixed second answers every turn a second late, and still cuts o
 a pause that lasts a little longer.
 
 Voice mode therefore asks [Smart Turn v3.2](https://github.com/pipecat-ai/smart-turn)
-(Pipecat's open model, BSD 2-Clause) once you have been quiet for 200 ms. It listens
+(Pipecat's open model, BSD 2-Clause) once you have been quiet for 400 ms. It listens
 to the whole turn so far, the last 8 seconds of it, and gives the probability that
 it is complete. At 0.5 or more the turn ends at once; below that, listening goes
 on, and the next pause asks again with everything said by then. Two seconds of
@@ -97,13 +97,19 @@ laptop CPU. Until it is loaded, and if it cannot be, the turn ends after the
 **Settings → Add-ons → Voice → Speech detection** has it on by default, with the
 pause before checking, the threshold and the longest pause. Measured on 80 English
 recordings from Smart Turn's held-out test set, a finished turn was answered after
-a median 512 ms instead of 1024 ms, and a turn left unfinished was ended by a
-1.2 to 1.8 s pause in 4 of 40 cases instead of 39 of 40. The price is a short
-pause between two sentences of one turn: one of 200 to 400 ms ended the turn in
-21 of the 80. A longer pause before checking trades speed for fewer of those
-(300 ms: 608 ms and 14; 400 ms: 704 ms and 5). These times count the 250 ms a
-check took in Chromium on an Apple M1; a slower CPU adds its difference. Smart Turn
-supports 23 languages.
+a median 704 ms instead of 1024 ms, and a turn left unfinished was ended by a
+1.2 to 1.8 s pause in 5 of 40 cases instead of 39 of 40. The price is a short
+pause between two sentences of one turn, which can sound finished: one ended the
+turn in 5 of the 80. A shorter pause before checking answers sooner and ends more
+of those (300 ms: 608 ms and 14; 200 ms: 512 ms and 21). These times count the
+250 ms a check took in Chromium on an Apple M1; a slower CPU adds its difference.
+Smart Turn supports 23 languages.
+
+**Ask again while the pause lasts**, off by default, asks the model again each
+time the pause grows by the pause before checking, while its last answer was that
+you would go on. On 80 recordings from the same set it ended no finished turn sooner (the first
+check had already caught every one) and cut off one more unfinished one, so it is
+for voices or languages where the first check often misses a finished turn.
 
 ## Pictures, tool cards and controls
 

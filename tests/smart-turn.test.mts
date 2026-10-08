@@ -44,8 +44,8 @@ for (const clip of reference) {
   });
 }
 
-/** A TurnEnd with a model that answers when told to, and Silero's redemption as it was last set. */
-function harness(settings: SmartTurnSettings = DEFAULT_SMART_TURN) {
+/** A TurnEnd with a model that answers when told to, and Silero's redemption as it was last set. A 200 ms check delay unless said. */
+function harness(settings: SmartTurnSettings = { ...DEFAULT_SMART_TURN, checkMs: 200 }) {
   const asked: { window: Float32Array; answer: (p: number) => void; fail: (e: Error) => void }[] = [];
   const redemption: number[] = [];
   const turns = new TurnEnd(DEFAULT_VAD, settings, {
@@ -152,6 +152,41 @@ test('a model that fails puts the plain silence rule back, and is not asked agai
   assert.equal(asked.length, 1);
 });
 
+test('once its answer is that the turn goes on, it is not asked again in the same pause unless asked to', async () => {
+  const { turns, asked, frame, quiet, settle } = harness();
+  turns.ready();
+  for (let i = 0; i < 20; i++) frame(0.9);
+  quiet(224);
+  asked[0].answer(0.2);
+  await settle();
+  quiet(1500);
+  assert.equal(asked.length, 1);
+});
+
+test('with recheck, a pause that goes on is asked about again each check delay, one question at a time, until the turn is found finished', async () => {
+  const { turns, asked, redemption, frame, quiet, settle } = harness({ ...DEFAULT_SMART_TURN, checkMs: 200, recheck: true });
+  turns.ready();
+  for (let i = 0; i < 20; i++) frame(0.9);
+  quiet(224);
+  assert.equal(asked.length, 1);
+  quiet(256);
+  assert.equal(asked.length, 1, 'not while the first answer is awaited');
+  asked[0].answer(0.2);
+  await settle();
+  quiet(160);
+  assert.equal(asked.length, 2, 'at the next multiple of the check delay');
+  assert.ok(asked[1].window.length === asked[0].window.length);
+  asked[1].answer(0.7);
+  await settle();
+  assert.deepEqual(redemption, [2000, 0]);
+  quiet(500);
+  assert.equal(asked.length, 2, 'not once the turn is found finished');
+  // Speech again starts a new pause, which is asked about from its own start.
+  for (let i = 0; i < 5; i++) frame(0.9);
+  quiet(224);
+  assert.equal(asked.length, 3);
+});
+
 test('a model that cannot load leaves the plain silence rule in place', () => {
   const { turns, asked, redemption, frame, quiet } = harness();
   turns.failed();
@@ -173,7 +208,8 @@ test('a finished turn is answered sooner than after the one second of silence', 
   const smart = await simulate(audio, DEFAULT_SMART_TURN, LATENCY);
   assert.equal(smart.ends.length, 1);
   assert.ok(after(plain, plain.ends.length - 1) >= 960, `plain: ${after(plain, plain.ends.length - 1)} ms`);
-  assert.ok(after(smart, 0) < 600, `Smart Turn: ${after(smart, 0)} ms`);
+  // The default check delay (400 ms), the answer (250 ms) and Silero's next silent frame.
+  assert.ok(after(smart, 0) < 800, `Smart Turn: ${after(smart, 0)} ms`);
 });
 
 for (const gap of [1200, 1500, 1800]) {

@@ -361,7 +361,7 @@ async function uploadBytes(url: string, file: File, name: string): Promise<any> 
 }
 
 export const DEFAULT_VAD = { positiveSpeechThreshold: 0.65, negativeSpeechThreshold: 0.35, minSpeechMs: 256, preSpeechPadMs: 320, redemptionMs: 1000 };
-export const DEFAULT_SMART_TURN: SmartTurnSettings = { enabled: true, checkMs: 200, threshold: 0.5, fallbackMs: 2000 };
+export const DEFAULT_SMART_TURN: SmartTurnSettings = { enabled: true, checkMs: 400, recheck: false, threshold: 0.5, fallbackMs: 2000 };
 export interface VoiceConfig {
   sentenceChunks?: boolean;
   ttsPrefetch?: boolean;

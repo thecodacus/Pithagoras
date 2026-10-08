@@ -1577,6 +1577,8 @@ const de: Locale = {
     "How sure the model must be that you are done. Higher values wait for the longest pause more often.": "Wie sicher sich das Modell sein muss, dass du fertig bist. Höhere Werte warten öfter bis zur längsten Pause.",
     "Longest pause": "Längste Pause",
     "A silence this long always ends the turn, even when the model expects more.": "Eine so lange Stille beendet den Beitrag immer, auch wenn das Modell noch mehr erwartet.",
+    "Ask again while the pause lasts": "Erneut fragen, solange die Pause dauert",
+    "When the model expects more, ask it again each time the pause grows by the pause before checking, instead of waiting for the longest pause. Ends finished turns sooner, and ends more turns in which you were only thinking.": "Wenn das Modell noch mehr erwartet, wird es jedes Mal erneut gefragt, wenn die Pause um die Pause vor der Prüfung länger wird, statt bis zur längsten Pause zu warten. Beendet fertige Beiträge schneller und beendet öfter Beiträge, in denen du nur nachgedacht hast.",
     "Reset speech detection": "Spracherkennung zurücksetzen",
     "Avatar": "Avatar",
     "How the agent looks, moves and sounds in voice mode.": "Wie der Agent im Sprachmodus aussieht, sich bewegt und klingt.",

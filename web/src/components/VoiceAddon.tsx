@@ -193,6 +193,9 @@ export function VoiceAddon({ onError }: { onError: (message: string) => void }) 
             <input type="range" className="mt-2 w-full accent-current" min={min} max={max} step={step} value={smartTurn[key]} onChange={e => update({ smartTurn: { ...smartTurn, [key]: Number(e.target.value) } })} />
             <span className="mt-1 block text-fg-faint">{t(help)}</span>
           </label>)}
+          {smartTurn.enabled && <label className="flex items-start gap-2 text-xs"><input type="checkbox" className="mt-0.5" checked={smartTurn.recheck} onChange={e => update({ smartTurn: { ...smartTurn, recheck: e.target.checked } })} />
+            <span>{t("Ask again while the pause lasts")}<span className="mt-1 block text-fg-faint">{t("When the model expects more, ask it again each time the pause grows by the pause before checking, instead of waiting for the longest pause. Ends finished turns sooner, and ends more turns in which you were only thinking.")}</span></span>
+          </label>}
         </div>}
         <button type="button" className="rounded-lg border border-line px-3 py-1.5 text-xs" onClick={() => update({vad: {...DEFAULT_VAD}, smartTurn: {...DEFAULT_SMART_TURN}})}>{t("Reset speech detection")}</button>
       </div>
