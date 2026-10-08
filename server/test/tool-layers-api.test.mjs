@@ -117,7 +117,7 @@ test("the browser is a routine's tools now: off unless switched on, and its old 
   const run = runOf(r, db.getSession((await json("/api/sessions", "POST", {})).id).workspace);
   const row = () => db.getSession(run);
   assert.equal(db.browserAllowed(row()), false, "a new routine has no browser");
-  assert.deepEqual(db.routineTools(r.slug), { off: ["browser_navigate"], on: [] }, "written down as it is made");
+  assert.deepEqual(db.routineTools(r.slug), { off: ["browser_navigate"], on: [] }, "its switch answers for what its lists do not name");
 
   // Switched on in the tools list: its runs may drive it, and the old switch follows.
   await json(`/api/routines/${r.id}/tools`, "PUT", { off: ["web_fetch"] });
@@ -131,7 +131,8 @@ test("the browser is a routine's tools now: off unless switched on, and its old 
   await json(`/api/routines/${r.id}`, "PATCH", { browser: true });
   assert.equal(db.browserAllowed(row()), true);
 
-  // A browser tool that turns up later starts as the old switch says.
+  // A browser tool that turns up later starts as the old switch says; what the page wrote down stays.
+  await json(`/api/routines/${r.id}/tools`, "PUT", { off: ["web_fetch"] });
   db.getDb().prepare("UPDATE routines SET browser = 0 WHERE id = ?").run(r.id);
   db.rememberTools([{ name: "browser_click", source: "browser", package: null, inline: true }]);
   assert.ok(db.routineTools(r.slug).off.includes("browser_click"));
@@ -172,4 +173,21 @@ test("a tool held off that the page does not list stays off when another is swit
   db.setRoutineTools(r.slug, { off: ["jira_create_issue"], on: [] });
   await json(`/api/routines/${r.id}/tools`, "PUT", { off: ["web_fetch", "bash"] });
   assert.ok(db.routineTools(r.slug).off.includes("jira_create_issue"));
+});
+
+test("a routine's page works out its place as its runs do, and says so when they cannot run there", async () => {
+  const r = await routine("Gone", "research");
+  assert.equal((await send(`/api/routines/${r.id}/tools`)).status, 200);
+  db.getDb().prepare("UPDATE routines SET workspace = ? WHERE id = ?").run("/nowhere/at/all", r.id);
+  const res = await send(`/api/routines/${r.id}/tools`);
+  assert.equal(res.status, 409);
+  assert.match((await res.json()).error, /cannot be used/);
+});
+
+test("a browser tool its lists do not name follows a routine's switch, however late it comes to be one", async () => {
+  const r = await routine("Late");
+  db.rememberTools([{ name: "browser_snapshot", source: "browser", package: null, inline: true }]);
+  assert.ok(db.routineTools(r.slug).off.includes("browser_snapshot"));
+  db.setRoutineBrowser(r.slug, true);
+  assert.ok(db.routineTools(r.slug).on.includes("browser_snapshot"));
 });

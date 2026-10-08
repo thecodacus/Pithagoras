@@ -145,7 +145,8 @@ function reportTargets() {
   return out;
 }
 
-export function routinesRouter(): Router {
+/** `toolsChanged` is told when a routine's tools changed here, so its runs that are going are told at once. */
+export function routinesRouter(toolsChanged: (slug: string) => void = () => {}): Router {
   const router = express.Router();
 
   /** Destinations a routine can report to, and the portal-wide default. */
@@ -264,7 +265,11 @@ export function routinesRouter(): Router {
       routineSupervisor.refreshSchedules([row.id]);
     }
     // Its tools' lists as well, which are what a run goes by: the switch alone would answer 200 and change nothing.
-    if (typeof req.body?.browser === "boolean") setRoutineBrowser(rowById(row.id)!.slug, req.body.browser);
+    if (typeof req.body?.browser === "boolean") {
+      const slug = rowById(row.id)!.slug;
+      setRoutineBrowser(slug, req.body.browser);
+      toolsChanged(slug);
+    }
     res.json(toApi(rowById(row.id)!));
   });
 

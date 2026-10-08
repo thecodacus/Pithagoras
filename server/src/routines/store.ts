@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { getDb, routineMade } from "../db.js";
+import { getDb } from "../db.js";
 import { freeSlug } from "../slug.js";
 import { isValidCron, nextRun, parseCron } from "./cron.js";
 import { oneOffDone, type RoutineRow } from "./supervisor.js";
@@ -105,6 +105,5 @@ export function insertRoutine(r: NewRoutine): { id: string; slug: string } {
       r.reportTarget,
       r.workspace,
     );
-  routineMade(slug);
   return { id, slug };
 }

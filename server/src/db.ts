@@ -694,7 +694,6 @@ function migrate(d: Database.Database): void {
   }
   // Last, because it reads the settings the tables above have to exist for.
   adoptBrowserGrants(d);
-  carryRoutineBrowserOnce(d);
 }
 
 export function createSession(row: {
@@ -1791,8 +1790,10 @@ export interface BrowserPolicy {
   /** With none of its tools seen: whether the old column is what answers. */
   columnDecides: boolean;
   defaultsOff: string[];
-  /** What a place starts with, by workspace and routine, worked out the first time a conversation there is asked about. */
+  /** What a place starts with, by agent, project and routine, worked out the first time a conversation there is asked about. */
   projects: Map<string, string[]>;
+  /** The agents' homes, read the first time a conversation is asked about. */
+  homes?: AgentHome[];
 }
 
 export function browserPolicy(): BrowserPolicy {
@@ -1810,20 +1811,29 @@ export function browserAllowedWith(session: SessionRow, policy: BrowserPolicy, e
     if (!policy.names.length) return row.browser === 1;
   } else if (!policy.names.length) return session.browser === 1 || !policy.columnDecides;
   // Every layer under the conversation's own: its agent, its project, its routine.
-  const key = `${session.workspace ?? ""}\u0000${routine ?? ""}`;
+  // By what decides it, not by folder: the chats in one project's subfolders share it.
+  const homes = (policy.homes ??= agentHomes());
+  const key = `${agentIdOf(session.workspace, homes) ?? ""}\u0000${projectOf(session.workspace) ?? ""}\u0000${routine ?? ""}`;
   let defaults = policy.projects.get(key);
-  if (!defaults) policy.projects.set(key, (defaults = toolDefaultsFor(session.workspace, routine, undefined, policy.defaultsOff)));
+  if (!defaults) policy.projects.set(key, (defaults = toolDefaultsFor(session.workspace, routine, undefined, policy.defaultsOff, homes)));
   const own = exceptions ?? sessionTools(session.id);
   return policy.names.some((name) => toolEnabled(name, defaults, own));
 }
 
 /** The browser's tools, as far as any session has registered them. */
 export function seenBrowserTools(): string[] {
+  // Asked for by every routine's tools, so kept until the MCP file or the settings (what was seen) are written.
+  const stamp = `${fileStamp(mcpConfigPath())}|${settingsWrites}`;
+  if (lastBrowserTools?.stamp === stamp) return lastBrowserTools.names;
   const { servers, browsers } = serversAndBrowsers();
-  return knownTools()
+  const names = knownTools()
     .map((t) => t.name)
     .filter((name) => browserTool(name, servers, browsers));
+  lastBrowserTools = { stamp, names };
+  return names;
 }
+
+let lastBrowserTools: { stamp: string; names: string[] } | undefined;
 
 /**
  * With no browser tool seen there is no switch to read, and three situations
@@ -2057,7 +2067,8 @@ export interface AgentHome {
 
 /** Every agent's home, read once for a pass over many conversations (agentIdOf). */
 export function agentHomes(): AgentHome[] {
-  const rows = getDb().prepare("SELECT id, home FROM agents").all() as AgentHome[];
+  // In the order agents.ts lists them (listAgents), so a folder is told to the same agent either way.
+  const rows = getDb().prepare("SELECT id, home FROM agents ORDER BY id = 'home' DESC, created_at ASC, name ASC").all() as AgentHome[];
   return rows.map((a) => ({ id: a.id, home: a.id === "home" ? agentHomePath() : a.home }));
 }
 
@@ -2065,74 +2076,45 @@ export function agentHomes(): AgentHome[] {
  * What a routine says about tools, as exceptions to what its agent and project
  * leave: the same two lists a chat keeps.
  *
- * Its old **Browser** switch (the `browser` column) is written into them, for
- * each browser tool as it becomes known (`carryRoutineBrowser`): off unless it
- * was switched on, as it always was for a routine. From then on the lists alone
- * answer, and the switch is what a browser tool turning up later starts with.
+ * Its old **Browser** switch (the `browser` column) answers for every browser
+ * tool its lists do not name: off unless it is on, as it always was for a
+ * routine. It is read here, as the lists are, rather than written into them
+ * ahead of time: a tool that comes to count as the browser's later — a server
+ * pointed at the browser, a catalogue that could not be read for a while — is
+ * then held to it as well, with nothing to copy and nothing to miss. The
+ * routine's page writes down what it showed of each browser tool, so what was
+ * switched there is the lists' to answer.
  */
-export function routineTools(slug: string): SessionTools {
-  const row = getDb().prepare("SELECT tools_off, tools_on FROM routines WHERE slug = ?").get(slug) as
-    | { tools_off: string; tools_on: string }
+export function routineTools(slug: string, browser: string[] = seenBrowserTools()): SessionTools {
+  const row = getDb().prepare("SELECT tools_off, tools_on, browser FROM routines WHERE slug = ?").get(slug) as
+    | { tools_off: string; tools_on: string; browser: number }
     | undefined;
-  return row ? { off: parseToolsOff(row.tools_off), on: parseToolsOff(row.tools_on) } : { off: [], on: [] };
+  if (!row) return { off: [], on: [] };
+  const own = { off: parseToolsOff(row.tools_off), on: parseToolsOff(row.tools_on) };
+  const unnamed = browser.filter((name) => !own.off.includes(name) && !own.on.includes(name));
+  return row.browser === 1 ? { off: own.off, on: [...own.on, ...unnamed] } : { off: [...own.off, ...unnamed], on: own.on };
 }
 
-/**
- * Writes the routines' Browser switch into their tool lists for these browser
- * tools, where a list does not name one yet: every routine, or the one named.
- * Called the first time the portal runs with the lists, for the browser tools
- * seen by then; for each browser tool that turns up later; and for a routine
- * that is made. So a routine keeps what it had without the browser's tool
- * names having to be known when the database was upgraded.
- */
-function carryRoutineBrowser(d: Database.Database, names: string[], slug?: string): void {
-  if (!names.length) return;
-  type Row = { slug: string; tools_off: string; tools_on: string; browser: number };
-  const select = "SELECT slug, tools_off, tools_on, browser FROM routines";
-  const rows = (slug ? d.prepare(`${select} WHERE slug = ?`).all(slug) : d.prepare(select).all()) as Row[];
-  const update = d.prepare("UPDATE routines SET tools_off = ?, tools_on = ? WHERE slug = ?");
-  for (const row of rows) {
-    const off = parseToolsOff(row.tools_off);
-    const on = parseToolsOff(row.tools_on);
-    const fresh = names.filter((name) => !off.includes(name) && !on.includes(name));
-    if (!fresh.length) continue;
-    (row.browser === 1 ? on : off).push(...fresh);
-    update.run(clean(off).join("\n"), clean(on).join("\n"), row.slug);
-  }
-}
-
-/** Once: what the routines' Browser switch said, for the browser tools already seen when the lists came in. */
-function carryRoutineBrowserOnce(d: Database.Database): void {
-  const flag = d.prepare("SELECT value FROM settings WHERE key = 'routine_browser_carried'").get() as { value: string } | undefined;
-  if (flag?.value === "1") return;
-  carryRoutineBrowser(d, seenBrowserTools());
-  d.prepare(
-    "INSERT INTO settings (key, value) VALUES ('routine_browser_carried', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
-  ).run();
-}
-
-/** Only the switch: what a browser tool that turns up later starts with in this routine's lists. */
+/** Only the switch: what the browser tools a routine's lists do not name follow. */
 export function setRoutineBrowserSwitch(slug: string, on: boolean): void {
   getDb().prepare("UPDATE routines SET browser = ? WHERE slug = ?").run(on ? 1 : 0, slug);
 }
 
-/** A routine was made: the browser's tools as far as they are known start as its Browser switch says. */
-export function routineMade(slug: string): void {
-  carryRoutineBrowser(getDb(), seenBrowserTools(), slug);
-}
-
 /**
  * The routine's Browser switch, as the API still takes it: every browser tool
- * seen so far on or off in its lists, and the switch kept for those that turn
- * up later.
+ * taken out of its lists, so that all of them follow the switch.
  */
 export function setRoutineBrowser(slug: string, on: boolean): void {
-  const names = seenBrowserTools();
-  const tools = routineTools(slug);
-  const off = tools.off.filter((name) => !names.includes(name));
-  const kept = tools.on.filter((name) => !names.includes(name));
+  const names = new Set(seenBrowserTools());
+  const row = getDb().prepare("SELECT tools_off, tools_on FROM routines WHERE slug = ?").get(slug) as
+    | { tools_off: string; tools_on: string }
+    | undefined;
+  if (!row) return;
   setRoutineBrowserSwitch(slug, on);
-  setRoutineTools(slug, on ? { off, on: [...kept, ...names] } : { off: [...off, ...names], on: kept });
+  setRoutineTools(slug, {
+    off: parseToolsOff(row.tools_off).filter((name) => !names.has(name)),
+    on: parseToolsOff(row.tools_on).filter((name) => !names.has(name)),
+  });
 }
 
 export function setRoutineTools(slug: string, tools: SessionTools): SessionTools {
@@ -2167,10 +2149,11 @@ export function toolDefaultsFor(
   routine?: string | null,
   upTo?: "agent" | "project" | "routine",
   base: string[] = toolDefaultsOff(),
+  homes?: AgentHome[],
 ): string[] {
   let off = base;
   if (upTo === "agent") return off;
-  const agent = agentIdOf(workspace);
+  const agent = agentIdOf(workspace, homes);
   if (agent) off = defaultsFor(off, agentTools(agent));
   if (upTo === "project") return off;
   const project = projectOf(workspace);
@@ -2184,8 +2167,8 @@ export const routineOf = (session: Pick<SessionRow, "kind" | "routine_slug"> | u
   session?.kind === "routine" ? (session.routine_slug ?? null) : null;
 
 /** What a session starts with off, every layer under its own switches. */
-export function toolDefaultsForSession(session: Pick<SessionRow, "kind" | "routine_slug" | "workspace"> | undefined): string[] {
-  return toolDefaultsFor(session?.workspace, routineOf(session));
+export function toolDefaultsForSession(session: Pick<SessionRow, "kind" | "routine_slug" | "workspace"> | undefined, homes?: AgentHome[]): string[] {
+  return toolDefaultsFor(session?.workspace, routineOf(session), undefined, undefined, homes);
 }
 
 /**
@@ -2731,10 +2714,6 @@ export function rememberTools(reported: KnownTool[]): void {
   // The first moment the browser's tools can be told apart from the rest, and
   // every moment a new one turns up.
   adoptBrowserGrants(getDb(), fresh);
-  if (fresh.length) {
-    const { servers, browsers } = serversAndBrowsers();
-    carryRoutineBrowser(getDb(), fresh.filter((name) => browserTool(name, servers, browsers)));
-  }
 }
 
 /**

@@ -525,9 +525,12 @@ app.put("/api/agents/:id/tools", async (req, res) => {
 });
 
 /** A routine, and where its runs happen: its project, or Home. */
-function routineFor(id: string): { slug: string; folder: string } | undefined {
+function routineFor(id: string): { slug: string; folder: string } | { slug: string; error: string } | undefined {
   const row = getDb().prepare("SELECT slug, workspace FROM routines WHERE id = ?").get(id) as { slug: string; workspace: string | null } | undefined;
-  return row && { slug: row.slug, folder: row.workspace ?? agentHome() };
+  if (!row) return undefined;
+  // Where its runs work, found as the supervisor finds it: the layers under the routine are that place's.
+  const where = row.workspace ? checkWorkspace(row.workspace) : { path: agentHome() };
+  return "error" in where ? { slug: row.slug, error: `Its project ${row.workspace} cannot be used (${where.error}).` } : { slug: row.slug, folder: where.path };
 }
 
 /**
@@ -538,6 +541,7 @@ app.get("/api/routines/:id/tools", (req, res) => {
   const routine = routineFor(req.params.id);
   if (!routine) return res.status(404).json({ error: "Not found" });
   if (EXECUTOR_KIND === "container") return res.status(400).json(toolsUnsupported);
+  if ("error" in routine) return res.status(409).json({ error: routine.error });
   res.json(layerTools(routine.folder, toolDefaultsFor(routine.folder, null, "routine"), routineTools(routine.slug)));
 });
 
@@ -547,12 +551,21 @@ app.put("/api/routines/:id/tools", async (req, res) => {
   const routine = routineFor(req.params.id);
   if (!routine) return res.status(404).json({ error: "Not found" });
   if (EXECUTOR_KIND === "container") return res.status(400).json(toolsUnsupported);
+  if ("error" in routine) return res.status(409).json({ error: routine.error });
   try {
     const below = toolDefaultsFor(routine.folder, null, "routine");
-    const wanted = layerExceptions(routine.folder, below, routineTools(routine.slug), off);
-    const stored = setRoutineTools(routine.slug, wanted);
-    // Its old Browser switch says what a browser tool that turns up later starts with: what the browser has here now.
     const browser = seenBrowserTools();
+    const wanted = layerExceptions(routine.folder, below, routineTools(routine.slug, browser), off);
+    // The browser's tools its lists do not name follow its old switch (routineTools). So what the page said of each
+    // is written down, even where the layers under it agree: left out, a browser switched on here would go back to
+    // what the switch says.
+    const shown = new Set(shownTools(routine.folder).map((t) => t.name));
+    for (const name of browser) {
+      if (!shown.has(name) || wanted.off.includes(name) || wanted.on.includes(name)) continue;
+      (off.includes(name) ? wanted.off : wanted.on).push(name);
+    }
+    const stored = setRoutineTools(routine.slug, wanted);
+    // And the switch says what a browser tool that turns up later starts with: what the browser has here now.
     if (browser.length) setRoutineBrowserSwitch(routine.slug, browser.some((name) => toolEnabled(name, below, stored)));
     const applied = await sessions.applyToolDefaults({ routine: routine.slug });
     res.json({ off: defaultsFor(below, stored), applied });
@@ -1413,7 +1426,12 @@ app.use("/api", imagesRouter());
 app.use("/api", memoryRouter());
 app.use("/api", channelsRouter());
 app.use("/api", agentsRouter());
-app.use("/api", routinesRouter());
+app.use(
+  "/api",
+  routinesRouter((routine) => {
+    sessions.applyToolDefaults({ routine }).catch((e) => console.error(`[portal] could not apply a routine's tools to its runs: ${(e as Error).message}`));
+  })
+);
 app.use("/api", skillsRouter());
 app.use("/api", filesRouter());
 app.use("/api", gitRouter());
