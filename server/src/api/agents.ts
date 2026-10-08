@@ -1,6 +1,7 @@
 import { lstatSync } from "node:fs";
 import path from "node:path";
 import express, { type Router } from "express";
+import { agentSkillsDir, listAgentSkills, readAgentSkill } from "../agent-skills.js";
 import { AgentError, DEFAULT_AGENT, agentOf, channelsOf, createAgent, defaultAgent, getAgent, listAgents, orbOf, renameAgent, setOrb, setVoice, type Agent } from "../agents.js";
 import { agentFileStatus, isInitialised, runWizard, writeAgentFile, type WizardInput } from "../agent-setup.js";
 import { listAgentSessions, listSessions } from "../db.js";
@@ -11,6 +12,7 @@ import { EXECUTOR_KIND } from "../executor-kind.js";
 import { FileError } from "../workspace-files.js";
 import { CONTEXT_FILES } from "../pi/context-files.js";
 import { fail } from "./files.js";
+import { userFor } from "../sandbox/identity.js";
 
 /**
  * The agents: listing them, making one, naming it, and its own files and setup.
@@ -27,6 +29,7 @@ export function agentToApi(a: Agent, chats = 0) {
     id: a.id,
     name: a.name,
     home: a.home,
+    sandboxUser: userFor(a.id),
     first: a.id === DEFAULT_AGENT,
     initialised: isInitialised(a.home),
     chats,
@@ -156,6 +159,20 @@ export function agentsRouter(): Router {
     if (!agent) return;
     if (!deleteNote(agent.id, req.params.note)) return res.status(404).json({ error: "No such note" });
     res.json({ ok: true });
+  });
+
+  /** The skills the agent wrote for itself, for its Skills tab. */
+  router.get("/agents/:id/skills", (req, res) => {
+    const agent = agentOr404(req.params.id, res);
+    if (agent) res.json({ folder: agentSkillsDir(agent), skills: listAgentSkills(agent) });
+  });
+
+  router.get("/agents/:id/skills/:skill", (req, res) => {
+    const agent = agentOr404(req.params.id, res);
+    if (!agent) return;
+    const content = readAgentSkill(agent, req.params.skill);
+    if (content === null) return res.status(404).json({ error: "No such skill" });
+    res.json({ content });
   });
 
   router.get("/agents/:id/setup", (req, res) => {

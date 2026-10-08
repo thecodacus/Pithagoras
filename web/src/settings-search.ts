@@ -41,6 +41,7 @@ export const SETTINGS_INDEX: SettingEntry[] = [
   { tab: "extensions", section: msg("Installed"), title: msg("Installed packages"), words: "extensions packages installed remove uninstall switch off update erweiterungen" },
   { tab: "channels", title: msg("Channels"), words: "telegram discord slack matrix signal email webhook bot kanäle" },
   { tab: "people", title: msg("People"), words: "allow deny stranger contact who users personen" },
+  { tab: "sandbox", title: msg("Sandbox"), words: "sandbox permissions read only secrets keys files isolate restrict trusted commands sudo user berechtigungen schlüssel" },
   { tab: "browser", section: msg("Appearance"), title: msg("Theme"), words: "dark light mode appearance colour color design dunkel hell" },
   { tab: "browser", section: msg("Animations"), title: msg("Fancy animations"), words: "motion animation animate effects intro transitions flourish reduce reduced motion off animationen bewegung effekte übergänge ausschalten" },
   { tab: "browser", section: msg("Language"), title: msg("Language"), words: "language locale translation german english deutsch englisch sprache übersetzung" },

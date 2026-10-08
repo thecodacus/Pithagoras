@@ -26,9 +26,9 @@ agent of another name is left alone: the new one gets the next free name,
 `agents/<name>-2`.
 
 A card opens that agent (`/agents?agent=research-bot`), with **New
-conversation** to start one with it and five tabs: **Conversations**,
+conversation** to start one with it and six tabs: **Conversations**,
 **Activity** (what its heartbeat noticed, with the number unread),
-**Heartbeat**, **Tools** (see [below](#tools)) and **Files** to edit. The tab is kept in the link (`&tab=files`). Its avatar is at
+**Heartbeat**, **Tools** (see [below](#tools)), **Skills** and **Files** to edit. The tab is kept in the link (`&tab=files`). Its avatar is at
 the top beside its name; the palette on it opens the avatar customizer. Each
 agent's avatar is its own, and voice mode shows the avatar of the agent the
 chat is with (the first agent's for a chat in a project). Its

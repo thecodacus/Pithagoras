@@ -10,6 +10,7 @@ export const TAB_IDS = [
   "people",
   "add-ons",
   "tools",
+  "sandbox",
   "images",
   "skills",
   "mcp",

@@ -90,6 +90,9 @@ import { BACKGROUND_SUPPORTED, MARKER, clearFinished, listJobs, readOutput, stop
 import { attachBrowserUpgrade, mountBrowserProxy } from "./browser-proxy.js";
 import { watchBrowserFrames } from "./extensions/browser-frames.js";
 import { startLlamaProxy } from "./llama-progress.js";
+import { applyOnStart } from "./sandbox/apply.js";
+import { sandboxPolicy, sandboxSupport } from "./sandbox/policy.js";
+import { sandboxRouter } from "./api/sandbox.js";
 import { scheduleDreams } from "./extensions/understory-service.js";
 import { routineSupervisor } from "./routines/supervisor.js";
 import { channelSupervisor } from "./channels/supervisor.js";
@@ -1422,6 +1425,7 @@ app.use("/api", mcpRouter());
 app.use("/api", providersRouter());
 app.use("/api", peopleRouter());
 app.use("/api", browserRouter());
+app.use("/api", sandboxRouter(sessions));
 app.use("/api", voiceRouter());
 app.use("/api", terminalRouter());
 app.use("/api", canvasesRouter());
@@ -1556,6 +1560,10 @@ sweepRemoved(agentsRoot());
 interruptCanvasWrites();
 pinConnection();
 adoptPortalBrowser();
+// The sandbox's sudo rules live outside the data volume, so a new container needs them put back.
+void applyOnStart(sandboxPolicy(), sandboxSupport()).then((r) => {
+  if (sandboxPolicy().enabled) console.log(`[sandbox] ${r.ok ? "on" : "not applied"}${r.warnings.length ? `: ${r.warnings.join("; ")}` : ""}`);
+});
 // The memory tidied up at its set time, when the portal runs Understory.
 scheduleDreams();
 

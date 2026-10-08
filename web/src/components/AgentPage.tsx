@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { useSearchParams } from "react-router-dom";
 import { OrbStudio } from "./OrbStudio";
 import { ActivityFeed, HeartbeatSettings } from "./AgentHeartbeat";
+import { AgentSkills } from "./AgentSkills";
 import { VoiceOrb, type VoiceLevels } from "./VoiceOrb";
 import {
   LuBot,
@@ -16,6 +17,7 @@ import {
   LuRadio,
   LuRefreshCw,
   LuTrash2,
+  LuUser,
   LuX,
 } from "react-icons/lu";
 import { PageHeader, Stat } from "./PageHeader";
@@ -425,6 +427,10 @@ function AgentView({
                 <LuFolder className="h-3 w-3 shrink-0 text-fg-faint" />
                 <span className="truncate font-mono text-[11px] text-fg-subtle">{agent.home}</span>
               </div>
+              <div className="flex min-w-0 items-center gap-1.5 rounded-lg bg-raised/60 px-2.5 py-1" title={t("The user it runs as when the sandbox is on")}>
+                <LuUser className="h-3 w-3 shrink-0 text-fg-faint" />
+                <span className="truncate font-mono text-[11px] text-fg-subtle">{agent.sandboxUser}</span>
+              </div>
             </div>
           </PageHeader>
 
@@ -460,6 +466,7 @@ function AgentView({
           {tab === "activity" && <ActivityFeed agent={agent} onChanged={onChanged} onSelect={onSelect} />}
           {tab === "heartbeat" && <HeartbeatSettings agent={agent} onChanged={onChanged} />}
           {tab === "tools" && <AgentTools agent={agent.id} />}
+          {tab === "skills" && <AgentSkills agent={agent} />}
           {tab === "files" && setup?.initialised && <AgentFiles agent={agent.id} setup={setup} onSaved={setSetup} />}
           {tab === "files" && !setup && setupFailed && (
             <div className="mt-4">
@@ -588,6 +595,7 @@ const AGENT_TABS = [
   ["activity", msg("Activity")],
   ["heartbeat", msg("Heartbeat")],
   ["tools", msg("Tools")],
+  ["skills", msg("Skills")],
   ["files", msg("Files")],
 ] as const;
 type AgentTab = (typeof AGENT_TABS)[number][0];

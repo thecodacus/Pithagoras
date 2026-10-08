@@ -124,6 +124,8 @@ export interface Agent {
   id: string;
   name: string;
   home: string;
+  /** The user it runs as when the sandbox is on. */
+  sandboxUser: string;
   /** The Home there always was: the one chats go to when none is named, which cannot be deleted. */
   first: boolean;
   initialised: boolean;
@@ -775,6 +777,9 @@ export const api = {
     json<{ connectedAs: string | null }>("/api/browser/connect", { method: "POST" }),
   disconnectBrowser: () =>
     json<{ connectedAs: string | null }>("/api/browser/connect", { method: "DELETE" }),
+  sandbox: () => json<SandboxState>("/api/sandbox"),
+  setSandbox: (policy: SandboxPolicy) =>
+    json<{ policy: SandboxPolicy; report: SandboxReport; chats: { reloaded: number; waiting: number } }>("/api/sandbox", { method: "PUT", body: JSON.stringify(policy) }),
   setBrowserCursor: (on: boolean) =>
     json<{ cursor: boolean }>("/api/browser/cursor", { method: "PUT", body: JSON.stringify({ on }) }),
   setBrowserAllowlist: (domains: string) =>
@@ -869,6 +874,9 @@ export const api = {
     ),
   setAgentVoice: (agent: string, voice: string) =>
     json<Agent>(`/api/agents/${encodeURIComponent(agent)}/voice`, { method: "PUT", body: JSON.stringify({ voice }) }),
+  agentSkills: (agent: string) => json<{ folder: string; skills: AgentSkill[] }>(`/api/agents/${encodeURIComponent(agent)}/skills`),
+  agentSkill: (agent: string, skill: string) =>
+    json<{ content: string }>(`/api/agents/${encodeURIComponent(agent)}/skills/${encodeURIComponent(skill)}`),
   agentSetup: (agent: string) => json<AgentSetup>(`/api/agents/${encodeURIComponent(agent)}/setup`),
   /** The avatar voice mode shows for a chat: its agent's. */
   chatOrb: (session: string) => json<OrbStyle>(`/api/agent/orb?session=${encodeURIComponent(session)}`),
@@ -1634,6 +1642,38 @@ export interface BrowserStatus {
   /** Only the conversations that disagree with that — see "Who may drive it". */
   sessions: { id: string; title: string; kind: string; allowed: boolean }[];
   routines: { slug: string; name: string }[];
+}
+
+/** A skill an agent wrote for itself, in its home's skills folder. */
+export interface AgentSkill {
+  id: string;
+  name: string;
+  description: string;
+  updatedAt: number;
+  files: string[];
+}
+
+/** What the agent may do to a path in the sandbox. */
+export type SandboxAccess = "none" | "read" | "write";
+export interface SandboxPolicy {
+  enabled: boolean;
+  rules: { path: string; access: SandboxAccess; note?: string }[];
+  trusted: { name: string; script: string }[];
+}
+export interface SandboxReport {
+  ok: boolean;
+  done: string[];
+  warnings: string[];
+}
+export interface SandboxState {
+  policy: SandboxPolicy;
+  defaults: SandboxPolicy;
+  /** Whether this portal can sandbox at all, and why not. */
+  available: boolean;
+  reason: string | null;
+  trustedDir: string;
+  secretsDir: string;
+  lastReport: SandboxReport | null;
 }
 
 export type ProviderKind = "llama-cpp" | "llama-swap" | "ollama" | "openrouter" | "hosted" | "custom";
