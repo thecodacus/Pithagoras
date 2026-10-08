@@ -21,7 +21,8 @@ export async function downloadSmartTurn(dir) {
   const path = resolve(dir, SMART_TURN.file);
   const kept = await readFile(path).catch(() => null);
   if (kept && sha256(kept) === SMART_TURN.sha256) return path;
-  const response = await fetch(SMART_TURN.url);
+  // A stalled connection fails the build with this error rather than holding it up for good.
+  const response = await fetch(SMART_TURN.url, { signal: AbortSignal.timeout(120_000) });
   if (!response.ok) throw new Error(`Could not download ${SMART_TURN.file}: ${response.status} from ${SMART_TURN.url}`);
   const bytes = Buffer.from(await response.arrayBuffer());
   if (sha256(bytes) !== SMART_TURN.sha256) throw new Error(`${SMART_TURN.file} from ${SMART_TURN.url} is not the file that was checked`);
