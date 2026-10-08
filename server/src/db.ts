@@ -631,9 +631,9 @@ function migrate(d: Database.Database): void {
   // A routine's exceptions to what its agent and project leave, as a chat keeps
   // them. The `browser` column above stays: it answers for the browser's tools
   // where these say nothing about them (see routineTools).
-  if (routineCols.length && !routineCols.includes("tools_off")) {
-    d.exec("ALTER TABLE routines ADD COLUMN tools_off TEXT NOT NULL DEFAULT ''");
-    d.exec("ALTER TABLE routines ADD COLUMN tools_on TEXT NOT NULL DEFAULT ''");
+  // Each on its own, as for sessions: a database with one of them is given the other.
+  for (const col of ["tools_off", "tools_on"]) {
+    if (routineCols.length && !routineCols.includes(col)) d.exec(`ALTER TABLE routines ADD COLUMN ${col} TEXT NOT NULL DEFAULT ''`);
   }
   d.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_routines_slug ON routines(slug)");
   // Where a picture that was found in a folder lies (see image-gallery.ts). The
@@ -2057,6 +2057,10 @@ export function clearAgentTools(agent: string): void {
 export function agentIdOf(workspace: string | null | undefined, homes: AgentHome[] = agentHomes()): string | undefined {
   if (!workspace) return undefined;
   const at = path.resolve(workspace);
+  const exact = homes.find((a) => path.resolve(a.home) === at);
+  if (exact) return exact.id;
+  // A project's chats follow the project, also where the projects' folder were inside an agent's home.
+  if (projectOf(workspace)) return undefined;
   return homes.find((a) => isWithinText(a.home, at))?.id;
 }
 

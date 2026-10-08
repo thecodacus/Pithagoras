@@ -191,3 +191,10 @@ test("a browser tool its lists do not name follows a routine's switch, however l
   db.setRoutineBrowser(r.slug, true);
   assert.ok(db.routineTools(r.slug).on.includes("browser_snapshot"));
 });
+
+test("a project's chats follow the project, even where the projects' folder is inside an agent's home", () => {
+  const homes = [{ id: "home", home: path.dirname(process.env.WORKSPACE_ROOT ?? path.join(home, "ws")) }];
+  const project = path.join(process.env.WORKSPACE_ROOT ?? path.join(home, "ws"), "research");
+  assert.equal(db.agentIdOf(project, homes), undefined);
+  assert.equal(db.agentIdOf(homes[0].home, homes), "home");
+});
