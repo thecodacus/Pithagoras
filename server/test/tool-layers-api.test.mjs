@@ -136,3 +136,16 @@ test("an agent or routine that is not there is not found", async () => {
   assert.equal((await send("/api/routines/nothing/tools", "PUT", { off: [] })).status, 404);
   assert.equal((await send("/api/agents/home/tools", "PUT", { off: "bash" })).status, 400);
 });
+
+test("a tool held off that the page does not list stays off when another is switched", async () => {
+  // As an MCP tool the configuration leaves out for now, or a package not loaded: not listed, so not answered for.
+  const agent = await json("/api/agents", "POST", { name: "Holder" });
+  db.setAgentTools(agent.id, { off: ["jira_create_issue"], on: [] });
+  await json(`/api/agents/${agent.id}/tools`, "PUT", { off: ["web_fetch", "bash"] });
+  assert.deepEqual(db.agentTools(agent.id).off, ["bash", "jira_create_issue"]);
+
+  const r = await routine("Holding");
+  db.setRoutineTools(r.slug, { off: ["jira_create_issue"], on: [] });
+  await json(`/api/routines/${r.id}/tools`, "PUT", { off: ["web_fetch", "bash"] });
+  assert.ok(db.routineTools(r.slug).off.includes("jira_create_issue"));
+});

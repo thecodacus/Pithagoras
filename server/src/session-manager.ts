@@ -11,7 +11,7 @@ import { agentAt } from "./agents.js";
 import { HEARTBEAT_ROLE } from "./pi/heartbeat-names.js";
 import path from "node:path";
 import type { Draft, PiClient, PiTool, PromptTaken } from "./pi/types.js";
-import { effectiveOff, exceptionsFor, toolEnabled, toolSource } from "./tool-policy.js";
+import { effectiveOff, exceptionsFor, heldOffUnshown, toolEnabled, toolSource } from "./tool-policy.js";
 import { unlisted } from "./mcp-offer.js";
 import { projectOf } from "./workspaces.js";
 import { findServerBuiltin, picturesRefused, runBuiltin } from "./pi/builtins.js";
@@ -2523,15 +2523,12 @@ class SessionManager extends EventEmitter {
     // exception would be written, and the write would answer 200 while the
     // tool went on following the default.
     const held = sessionTools(sessionId);
-    const answered = [
-      ...(listed.length ? listed : shownTools(workspace, view)).map((t) => t.name),
-      ...held.off,
-      ...held.on,
-    ];
+    const shown = (listed.length ? listed : shownTools(workspace, view)).map((t) => t.name);
+    const answered = [...shown, ...held.off, ...held.on];
     // Against the project's default: an exception here is to what the chat would
     // otherwise have, so a project that switches a tool off needs no entry for it
     // in every chat, and one that is switched back on in the chat needs one.
-    setSessionTools(sessionId, exceptionsFor(wantedOff, toolDefaultsForSession(getSession(sessionId)), answered, held));
+    setSessionTools(sessionId, exceptionsFor(heldOffUnshown(wantedOff, shown, held), toolDefaultsForSession(getSession(sessionId)), answered, held));
     const off = this.offFor(sessionId, listed.map((t) => t.name), view.known().keys());
     await client?.setToolsOff?.(this.piOff(sessionId, reported.map((t) => t.name), view));
     return off;

@@ -64,7 +64,7 @@ import { deleteNotesOf } from "./activity.js";
 import { EXECUTOR_KIND } from "./executor-kind.js";
 import { sessions, CommandFailed, IMAGE_ROOT } from "./session-manager.js";
 import { ImageError, MAX_IMAGE_BYTES, MAX_IMAGES, imagePath, mimeOf, parseImages, saveImages } from "./prompt-images.js";
-import { defaultsFor, exceptionsFor, toolEnabled, toolSource } from "./tool-policy.js";
+import { defaultsFor, exceptionsFor, heldOffUnshown, toolEnabled, toolSource } from "./tool-policy.js";
 import { mcpRouter, mcpServerNames, onMcpWritten } from "./api/mcp.js";
 import { authEnabled, checkPassword, isAuthed, issueCookie, keptShortPassword, requireAuth, signOut } from "./auth.js";
 import { packagesRouter } from "./api/packages.js";
@@ -351,8 +351,9 @@ const isToolList = (value: unknown): value is string[] => Array.isArray(value) &
  */
 function saveProjectTools(project: { name: string; path: string }, off: string[]) {
   const held = projectTools(project.name);
-  const answered = [...shownTools(project.path).map((t) => t.name), ...held.off, ...held.on];
-  return setProjectTools(project.name, exceptionsFor(off, toolDefaultsOff(), answered, held));
+  const shown = shownTools(project.path).map((t) => t.name);
+  const answered = [...shown, ...held.off, ...held.on];
+  return setProjectTools(project.name, exceptionsFor(heldOffUnshown(off, shown, held), toolDefaultsOff(), answered, held));
 }
 
 /**
@@ -503,8 +504,9 @@ function layerTools(folder: string, below: string[], exceptions: { off: string[]
 
 /** The exceptions to store for a layer, given what it wants off: as for a project. */
 function layerExceptions(folder: string, below: string[], held: { off: string[]; on: string[] }, off: string[]) {
-  const answered = [...shownTools(folder).map((t) => t.name), ...held.off, ...held.on];
-  return exceptionsFor(off, below, answered, held);
+  const shown = shownTools(folder).map((t) => t.name);
+  const answered = [...shown, ...held.off, ...held.on];
+  return exceptionsFor(heldOffUnshown(off, shown, held), below, answered, held);
 }
 
 /**
