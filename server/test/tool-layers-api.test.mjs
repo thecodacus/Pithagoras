@@ -144,6 +144,13 @@ test("a tool held off that the page does not list stays off when another is swit
   await json(`/api/agents/${agent.id}/tools`, "PUT", { off: ["web_fetch", "bash"] });
   assert.deepEqual(db.agentTools(agent.id).off, ["bash", "jira_create_issue"]);
 
+  // Off below as well: not taken for one switched back on.
+  db.setToolDefaultsOff(["web_fetch", "jira_create_issue"]);
+  db.setAgentTools(agent.id, { off: ["jira_create_issue"], on: [] });
+  await json(`/api/agents/${agent.id}/tools`, "PUT", { off: ["web_fetch"] });
+  assert.deepEqual(db.agentTools(agent.id), { off: ["jira_create_issue"], on: [] });
+  db.setToolDefaultsOff(["web_fetch"]);
+
   const r = await routine("Holding");
   db.setRoutineTools(r.slug, { off: ["jira_create_issue"], on: [] });
   await json(`/api/routines/${r.id}/tools`, "PUT", { off: ["web_fetch", "bash"] });
