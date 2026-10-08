@@ -8,7 +8,6 @@ import {
   getDb,
   getSession,
   knownTools,
-  mcpServersRemoved,
   portalBrowserOn,
   portalBrowserState,
   projectTools,

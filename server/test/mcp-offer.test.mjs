@@ -61,18 +61,21 @@ test("a server's tools are listed whether the model is offered them one by one o
 });
 
 test("the mcp tool does not reach a tool that is switched off, by any of its names", () => {
-  const off = new Set(["jira_create_issue", "brave_search_web_search"]);
-  assert.equal(switchedOffVia("mcp", { tool: "jira_create_issue" }, off), "jira_create_issue");
-  assert.equal(switchedOffVia("mcp", { tool: "jira-create-issue" }, off), "jira_create_issue", "the adapter takes hyphens for underscores");
-  assert.equal(switchedOffVia("mcp", { tool: "create_issue", server: "jira" }, off), "jira_create_issue");
-  assert.equal(switchedOffVia("mcp", { tool: "web_search", server: "brave-search" }, off), "brave_search_web_search");
-  assert.equal(switchedOffVia("mcp", { describe: "jira_create_issue" }, off), "jira_create_issue");
-  assert.equal(switchedOffVia("mcp", { tool: "jira_search" }, off), undefined, "what is on stays reachable");
-  assert.equal(switchedOffVia("mcp", { search: "jira" }, off), undefined);
-  assert.equal(switchedOffVia("jira_search", {}, off), undefined);
-  assert.equal(switchedOffVia("mcp", { tool: "jira_create_issue" }, new Set()), undefined);
-  assert.equal(switchedOffVia("mcp", { tool: "jira_create.issue" }, off), "jira_create_issue", "dots as the adapter writes them");
-  assert.equal(switchedOffVia("mcpScript", {}, off, () => true), "jira_create_issue");
+  const off = new Set(["jira_create_issue", "brave_search_web_search", "bash"]);
+  const mcp = { servers: ["jira", "brave-search", "shell"], serverTool: (name) => name !== "bash" };
+  assert.equal(switchedOffVia("mcp", { tool: "jira_create_issue" }, off, mcp), "jira_create_issue");
+  assert.equal(switchedOffVia("mcp", { tool: "jira-create-issue" }, off, mcp), "jira_create_issue", "the adapter takes hyphens for underscores");
+  assert.equal(switchedOffVia("mcp", { tool: "create_issue", server: "jira" }, off, mcp), "jira_create_issue");
+  assert.equal(switchedOffVia("mcp", { tool: "web_search", server: "brave-search" }, off, mcp), "brave_search_web_search");
+  assert.equal(switchedOffVia("mcp", { describe: "jira_create_issue" }, off, mcp), "jira_create_issue");
+  assert.equal(switchedOffVia("mcp", { tool: "jira_search" }, off, mcp), undefined, "what is on stays reachable");
+  assert.equal(switchedOffVia("mcp", { search: "jira" }, off, mcp), undefined);
+  assert.equal(switchedOffVia("jira_search", {}, off, mcp), undefined);
+  assert.equal(switchedOffVia("mcp", { tool: "jira_create_issue" }, new Set(), mcp), undefined);
+  assert.equal(switchedOffVia("mcp", { tool: "jira_create.issue" }, off, mcp), "jira_create_issue", "dots as the adapter writes them");
+  assert.equal(switchedOffVia("mcpScript", {}, off, mcp), "jira_create_issue");
+  assert.equal(switchedOffVia("mcp", { tool: "bash", server: "shell" }, off, mcp), undefined, "pi's bash switched off is not a server's shell_bash");
+  assert.equal(switchedOffVia("mcp_script", {}, new Set(["bash"]), mcp), undefined, "nor any script's");
 });
 
 test("the guard refuses it before anything could allow it, and an MCP script while a server's tool is off", () => {
@@ -150,7 +153,7 @@ test("a server behind the mcp tool only is switched like any other: whole, or to
 
 test("a server that was removed has its tools off in a chat still running with it, whoever wrote the file", () => {
   let told = 0;
-  onMcpWritten(() => told++);
+  const stop = onMcpWritten(() => told++);
   writeMcpFile({ mcpServers: { jira: { command: "j" }, notes: { command: "n" } } });
   // As Features does when Understory is switched off: the file written without the panel's routes.
   writeMcpFile({ mcpServers: { jira: { command: "j" } } });
@@ -158,7 +161,7 @@ test("a server that was removed has its tools off in a chat still running with i
   assert.deepEqual(withdrawnMcpTools(["notes_read", "jira_search", "mcp", "bash"]), ["notes_read"]);
   writeMcpFile({ mcpServers: { jira: { command: "j" }, notes: { command: "n" } } });
   assert.deepEqual(withdrawnMcpTools(["notes_read"]), [], "configured again");
-  onMcpWritten(() => {});
+  stop();
 });
 
 test("a configuration that cannot be read is taken as it last could be", () => {
@@ -166,6 +169,12 @@ test("a configuration that cannot be read is taken as it last could be", () => {
   assert.deepEqual(withdrawnMcpTools(["jira_search"]), ["jira_create_issue", "jira_search"]);
   writeFileSync(path.join(agent, "mcp.json"), "{ not json");
   assert.deepEqual(withdrawnMcpTools(["jira_search"]), ["jira_create_issue", "jira_search"], "a typo hands nothing back");
+  // Fixed by a write that leaves a server out: the servers it had are the ones it last could be read with.
+  mcpFile({ mcpServers: { jira: { command: "j" }, notes: { command: "n" } } });
+  withdrawnMcpTools();
+  writeFileSync(path.join(agent, "mcp.json"), "{ not json either");
+  writeMcpFile({ mcpServers: { jira: { command: "j" } } });
+  assert.deepEqual(withdrawnMcpTools(["notes_read"]), ["notes_read"], "the server left out is one that was removed");
 });
 
 test("a server's tools from the cache go with the adapter's package, whatever it was installed from", () => {
@@ -177,5 +186,7 @@ test("a server's tools from the cache go with the adapter's package, whatever it
   assert.ok(names(shownTools()).includes("jira_admin_delete"));
   writeFileSync(path.join(agent, "settings.json"), JSON.stringify({ packages: [{ source, extensions: [] }] }));
   assert.ok(!names(shownTools()).includes("jira_admin_delete"), "switched off");
+  writeFileSync(path.join(agent, "settings.json"), JSON.stringify({ packages: ["npm:something-else"] }));
+  assert.ok(!names(shownTools()).includes("jira_admin_delete"), "not installed: nothing would register them");
   writeFileSync(path.join(agent, "settings.json"), JSON.stringify({ packages: ["npm:pi-mcp-adapter@2.18.0"] }));
 });

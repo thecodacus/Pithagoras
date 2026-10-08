@@ -6,9 +6,9 @@ import { fileURLToPath } from "node:url";
 import { inlineBrowserScreenshot } from "./browser-screenshot.js";
 import { cleanBrowserSnapshot, isBrowserSnapshot } from "./browser-snapshot-format.js";
 import { bareRef } from "../browser/ref.js";
-import { listToolRules, mcpView, recordAudit, useGrant, type ToolRule } from "../db.js";
+import { listToolRules, mcpView, recordAudit, useGrant, type McpView, type ToolRule } from "../db.js";
 import { EDIT_IMAGE_TOOL } from "../image-generation.js";
-import { PORTAL_BROWSER_TOOLS } from "../tool-policy.js";
+import { PORTAL_BROWSER_TOOLS, mcpServerOf } from "../tool-policy.js";
 import { isWithinText, pathBelow, realPath, realPathAhead } from "../within.js";
 import { agentsRoot, listAgents } from "../agents.js";
 import { workspaceRoot } from "../workspaces.js";
@@ -70,7 +70,9 @@ function untrustedResult(toolName: string, input: Record<string, unknown>): bool
  * not the server was running. So the proxy is held to the switches too: a call
  * or a description of a tool that is off here is refused. The adapter finds a
  * tool by its full name, hyphens or underscores; the bare name with a server is
- * matched as well, whatever the adapter makes of it.
+ * matched as well, whatever the adapter makes of it. Only against a server's
+ * tools: `bash` switched off is no reason to refuse a server's `shell_bash`,
+ * and the adapter sends a call for one of pi's own tools back to it anyway.
  *
  * A script (`mcp_script`, where the adapter's script mode is on) can call any
  * tool and says which only as it runs, so it is refused while a tool the
@@ -83,9 +85,10 @@ export function switchedOffVia(
   toolName: string,
   input: Record<string, unknown>,
   off: ReadonlySet<string>,
-  serverTool?: (name: string) => boolean,
+  given?: Pick<McpView, "servers" | "serverTool">,
 ): string | undefined {
-  if (!off.size) return undefined;
+  if (!off.size || (toolName !== "mcp" && toolName !== "mcp_script" && toolName !== "mcpScript")) return undefined;
+  const mcp = given ?? mcpView();
   // The adapter takes a name with hyphens for underscores (findToolByName); dots as well, which it
   // writes as underscores, so a name it might take one day is not a way round.
   const same = (name: string) => name.replace(/[-.]/g, "_");
@@ -95,15 +98,14 @@ export function switchedOffVia(
       const asked = input[key];
       if (typeof asked !== "string" || !asked) continue;
       const wanted = [same(asked), ...(server ? [`${server}_${same(asked)}`] : [])];
-      const hit = [...off].find((name) => wanted.includes(same(name)));
+      const hit = [...off].find((name) => wanted.includes(same(name)) && mcpServerOf(name, mcp.servers) !== undefined);
       if (hit) return hit;
     }
     return undefined;
   }
   // `mcpScript` too: the name the portal's own lists have for it, should an adapter register it so.
   if (toolName === "mcp_script" || toolName === "mcpScript") {
-    const reaches = serverTool ?? mcpView().serverTool;
-    return [...off].find((name) => reaches(name));
+    return [...off].find((name) => mcp.serverTool(name));
   }
   return undefined;
 }

@@ -93,8 +93,9 @@ script mode on, `mcp_script` is refused while one of the servers' tools is switc
 off, since a script says which tools it calls only as it runs.
 
 The tools are read from the adapter's cache, so a server is listed once it has run
-at least once. Only the adapter's default tool names (`<server>_<tool>`) are
-listed this way.
+at least once, and only where the adapter is installed and on — for every chat,
+or for a project that brings it in its own settings. Only the adapter's default
+tool names (`<server>_<tool>`) are listed this way.
 
 What the configuration says no to is not listed at all: a server switched off,
 a tool left out by `Only these tools` or `Except these tools`, or one the server
