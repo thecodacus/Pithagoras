@@ -66,9 +66,10 @@ writeFileSync(path.join(process.env.PI_CODING_AGENT_DIR, "models.json"), JSON.st
 }));
 
 const express = (await import("express")).default;
-const { memoryLlmRouter, noteToolCall, forgetAsking } = await import("../dist/memory-llm.js");
+const { memoryLlmRouter, noteToolCall, forgetAsking, upstream: llm } = await import("../dist/memory-llm.js");
 const { putSetting } = await import("../dist/db.js");
-after(() => { upstream.close(); http.close(); forgetAsking(); });
+// Its keep-alive sockets would outlive the servers of the test, so the agent goes too.
+after(() => { upstream.close(); http.close(); forgetAsking(); llm.agent.close().catch(() => {}); });
 
 putSetting("understory_llm_token", "test-key");
 // A chat asking: the request goes to its model, which the test names.
