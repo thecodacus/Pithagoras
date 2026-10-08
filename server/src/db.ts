@@ -7,6 +7,8 @@ import { projectOf } from "./workspaces.js";
 import { browserServers, dropMcpCache, mcpServerNames, readMcpCache, readMcpFile, serversAndBrowsers } from "./api/mcp.js";
 import { mcpOffer, unlisted, type McpOffer } from "./mcp-offer.js";
 import { mkdirSync, realpathSync } from "node:fs";
+import path from "node:path";
+import { isWithinText } from "./within.js";
 import { agentHome, agentHomePath, homeAgentName } from "./agent-home.js";
 import { DATA_DIR } from "./data-dir.js";
 import { EXECUTOR_KIND } from "./executor-kind.js";
@@ -362,6 +364,16 @@ function schema(db: Database.Database): void {
       tools_on TEXT NOT NULL DEFAULT ''
     );
 
+    -- An agent's exceptions to the portal-wide tool default, for every chat in
+    -- its home and every run it does on its own: the first layer above the
+    -- default. Here for the same reason as a project's: the agent can write to
+    -- its home, and must not be able to give itself tools back.
+    CREATE TABLE IF NOT EXISTS agent_tools (
+      agent TEXT PRIMARY KEY,
+      tools_off TEXT NOT NULL DEFAULT '',
+      tools_on TEXT NOT NULL DEFAULT ''
+    );
+
     -- Background subagents started and not yet ended, kept as their events
     -- are written: what a server that went left open is read from here at
     -- start, not dug out of every event there ever was.
@@ -615,6 +627,13 @@ function migrate(d: Database.Database): void {
   }
   if (routineCols.length && !routineCols.includes("browser")) {
     d.exec("ALTER TABLE routines ADD COLUMN browser INTEGER NOT NULL DEFAULT 0");
+  }
+  // A routine's exceptions to what its agent and project leave, as a chat keeps
+  // them. The `browser` column above stays: it answers for the browser's tools
+  // where these say nothing about them (see routineTools).
+  if (routineCols.length && !routineCols.includes("tools_off")) {
+    d.exec("ALTER TABLE routines ADD COLUMN tools_off TEXT NOT NULL DEFAULT ''");
+    d.exec("ALTER TABLE routines ADD COLUMN tools_on TEXT NOT NULL DEFAULT ''");
   }
   d.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_routines_slug ON routines(slug)");
   // Where a picture that was found in a folder lies (see image-gallery.ts). The
@@ -1771,7 +1790,7 @@ export interface BrowserPolicy {
   /** With none of its tools seen: whether the old column is what answers. */
   columnDecides: boolean;
   defaultsOff: string[];
-  /** The defaults of a project, worked out the first time a conversation of it is asked about. */
+  /** What a place starts with, by workspace and routine, worked out the first time a conversation there is asked about. */
   projects: Map<string, string[]>;
 }
 
@@ -1782,26 +1801,23 @@ export function browserPolicy(): BrowserPolicy {
 
 /** `browserAllowed`, against a policy asked for once; `exceptions` are the conversation's own, where the caller has them already. */
 export function browserAllowedWith(session: SessionRow, policy: BrowserPolicy, exceptions?: SessionTools): boolean {
-  if (session.kind === "routine" && session.routine_slug) {
-    const row = getDb().prepare("SELECT browser FROM routines WHERE slug = ?").get(
-      session.routine_slug
-    ) as { browser: number } | undefined;
-    return row ? row.browser === 1 : false;
-  }
-  if (!policy.names.length) return session.browser === 1 || !policy.columnDecides;
-  const project = projectOf(session.workspace);
-  let defaults = policy.defaultsOff;
-  if (project) {
-    let found = policy.projects.get(project);
-    if (!found) policy.projects.set(project, (found = defaultsFor(policy.defaultsOff, projectTools(project))));
-    defaults = found;
-  }
+  const routine = routineOf(session);
+  if (routine) {
+    const row = getDb().prepare("SELECT browser FROM routines WHERE slug = ?").get(routine) as { browser: number } | undefined;
+    // A routine that is gone gets nothing; with no browser tool seen, its old switch is all there is to go by.
+    if (!row) return false;
+    if (!policy.names.length) return row.browser === 1;
+  } else if (!policy.names.length) return session.browser === 1 || !policy.columnDecides;
+  // Every layer under the conversation's own: its agent, its project, its routine.
+  const key = `${session.workspace ?? ""}\u0000${routine ?? ""}`;
+  let defaults = policy.projects.get(key);
+  if (!defaults) policy.projects.set(key, (defaults = toolDefaultsFor(session.workspace, routine, undefined, policy.defaultsOff)));
   const own = exceptions ?? sessionTools(session.id);
   return policy.names.some((name) => toolEnabled(name, defaults, own));
 }
 
 /** The browser's tools, as far as any session has registered them. */
-function seenBrowserTools(): string[] {
+export function seenBrowserTools(): string[] {
   const { servers, browsers } = serversAndBrowsers();
   return knownTools()
     .map((t) => t.name)
@@ -1989,14 +2005,120 @@ export function projectsWithTools(): Set<string> {
 }
 
 /**
- * The tools that are off by default for a chat in `workspace`: the portal-wide
- * default, bent by its project's exceptions where it is in a project. A chat's
- * own exceptions are held against this.
+ * What an agent says about tools, as exceptions to the portal-wide default:
+ * for every chat in its home and every run it does on its own — its heartbeat,
+ * the routines that run there. Nothing for an agent that never said anything.
  */
-export function toolDefaultsFor(workspace: string | null | undefined): string[] {
-  const off = toolDefaultsOff();
+export function agentTools(agent: string): SessionTools {
+  const row = getDb().prepare("SELECT tools_off, tools_on FROM agent_tools WHERE agent = ?").get(
+    agent
+  ) as { tools_off: string; tools_on: string } | undefined;
+  return { off: parseToolsOff(row?.tools_off), on: parseToolsOff(row?.tools_on) };
+}
+
+export function setAgentTools(agent: string, tools: SessionTools): SessionTools {
+  const stored = { off: clean(tools.off), on: clean(tools.on) };
+  if (!stored.off.length && !stored.on.length) clearAgentTools(agent);
+  else
+    getDb()
+      .prepare(
+        `INSERT INTO agent_tools (agent, tools_off, tools_on) VALUES (?, ?, ?)
+         ON CONFLICT(agent) DO UPDATE SET tools_off = excluded.tools_off, tools_on = excluded.tools_on`
+      )
+      .run(agent, stored.off.join("\n"), stored.on.join("\n"));
+  return stored;
+}
+
+/** Forgets what an agent said about tools, as when it is deleted. */
+export function clearAgentTools(agent: string): void {
+  getDb().prepare("DELETE FROM agent_tools WHERE agent = ?").run(agent);
+}
+
+/**
+ * The agent whose home this is or is in, by id: read from the table rather
+ * than through agents.ts, which reads this module. The first agent's home is
+ * wherever AGENT_HOME says now.
+ */
+export function agentIdOf(workspace: string | null | undefined): string | undefined {
+  if (!workspace) return undefined;
+  const at = path.resolve(workspace);
+  const rows = getDb().prepare("SELECT id, home FROM agents").all() as { id: string; home: string }[];
+  return rows.find((a) => isWithinText(a.id === "home" ? agentHomePath() : a.home, at))?.id;
+}
+
+/**
+ * What a routine says about tools, as exceptions to what its agent and project
+ * leave: the same two lists a chat keeps.
+ *
+ * Its old **Browser** switch (the `browser` column) still answers for the
+ * browser's tools where the lists say nothing about them: off unless it was
+ * switched on, as it always was for a routine. Once the routine's tools are
+ * switched on its page, what was shown is written down and the lists answer;
+ * a browser tool that turns up later follows the column again. So a routine
+ * keeps what it had, without the browser's tool names having to be known when
+ * the database was upgraded.
+ */
+export function routineTools(slug: string): SessionTools {
+  const row = getDb().prepare("SELECT tools_off, tools_on, browser FROM routines WHERE slug = ?").get(
+    slug
+  ) as { tools_off: string; tools_on: string; browser: number } | undefined;
+  if (!row) return { off: [], on: [] };
+  const own = { off: parseToolsOff(row.tools_off), on: parseToolsOff(row.tools_on) };
+  const browser = seenBrowserTools().filter((name) => !own.off.includes(name) && !own.on.includes(name));
+  return row.browser === 1 ? { off: own.off, on: [...own.on, ...browser] } : { off: [...own.off, ...browser], on: own.on };
+}
+
+export function setRoutineTools(slug: string, tools: SessionTools): SessionTools {
+  const stored = { off: clean(tools.off), on: clean(tools.on) };
+  getDb()
+    .prepare("UPDATE routines SET tools_off = ?, tools_on = ? WHERE slug = ?")
+    .run(stored.off.join("\n"), stored.on.join("\n"), slug);
+  return stored;
+}
+
+/**
+ * The tools that are off by default for a chat in `workspace`, or a run of the
+ * routine `routine` there: the layers under a chat's own switches, each an
+ * exception to the one before it.
+ *
+ * 1. the portal-wide default (Settings → Tools);
+ * 2. the agent whose home it is in, for its chats and its own runs;
+ * 3. the project it is in;
+ * 4. the routine, for its runs.
+ *
+ * A chat's own switches are held against this, and stay the last word. An agent
+ * and a project do not meet in practice — a project is under the workspace root,
+ * an agent's home is not — but where they did, the project is the nearer, and
+ * says it last. A routine is nearer still: it is one task within either.
+ *
+ * `upTo` stops before a layer, for the page of that layer, which shows what is
+ * under it. `base` is the portal-wide default, where the caller has read it
+ * already for a pass over many conversations.
+ */
+export function toolDefaultsFor(
+  workspace: string | null | undefined,
+  routine?: string | null,
+  upTo?: "agent" | "project" | "routine",
+  base: string[] = toolDefaultsOff(),
+): string[] {
+  let off = base;
+  if (upTo === "agent") return off;
+  const agent = agentIdOf(workspace);
+  if (agent) off = defaultsFor(off, agentTools(agent));
+  if (upTo === "project") return off;
   const project = projectOf(workspace);
-  return project ? defaultsFor(off, projectTools(project)) : off;
+  if (project) off = defaultsFor(off, projectTools(project));
+  if (upTo === "routine") return off;
+  return routine ? defaultsFor(off, routineTools(routine)) : off;
+}
+
+/** The routine a session is a run of, if it is one: its layer is in its tools. */
+export const routineOf = (session: Pick<SessionRow, "kind" | "routine_slug"> | undefined): string | null =>
+  session?.kind === "routine" ? (session.routine_slug ?? null) : null;
+
+/** What a session starts with off, every layer under its own switches. */
+export function toolDefaultsForSession(session: Pick<SessionRow, "kind" | "routine_slug" | "workspace"> | undefined): string[] {
+  return toolDefaultsFor(session?.workspace, routineOf(session));
 }
 
 /**

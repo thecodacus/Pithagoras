@@ -26,9 +26,9 @@ agent of another name is left alone: the new one gets the next free name,
 `agents/<name>-2`.
 
 A card opens that agent (`/agents?agent=research-bot`), with **New
-conversation** to start one with it and four tabs: **Conversations**,
+conversation** to start one with it and five tabs: **Conversations**,
 **Activity** (what its heartbeat noticed, with the number unread),
-**Heartbeat**, and **Files** to edit. The tab is kept in the link (`&tab=files`). Its avatar is at
+**Heartbeat**, **Tools** (see [below](#tools)) and **Files** to edit. The tab is kept in the link (`&tab=files`). Its avatar is at
 the top beside its name; the palette on it opens the avatar customizer. Each
 agent's avatar is its own, and voice mode shows the avatar of the agent the
 chat is with (the first agent's for a chat in a project). Its
@@ -94,6 +94,21 @@ agent looks in one conversation of its own, so it remembers what it already
 told you. A look that a restart cuts off shows as "Interrupted by a restart",
 and one you stop with Stop in its chat as "Stopped", until the next one. Looks need the host executor; under the container executor nothing
 would hold them to reading, so they do not run.
+
+## Tools
+
+The **Tools** tab is the same list a chat's tools control shows, grouped the same
+way. What you switch there is what every chat in the agent's home starts with, and
+every run it does on its own: its heartbeat, and the routines that run in its home.
+It is saved as each switch is flipped. The switches are exceptions to Settings →
+Tools, both ways, so a tool the agent never mentioned still follows the default: an
+agent that should never run shell commands switches `bash` off here, without
+touching any other agent.
+
+A project and a routine come after the agent and can switch a tool again for their
+own; a chat's own switch has the last word. Chats in a project are not in any agent's
+home, and follow the project. See [Routines](/guide/routines#tools) for the order of
+all the layers.
 
 ## In the sidebar
 

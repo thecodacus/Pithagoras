@@ -32,6 +32,13 @@ import {
   listSessions,
   projectTools,
   projectsWithTools,
+  agentTools,
+  setAgentTools,
+  clearAgentTools,
+  routineTools,
+  setRoutineTools,
+  seenBrowserTools,
+  toolDefaultsFor,
   setContextLimit,
   setDefaultContextLimit,
   setProjectTools,
@@ -473,6 +480,105 @@ app.put("/api/projects/:name/tools", async (req, res) => {
 });
 
 /**
+ * A layer's tools as its page shows them: what the portal has seen registered
+ * where the layer's chats and runs work (`folder`), on or off by `below` — every
+ * layer under this one — bent by what this one says. `defaultOn` is what the
+ * layers under it say, which is what this one disagrees with. Shaped like a
+ * project's and a chat's, so the page draws them all the same way.
+ */
+function layerTools(folder: string, below: string[], exceptions: { off: string[]; on: string[] }) {
+  const servers = mcpServerNames();
+  return {
+    tools: shownTools(folder).map((tool) => ({
+      ...tool,
+      source: toolSource(tool.name, tool.source, servers),
+      enabled: toolEnabled(tool.name, below, exceptions),
+      defaultOn: !below.includes(tool.name),
+    })),
+    live: false,
+    names: toolGroupNames(),
+    off: defaultsFor(below, exceptions),
+  };
+}
+
+/** The exceptions to store for a layer, given what it wants off: as for a project. */
+function layerExceptions(folder: string, below: string[], held: { off: string[]; on: string[] }, off: string[]) {
+  const answered = [...shownTools(folder).map((t) => t.name), ...held.off, ...held.on];
+  return exceptionsFor(off, below, answered, held);
+}
+
+/**
+ * An agent's tools: its exceptions to the portal-wide default, for every chat in
+ * its home and every run it does on its own (its heartbeat, the routines that
+ * run in its home). Its chats in a project are not in its home, and follow the
+ * project.
+ */
+app.get("/api/agents/:id/tools", (req, res) => {
+  const agent = getAgent(req.params.id);
+  if (!agent) return res.status(404).json({ error: "No such agent" });
+  if (EXECUTOR_KIND === "container") return res.status(400).json(toolsUnsupported);
+  res.json(layerTools(agent.home, toolDefaultsFor(agent.home, null, "agent"), agentTools(agent.id)));
+});
+
+app.put("/api/agents/:id/tools", async (req, res) => {
+  const off = req.body?.off;
+  if (!isToolList(off)) return res.status(400).json({ error: "off must be a list of tool names" });
+  const agent = getAgent(req.params.id);
+  if (!agent) return res.status(404).json({ error: "No such agent" });
+  if (EXECUTOR_KIND === "container") return res.status(400).json(toolsUnsupported);
+  try {
+    const below = toolDefaultsFor(agent.home, null, "agent");
+    const stored = setAgentTools(agent.id, layerExceptions(agent.home, below, agentTools(agent.id), off));
+    const applied = await sessions.applyToolDefaults({ agent: agent.id });
+    res.json({ off: defaultsFor(below, stored), applied });
+  } catch (e) {
+    res.status(500).json({ error: (e as Error).message });
+  }
+});
+
+/** A routine, and where its runs happen: its project, or Home. */
+function routineFor(id: string): { slug: string; folder: string } | undefined {
+  const row = getDb().prepare("SELECT slug, workspace FROM routines WHERE id = ?").get(id) as { slug: string; workspace: string | null } | undefined;
+  return row && { slug: row.slug, folder: row.workspace ?? agentHome() };
+}
+
+/**
+ * A routine's tools: its exceptions to what its agent and project leave, for
+ * every run of it. A run's own chat can still switch a tool for itself.
+ */
+app.get("/api/routines/:id/tools", (req, res) => {
+  const routine = routineFor(req.params.id);
+  if (!routine) return res.status(404).json({ error: "Not found" });
+  if (EXECUTOR_KIND === "container") return res.status(400).json(toolsUnsupported);
+  res.json(layerTools(routine.folder, toolDefaultsFor(routine.folder, null, "routine"), routineTools(routine.slug)));
+});
+
+app.put("/api/routines/:id/tools", async (req, res) => {
+  const off = req.body?.off;
+  if (!isToolList(off)) return res.status(400).json({ error: "off must be a list of tool names" });
+  const routine = routineFor(req.params.id);
+  if (!routine) return res.status(404).json({ error: "Not found" });
+  if (EXECUTOR_KIND === "container") return res.status(400).json(toolsUnsupported);
+  try {
+    const below = toolDefaultsFor(routine.folder, null, "routine");
+    const wanted = layerExceptions(routine.folder, below, routineTools(routine.slug), off);
+    // The browser's tools are answered for by the routine's old switch where its lists say nothing (routineTools).
+    // So what the page said of each is written down, even where the layers under it agree: left out, a browser
+    // switched on here would go back to what the old switch says.
+    const shown = new Set(shownTools(routine.folder).map((t) => t.name));
+    for (const name of seenBrowserTools()) {
+      if (!shown.has(name) || wanted.off.includes(name) || wanted.on.includes(name)) continue;
+      (off.includes(name) ? wanted.off : wanted.on).push(name);
+    }
+    const stored = setRoutineTools(routine.slug, wanted);
+    const applied = await sessions.applyToolDefaults({ routine: routine.slug });
+    res.json({ off: defaultsFor(below, stored), applied });
+  } catch (e) {
+    res.status(500).json({ error: (e as Error).message });
+  }
+});
+
+/**
  * The project, its chats and its folder. Refused while any chat or routine run
  * in it is working, and while its folder holds repositories — itself, submodules,
  * clones in subfolders — with work that only the folder has — uncommitted
@@ -581,6 +687,8 @@ app.delete("/api/agents/:id", async (req, res) => {
       // The jobs they started go with them, in a folder that is kept as well: nothing would be left to list or stop them.
       const jobsStopped = await stopJobsIn(agent.home);
       deleteAgent(agent.id, { deleteFolder: req.query.folder === "delete" });
+      // What it said about tools: an agent made later under the same name starts from the default.
+      clearAgentTools(agent.id);
       // The pictures of every chat that worked there, the routine runs the folder's removal leaves behind too: no file of them is left to show.
       if (req.query.folder === "delete") forgetPicturesIn(agent.home);
       deleteNotesOf(agent.id);

@@ -141,6 +141,9 @@ in two places:
   names stays in the group of its extension.
 - **Projects → Tools** on a project's row sets what every chat in that project starts
   with, against the portal-wide default; see [Projects](/guide/projects#tools).
+- **Tools** on an agent's page sets what every chat in its home and every run it does on
+  its own starts with ([Agents](/guide/agents#tools)), and **Tools** on a routine's page
+  what every run of it starts with ([Routines](/guide/routines#tools)).
 - The **tools** control of a chat switches them for that chat only, from its
   next message. It is there before the first message too, so a tool can be
   kept away from a chat from the start.

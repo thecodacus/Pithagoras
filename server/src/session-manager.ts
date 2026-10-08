@@ -63,7 +63,9 @@ import {
   browserAllowed,
   sessionTools,
   setSessionTools,
-  toolDefaultsFor,
+  toolDefaultsForSession,
+  agentIdOf,
+  routineOf,
   remembered,
   rememberTools,
   knownTools,
@@ -2419,7 +2421,7 @@ class SessionManager extends EventEmitter {
   offFor(sessionId: string, names: string[] = []): string[] {
     return effectiveOff(
       [...names, ...knownTools().map((t) => t.name)],
-      toolDefaultsFor(getSession(sessionId)?.workspace),
+      toolDefaultsForSession(getSession(sessionId)),
       sessionTools(sessionId)
     );
   }
@@ -2468,9 +2470,10 @@ class SessionManager extends EventEmitter {
     const reported = client?.getTools ? await client.getTools() : [];
     if (reported.length) rememberTools(reported.map(remembered));
     const listed = this.offered(reported);
-    const workspace = getSession(sessionId)?.workspace;
-    // What the chat's project starts it with, which is what it is "default" against.
-    const defaults = toolDefaultsFor(workspace);
+    const session = getSession(sessionId);
+    const workspace = session?.workspace;
+    // What the chat's agent, project and routine start it with, which is what it is "default" against.
+    const defaults = toolDefaultsForSession(session);
     const exceptions = sessionTools(sessionId);
     const servers = mcpServerNames();
     const shown: { name: string; source: string; description?: string; inline?: true; cached?: true }[] = listed.length ? listed : shownTools(workspace);
@@ -2522,7 +2525,7 @@ class SessionManager extends EventEmitter {
     // Against the project's default: an exception here is to what the chat would
     // otherwise have, so a project that switches a tool off needs no entry for it
     // in every chat, and one that is switched back on in the chat needs one.
-    setSessionTools(sessionId, exceptionsFor(wantedOff, toolDefaultsFor(getSession(sessionId)?.workspace), answered, held));
+    setSessionTools(sessionId, exceptionsFor(wantedOff, toolDefaultsForSession(getSession(sessionId)), answered, held));
     const off = this.offFor(sessionId, listed.map((t) => t.name));
     await client?.setToolsOff?.(this.piOff(sessionId, reported.map((t) => t.name)));
     return off;
@@ -2533,13 +2536,20 @@ class SessionManager extends EventEmitter {
    * is affected, including the ones running right now — otherwise the setting
    * would only mean anything to chats started afterwards.
    *
-   * `project` when it was a project's exceptions that changed: only the chats
-   * in it are told, the others have nothing new to hear.
+   * `layer` when it was one layer's exceptions that changed — a project's, an
+   * agent's, a routine's: only the chats under it are told, the others have
+   * nothing new to hear.
    */
-  async applyToolDefaults(project?: string): Promise<number> {
-    const affected = [...this.live.entries()].filter(
-      ([sessionId]) => project === undefined || projectOf(getSession(sessionId)?.workspace) === project
-    );
+  async applyToolDefaults(layer?: string | { project?: string; agent?: string; routine?: string }): Promise<number> {
+    const only = typeof layer === "string" ? { project: layer } : layer;
+    const affected = [...this.live.entries()].filter(([sessionId]) => {
+      if (!only) return true;
+      const session = getSession(sessionId);
+      if (only.project !== undefined) return projectOf(session?.workspace) === only.project;
+      if (only.agent !== undefined) return agentIdOf(session?.workspace) === only.agent;
+      if (only.routine !== undefined) return routineOf(session) === only.routine;
+      return true;
+    });
     const done = await Promise.all(
       affected.map(async ([sessionId, { client }]) => {
         // Per session, like refreshSettings: the default is already stored, so

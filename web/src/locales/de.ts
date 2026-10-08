@@ -48,6 +48,7 @@ const de: Locale = {
     "Prompt processing": "Prompt-Verarbeitung",
     "{done} / {total} tokens": "{done} / {total} Tokens",
     // components/AgentPage.tsx
+    "What this agent's chats and its own runs — its heartbeat, the routines that run in its home — start with, against Settings → Tools. A project and a routine can switch tools again for their own, and a chat for itself.": "Womit die Chats dieses Agenten und seine eigenen Läufe — sein Heartbeat, die Routinen in seinem Zuhause — beginnen, gegenüber Einstellungen → Tools. Ein Projekt und eine Routine können Tools für sich erneut umschalten, und ein Chat für sich selbst.",
     "What to keep an eye on": "Worauf du ein Auge haben sollst",
     "The open pull requests on the project: tell me about one waiting more than three days.": "Die offenen Pull Requests des Projekts: Sag mir Bescheid, wenn einer länger als drei Tage wartet.",
     "The notes in ~/inbox: anything that needs an answer this week.": "Die Notizen in ~/inbox: alles, was diese Woche eine Antwort braucht.",
@@ -1347,7 +1348,7 @@ const de: Locale = {
     "Off: one session it keeps, so a run can see what the last one did. On: a clean start every time.": "Aus: eine Sitzung, die sie behält, damit ein Lauf sieht, was der letzte getan hat. An: jedes Mal ein sauberer Start.",
     "Injection guard": "Schutz vor Injection",
     "On: after reading anything untrusted — logs fetched over the network, a web page, mail — this run cannot push, write onto PATH, upload or read credentials. Turn it off for work that reads those things and then has to act on them. Content is still labelled as untrusted, and anything it does that the rules would have stopped is recorded in Audit.": "An: Nachdem dieser Lauf etwas Unvertrauenswürdiges gelesen hat — über das Netz geholte Logs, eine Webseite, Mail —, kann er nicht pushen, in den PATH schreiben, hochladen oder Zugangsdaten lesen. Schalte das aus für Arbeit, die solche Dinge liest und dann darauf handeln muss. Inhalte werden trotzdem als unvertrauenswürdig markiert, und alles, was die Regeln gestoppt hätten, wird im Audit festgehalten.",
-    "Lets this routine drive the agent's browser, which is signed into the agent's own accounts. Off by default. Every page it opens is recorded in Audit.": "Lässt diese Routine den Browser des Agenten steuern, der in den eigenen Konten des Agenten angemeldet ist. Standardmäßig aus. Jede Seite, die sie öffnet, wird im Audit festgehalten.",
+    "What every run starts with, against what its agent and project leave. The browser's tools are off for a routine unless switched on here; every page a run opens is recorded in Audit. Saved as each switch is flipped.": "Womit jeder Lauf beginnt, gegenüber dem, was sein Agent und sein Projekt vorgeben. Die Browser-Tools sind für eine Routine aus, solange sie hier nicht eingeschaltet werden; jede Seite, die ein Lauf öffnet, wird im Audit festgehalten. Wird mit jedem Umschalten gespeichert.",
     "Report to": "Bericht an",
     "Default — {target}": "Standard — {target}",
     "Default — none set": "Standard — keins gesetzt",
@@ -1512,6 +1513,8 @@ const de: Locale = {
     "all on": "alle an",
     "all off": "alle aus",
     // components/ToolSwitches.tsx
+    "These are the tools earlier chats had. What you switch here is what every chat in this agent's home starts with, and every run it does on its own; the portal-wide defaults stay as they are.": "Das sind die Tools, die frühere Chats hatten. Was du hier umschaltest, ist das, womit jeder Chat im Zuhause dieses Agenten beginnt, und jeder Lauf, den er von sich aus macht; die portalweiten Standards bleiben, wie sie sind.",
+    "These are the tools earlier chats had. What you switch here is what every run of this routine starts with, against what its agent and project leave.": "Das sind die Tools, die frühere Chats hatten. Was du hier umschaltest, ist das, womit jeder Lauf dieser Routine beginnt, gegenüber dem, was sein Agent und sein Projekt vorgeben.",
     "That switch was not saved: {error}": "Dieser Schalter wurde nicht gespeichert: {error}",
     "No tools registered.": "Keine Tools registriert.",
     "{n} switched off. The rest are listed once a conversation has run.": { one: "{n} ausgeschaltet. Der Rest wird aufgelistet, sobald ein Gespräch gelaufen ist.", other: "{n} ausgeschaltet. Der Rest wird aufgelistet, sobald ein Gespräch gelaufen ist." },
