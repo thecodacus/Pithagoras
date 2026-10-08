@@ -122,6 +122,17 @@ export function mcpServerNames(): string[] {
  */
 export const mcpCachePath = (): string => path.join(piAgentDir(), "mcp-cache.json");
 
+/** The adapter's cache as it is on disk, or null where it is not there or cannot be read. */
+export function readMcpCache(): { servers?: Record<string, { tools?: unknown; resources?: unknown } | undefined> } | null {
+  try {
+    const cache = JSON.parse(readFileSync(mcpCachePath(), "utf8"));
+    const servers = cache?.servers;
+    return servers && typeof servers === "object" && !Array.isArray(servers) ? cache : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Take the named servers out of the adapter's cache. A cache that is not there
  * or cannot be read is left alone: it is the adapter's file, it rebuilds it,
@@ -240,8 +251,21 @@ function validateEntry(entry: unknown): string | null {
   return null;
 }
 
-export function mcpRouter(): Router {
+/**
+ * `changed` is told after every write: what the configuration offers decides
+ * which tools a running chat may still use (see mcp-offer.ts), and a chat that
+ * has to be restarted to notice a server switched off is a switch that looks
+ * broken.
+ */
+export function mcpRouter(changed: () => void = () => {}): Router {
   const router = express.Router();
+  const written = () => {
+    try {
+      changed();
+    } catch (e) {
+      console.error(`[portal] could not apply the MCP configuration to running chats: ${(e as Error).message}`);
+    }
+  };
 
   router.get("/mcp", async (_req, res) => {
     try {
@@ -290,6 +314,7 @@ export function mcpRouter(): Router {
       writeMcpFile(config);
       // A rename removes the old name; its tools are not the new one's.
       mcpServersRemoved(before, Object.keys(config.mcpServers));
+      written();
       res.json({ ok: true });
     } catch (e) {
       res.status(500).json({ error: (e as Error).message });
@@ -304,6 +329,7 @@ export function mcpRouter(): Router {
     try {
       writeMcpFile(config);
       mcpServersRemoved(before, Object.keys(config.mcpServers));
+      written();
       res.json({ ok: true });
     } catch (e) {
       res.status(500).json({ error: (e as Error).message });
@@ -322,6 +348,7 @@ export function mcpRouter(): Router {
     else config.settings = settings;
     try {
       writeMcpFile(config);
+      written();
       res.json({ ok: true });
     } catch (e) {
       res.status(500).json({ error: (e as Error).message });
@@ -378,7 +405,10 @@ export function mcpRouter(): Router {
       return res.status(400).json({ error: "No servers found in that JSON" });
     }
     try {
-      if (added.length) writeMcpFile(config);
+      if (added.length) {
+        writeMcpFile(config);
+        written();
+      }
       res.json({ ok: true, added, skipped });
     } catch (e) {
       res.status(500).json({ error: (e as Error).message });
@@ -400,6 +430,7 @@ export function mcpRouter(): Router {
       writeMcpText(content);
       const kept = (parsed as McpFile | null)?.mcpServers;
       mcpServersRemoved(before, kept && typeof kept === "object" ? Object.keys(kept) : []);
+      written();
       res.json({ ok: true });
     } catch (e) {
       res.status(500).json({ error: (e as Error).message });

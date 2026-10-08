@@ -4,7 +4,8 @@ import { packageIndex, packageKey, packageLabel, toolAvailability } from "./exte
 import { EDIT_IMAGE_SOURCE, EDIT_IMAGE_TOOL, GENERATE_IMAGE_SOURCE, GENERATE_IMAGE_TOOL, SHOW_IMAGE_SOURCE, imageEditingReady, imageGenerationReady } from "./image-generation.js";
 import { PORTAL_BROWSER_TOOLS, browserTool, defaultsFor, mcpServerOf, toolEnabled } from "./tool-policy.js";
 import { projectOf } from "./workspaces.js";
-import { browserServers, dropMcpCache, mcpServerNames, readMcpFile, serversAndBrowsers } from "./api/mcp.js";
+import { browserServers, dropMcpCache, mcpServerNames, readMcpCache, readMcpFile, serversAndBrowsers } from "./api/mcp.js";
+import { mcpOffer, unlisted, type McpOffer } from "./mcp-offer.js";
 import { mkdirSync, realpathSync } from "node:fs";
 import { agentHome, agentHomePath, homeAgentName } from "./agent-home.js";
 import { DATA_DIR } from "./data-dir.js";
@@ -2159,8 +2160,11 @@ export function knownTools(): KnownTool[] {
  * For a chat, `folder` is where it runs, whose project may bring packages of
  * its own.
  */
-export function shownTools(folder?: string): (Omit<KnownTool, "package" | "inline"> & { inline?: true })[] {
+export function shownTools(folder?: string): (Omit<KnownTool, "package" | "inline"> & { inline?: true; cached?: true })[] {
   const project = folder ? readProjectPiSettings(folder).packages : undefined;
+  // An MCP server's tool that the adapter's configuration no longer registers
+  // is not there to be switched: listing it was the list saying otherwise.
+  const offers = mcpOffers();
   // The portal's own tools belong to no package, so the packages cannot say
   // that one is not offered: image generation and image editing say so
   // themselves, while they are off.
@@ -2173,9 +2177,15 @@ export function shownTools(folder?: string): (Omit<KnownTool, "package" | "inlin
   return [...available, ...notYetSeen(available, images, editing)]
     .filter((tool) => images || !(tool.name === GENERATE_IMAGE_TOOL && tool.inline))
     .filter((tool) => editing || !(tool.name === EDIT_IMAGE_TOOL && tool.inline))
-    .map((known) => {
+    .flatMap((known) => {
+      const offer = offers(known);
+      if (unlisted(offer)) return [];
       const { package: _package, inline: _inline, ...tool } = known;
-      return portalOwned(known) ? { ...tool, inline: true as const } : tool;
+      return [{
+        ...tool,
+        ...(portalOwned(known) ? { inline: true as const } : {}),
+        ...(offer === "cached" ? { cached: true as const } : {}),
+      }];
     });
 }
 
@@ -2300,6 +2310,39 @@ const noServerOf = (name: string): boolean => (PORTAL_BROWSER_TOOLS as readonly 
 /** Does the MCP adapter register this tool? By its package where it is recorded, by the label it is filed under where it is not. */
 function adapterTool(t: Pick<KnownTool, "source" | "package">): boolean {
   return typeof t.package === "string" ? packageLabel(t.package) === ADAPTER_LABEL : t.source === ADAPTER_LABEL;
+}
+
+/**
+ * What the MCP adapter does with each tool, as its configuration and cache
+ * stand now (see mcp-offer.ts): undefined for a tool that is not a server's.
+ * Read once per call, for a pass over a list.
+ *
+ * A configuration that cannot be read says nothing about any tool: the panel
+ * offers the file to be fixed, and until it is, nothing is withdrawn over it.
+ */
+export function mcpOffers(): (tool: Pick<KnownTool, "name" | "source" | "package">) => McpOffer | undefined {
+  const { config, error } = readMcpFile();
+  if (error) return () => undefined;
+  const offer = mcpOffer(config, readMcpCache());
+  return (tool) => (adapterTool(tool) && !noServerOf(tool.name) ? offer(tool.name) : undefined);
+}
+
+/**
+ * The tools of these that the MCP adapter no longer registers, by name: what a
+ * chat's pi is told to have off on top of its switches, so that one still
+ * holding such a tool from before the configuration changed cannot use it.
+ * Told by what the portal remembers of each, which is what says it is the
+ * adapter's; a name it has never seen is not judged.
+ */
+export function withdrawnMcpTools(names: Iterable<string> = []): string[] {
+  const offers = mcpOffers();
+  const known = new Map(knownTools().map((t) => [t.name, t]));
+  const withdrawn = new Set<string>();
+  for (const name of new Set([...names, ...known.keys()])) {
+    const tool = known.get(name);
+    if (tool && offers(tool) === "withdrawn") withdrawn.add(name);
+  }
+  return [...withdrawn].sort();
 }
 
 /**

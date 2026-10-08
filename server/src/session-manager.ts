@@ -12,6 +12,7 @@ import { HEARTBEAT_ROLE } from "./pi/heartbeat-names.js";
 import path from "node:path";
 import type { Draft, PiClient, PiTool, PromptTaken } from "./pi/types.js";
 import { effectiveOff, exceptionsFor, toolEnabled, toolSource } from "./tool-policy.js";
+import { unlisted } from "./mcp-offer.js";
 import { mcpServerNames } from "./api/mcp.js";
 import { projectOf } from "./workspaces.js";
 import { findServerBuiltin, picturesRefused, runBuiltin } from "./pi/builtins.js";
@@ -68,6 +69,8 @@ import {
   knownTools,
   recordAudit,
   shownTools,
+  mcpOffers,
+  withdrawnMcpTools,
   browserAllowlist,
   routineGuards,
   updateSession,
@@ -1032,7 +1035,7 @@ class SessionManager extends EventEmitter {
       // The session's settled role picks the context files; the live one gates
       // each tool call, so a group conversation follows whoever is speaking.
       role: session.role,
-      toolsOff: this.offFor(sessionId),
+      toolsOff: this.piOff(sessionId),
       subagentModel: () => sessionSubagentModel(sessionId) ?? undefined,
       // A heartbeat is the agent looking around on its own: its own context,
       // but held to reading by a role of its own. See heartbeat.ts.
@@ -2422,6 +2425,17 @@ class SessionManager extends EventEmitter {
   }
 
   /**
+   * What pi is told to have off: the switches (offFor), and the MCP servers'
+   * tools that the adapter's configuration no longer registers. Those are not
+   * the switches' — they are listed nowhere, and nothing is written down for
+   * them — but a chat that loaded one before the configuration changed still
+   * has it, and the configuration is what has the last word over it.
+   */
+  piOff(sessionId: string, names: string[] = []): string[] {
+    return [...new Set([...this.offFor(sessionId, names), ...withdrawnMcpTools(names)])].sort();
+  }
+
+  /**
    * Every tool this conversation could use, and whether it is on.
    *
    * A running session lists its own: pi builds the registry when it starts.
@@ -2433,23 +2447,41 @@ class SessionManager extends EventEmitter {
    * what the portal has seen registered (`live: false`), and what is switched
    * there is stored as this chat's own and handed to pi when it starts.
    */
+  /**
+   * What a running chat reported, less the MCP servers' tools the adapter's
+   * configuration no longer registers one by one — still loaded from before it
+   * changed, and off where the configuration says no to them (piOff) — and with
+   * those it lists from its cache marked.
+   */
+  private offered(reported: PiTool[]): PiTool[] {
+    if (!reported.length) return reported;
+    const offers = mcpOffers();
+    return reported.flatMap((tool) => {
+      const offer = offers(tool);
+      if (unlisted(offer)) return [];
+      return [offer === "cached" ? { ...tool, cached: true as const } : tool];
+    });
+  }
+
   async getTools(sessionId: string): Promise<{ tools: PiTool[]; live: boolean }> {
     const client = this.live.get(sessionId)?.client;
-    const listed = client?.getTools ? await client.getTools() : [];
-    if (listed.length) rememberTools(listed.map(remembered));
+    const reported = client?.getTools ? await client.getTools() : [];
+    if (reported.length) rememberTools(reported.map(remembered));
+    const listed = this.offered(reported);
     const workspace = getSession(sessionId)?.workspace;
     // What the chat's project starts it with, which is what it is "default" against.
     const defaults = toolDefaultsFor(workspace);
     const exceptions = sessionTools(sessionId);
     const servers = mcpServerNames();
-    const shown: { name: string; source: string; description?: string; inline?: true }[] = listed.length ? listed : shownTools(workspace);
+    const shown: { name: string; source: string; description?: string; inline?: true; cached?: true }[] = listed.length ? listed : shownTools(workspace);
     return {
-      tools: shown.map(({ name, source, description, inline }) => ({
+      tools: shown.map(({ name, source, description, inline, cached }) => ({
         name,
         ...(description !== undefined ? { description } : {}),
         source: toolSource(name, source, servers),
         // The portal's own tools are told from an extension's of the same name, so the page can group its picture tools.
         ...(inline ? { inline: true as const } : {}),
+        ...(cached ? { cached: true as const } : {}),
         enabled: toolEnabled(name, defaults, exceptions),
         defaultOn: !defaults.includes(name),
       })),
@@ -2466,7 +2498,9 @@ class SessionManager extends EventEmitter {
    */
   async setTools(sessionId: string, wantedOff: string[]): Promise<string[]> {
     const client = this.live.get(sessionId)?.client;
-    const listed = client?.getTools ? await client.getTools() : [];
+    const reported = client?.getTools ? await client.getTools() : [];
+    // Not what the adapter no longer registers: the page did not show it, so it said nothing about it.
+    const listed = this.offered(reported);
     // What this call is answering about: the tools this session registered,
     // plus the ones it already holds an exception for. Not the portal-wide
     // catalogue — a tool that is merely not loaded in this run was not on the
@@ -2490,7 +2524,7 @@ class SessionManager extends EventEmitter {
     // in every chat, and one that is switched back on in the chat needs one.
     setSessionTools(sessionId, exceptionsFor(wantedOff, toolDefaultsFor(getSession(sessionId)?.workspace), answered, held));
     const off = this.offFor(sessionId, listed.map((t) => t.name));
-    await client?.setToolsOff?.(off);
+    await client?.setToolsOff?.(this.piOff(sessionId, reported.map((t) => t.name)));
     return off;
   }
 
@@ -2513,7 +2547,7 @@ class SessionManager extends EventEmitter {
         // page showing the opposite of what the database now holds.
         try {
           const listed = client.getTools ? await client.getTools() : [];
-          await client.setToolsOff?.(this.offFor(sessionId, listed.map((t) => t.name)));
+          await client.setToolsOff?.(this.piOff(sessionId, listed.map((t) => t.name)));
           return true;
         } catch (e) {
           console.error(`[portal] could not apply the tool defaults to ${sessionId}: ${(e as Error).message}`);

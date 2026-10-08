@@ -151,7 +151,10 @@ could not be read and offers **Try again**, and a switch the portal did not save
 snaps back with the reason beside it.
 
 Both are safety tools as much as convenience: a browser or shell tool that a
-chat has no business with is simply not there to be talked into.
+chat has no business with is simply not there to be talked into. An MCP server's
+tool switched off is not reachable through the adapter's `mcp` tool either, and
+one the MCP configuration no longer registers is not listed at all; see
+[MCP servers](/guide/mcp#what-the-tool-lists-show).
 
 ## One server per data directory
 

@@ -8,7 +8,8 @@ import { cleanBrowserSnapshot, isBrowserSnapshot } from "./browser-snapshot-form
 import { bareRef } from "../browser/ref.js";
 import { listToolRules, recordAudit, useGrant, type ToolRule } from "../db.js";
 import { EDIT_IMAGE_TOOL } from "../image-generation.js";
-import { PORTAL_BROWSER_TOOLS } from "../tool-policy.js";
+import { PORTAL_BROWSER_TOOLS, mcpServerOf } from "../tool-policy.js";
+import { mcpServerNames } from "../api/mcp.js";
 import { isWithinText, pathBelow, realPath, realPathAhead } from "../within.js";
 import { agentsRoot, listAgents } from "../agents.js";
 import { workspaceRoot } from "../workspaces.js";
@@ -57,6 +58,44 @@ function untrustedResult(toolName: string, input: Record<string, unknown>): bool
   if (toolName === "bash") return UNTRUSTED_COMMAND.test(cmd(input));
   if (browserCall(toolName, input).isBrowser) return true;
   return /^mcp(_|$)/.test(toolName);
+}
+
+/**
+ * The switched-off tool a call reaches by another way, if it does.
+ *
+ * The MCP adapter offers every tool of every server it knows through its own
+ * `mcp` tool as well as, where a server registers them directly, under their
+ * own names: `mcp({ tool: "jira_create_issue" })` is the same call as
+ * `jira_create_issue`. Switching the tool off took it out of what the model is
+ * offered and left this way to it open, from the adapter's cache whether or
+ * not the server was running. So the proxy is held to the switches too: a call
+ * or a description of a tool that is off here is refused. The adapter finds a
+ * tool by its full name, hyphens or underscores; the bare name with a server is
+ * matched as well, whatever the adapter makes of it.
+ *
+ * A script (`mcp_script`, where the adapter's script mode is on) can call any
+ * tool and says which only as it runs, so it is refused while any server's tool
+ * is switched off here: it cannot be held to the switches one call at a time.
+ */
+export function switchedOffVia(toolName: string, input: Record<string, unknown>, off: ReadonlySet<string>): string | undefined {
+  if (!off.size) return undefined;
+  const same = (name: string) => name.replace(/-/g, "_");
+  if (toolName === "mcp") {
+    const server = typeof input.server === "string" && input.server ? same(input.server) : undefined;
+    for (const key of ["tool", "describe"]) {
+      const asked = input[key];
+      if (typeof asked !== "string" || !asked) continue;
+      const wanted = [same(asked), ...(server ? [`${server}_${same(asked.replace(/\./g, "_"))}`] : [])];
+      const hit = [...off].find((name) => wanted.includes(same(name)));
+      if (hit) return hit;
+    }
+    return undefined;
+  }
+  if (toolName === "mcp_script") {
+    const servers = mcpServerNames();
+    return [...off].find((name) => name !== "mcp" && mcpServerOf(name, servers) !== undefined);
+  }
+  return undefined;
 }
 
 interface Rule {
@@ -821,7 +860,9 @@ export function guardExtension(
    */
   workspace?: string,
   /** Other places they may read as well: the skills the agent offers, which are instructions for anybody it serves. */
-  alsoReadable: string[] = []
+  alsoReadable: string[] = [],
+  /** What this conversation has switched off, read at each call: see switchedOffVia. */
+  offNow: () => ReadonlySet<string> = () => new Set(),
 ) {
   return (pi: any): void => {
     // Per session, not global: a taint belongs to the conversation that read the
@@ -881,6 +922,22 @@ export function guardExtension(
           personKey: key,
           sessionId: portalSessionId,
         });
+
+      // Before anything that could allow it: a tool switched off is off for
+      // everybody, and no rule or approval switches it back on.
+      const offTool = switchedOffVia(event.toolName, event.input ?? {}, offNow());
+      if (offTool) {
+        note("refused", `Switched off in this conversation: ${offTool}`);
+        return {
+          block: true,
+          reason:
+            event.toolName === "mcp_script"
+              ? `Refused: "${offTool}" is switched off in this conversation, and an MCP script could reach it. ` +
+                "Call the MCP tools you need one at a time instead."
+              : `Refused: "${offTool}" is switched off in this conversation, and the mcp tool does not reach it ` +
+                "either. Say that it is switched off rather than looking for another way to it.",
+        };
+      }
 
       // The browser is gated on the session, not on who is speaking: the agent
       // has its own accounts and uses them as itself, including when it is

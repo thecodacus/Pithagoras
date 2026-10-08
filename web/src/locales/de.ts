@@ -1521,6 +1521,8 @@ const de: Locale = {
     "Chats already running here have it from their next message. A chat that switched a tool for itself keeps its own choice.": "Chats, die hier schon laufen, übernehmen es ab ihrer nächsten Nachricht. Ein Chat, der ein Tool für sich umgeschaltet hat, behält seine eigene Wahl.",
     "default on": "Standard an",
     "default off": "Standard aus",
+    "cached": "Cache",
+    "Listed from the MCP adapter's cache: the server starts when one of its tools is first used.": "Aus dem Cache des MCP-Adapters gelistet: Der Server startet, wenn eines seiner Tools zum ersten Mal benutzt wird.",
     "Applies from the next message, for this conversation. Settings → Tools sets what every conversation starts with.": "Gilt ab der nächsten Nachricht, für dieses Gespräch. Unter Einstellungen → Tools legst du fest, womit jedes Gespräch beginnt.",
     // components/VoiceAddon.tsx
     "unavailable": "nicht verfügbar",

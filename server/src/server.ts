@@ -1326,7 +1326,8 @@ app.use("/api", routinesRouter());
 app.use("/api", skillsRouter());
 app.use("/api", filesRouter());
 app.use("/api", gitRouter());
-app.use("/api", mcpRouter());
+// What the configuration offers is what a running chat may use: told at once, as a default is.
+app.use("/api", mcpRouter(() => void sessions.applyToolDefaults()));
 app.use("/api", providersRouter());
 app.use("/api", peopleRouter());
 app.use("/api", browserRouter());

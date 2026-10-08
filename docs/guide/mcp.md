@@ -81,6 +81,29 @@ tools the agent uses constantly; expensive for a server with sixty.
 `Only these tools` / `Except these tools` take names or globs and are the way to
 keep a large server from crowding the prompt.
 
+## What the tool lists show
+
+The Tools lists (Settings → Tools, a project's, a chat's) show a server's tools
+only while its configuration registers them one by one. A tool goes from every
+list as soon as the configuration says no to it: its server is switched off,
+`Only these tools` or `Except these tools` leave it out, or the server no longer
+has it in the adapter's cache. A chat that is running is told at once: one that
+had the tool loaded from before has it off from then on, and neither the tool
+nor the `mcp` tool reaches it. Nothing is written down against it, so it comes
+back the way it was when the configuration allows it again. A server whose tools
+are no longer registered directly lists none: they are reached through the `mcp`
+tool, which is switched as itself.
+
+A tool marked **cached** is listed from the adapter's cache: its server starts
+only when one of its tools is first used (`lifecycle` lazy, the default), so the
+list is what the server had when it last ran.
+
+A tool switched off in a chat, a project or Settings → Tools is off through the
+`mcp` tool as well: `mcp({ tool: "…" })` and `mcp({ describe: "…" })` of it are
+refused. With the adapter's script mode on, `mcp_script` is refused while any
+server's tool is switched off, since a script says which tools it calls only as
+it runs.
+
 ## Disabling
 
 The toggle on each row sets `disabled: true` — the server stays configured and
