@@ -2,6 +2,7 @@ import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer } from "node:http";
+import net from "node:net";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { inProcessHome } from "./server-harness.mjs";
@@ -15,14 +16,29 @@ inProcessHome("pithagoras-memory-llm-");
 process.env.UNDERSTORY_LLM_HEADERS_TIMEOUT_MS = "500";
 process.env.UNDERSTORY_LLM_BODY_TIMEOUT_MS = "500";
 
+// A port that was and is not now: a refusal at once, on loopback — no route or sandbox between.
+const darkPort = await (async () => {
+  const s = net.createServer();
+  await once(s.listen(0, "127.0.0.1"), "listening");
+  const p = s.address().port;
+  await once(s.close(), "close");
+  return p;
+})();
+
 const requests = [];
 let delay = 0;
+let mode = "answer"; // or "silent": the answer begins (its headers) and then nothing comes of it
 const upstream = createServer((req, res) => {
   let body = "";
   req.on("data", (d) => { body += d; });
   req.on("end", () => {
     if (req.method !== "POST" || req.url !== "/chat/completions") return res.writeHead(500).end("not the model");
     requests.push({ url: req.url, headers: req.headers, body: JSON.parse(body) });
+    if (mode === "silent") {
+      // The answer has begun — its headers are out, flushed as the first byte would be — and will say nothing else.
+      res.writeHead(200, { "content-type": "application/json" });
+      return res.flushHeaders();
+    }
     // A whole answer at once, as a non-streaming one comes: no byte until it is done.
     setTimeout(() => res.end(JSON.stringify({
       id: "c", object: "chat.completion", model: "m",
@@ -40,10 +56,10 @@ writeFileSync(path.join(process.env.PI_CODING_AGENT_DIR, "models.json"), JSON.st
       baseUrl: `http://127.0.0.1:${upstream.address().port}`, api: "openai-completions", apiKey: "none",
       models: [{ id: "m", name: "M", reasoning: false, input: ["text"], contextWindow: 10000, maxTokens: 100 }],
     },
-    // An address no one answers at: the connect times out of itself, on undici's own
-    // ten-second connect timeout — not on the wait above.
+    // No one answers there now, and a refusal on loopback is the same plain failure an address
+    // nowhere to be reached would be — the wait out for an answer is not that.
     dark: {
-      baseUrl: "http://10.255.255.1:9", api: "openai-completions", apiKey: "none",
+      baseUrl: `http://127.0.0.1:${darkPort}`, api: "openai-completions", apiKey: "none",
       models: [{ id: "m", name: "M", reasoning: false, input: ["text"], contextWindow: 10000, maxTokens: 100 }],
     },
   },
@@ -84,8 +100,20 @@ test("when the wait comes round, the answer is a timeout that says so — not 'f
   const r = await ask("test-key");
   assert.equal(r.status, 504);
   const said = (await r.json()).error.message;
-  assert.match(said, /within \d+ seconds/);
+  assert.match(said, /within \d+ (?:seconds|milliseconds)/);
   assert.doesNotMatch(said, /fetch failed/);
+});
+
+// A body that begins and then goes quiet: the headers have come, no byte has gone to Understory yet,
+// so there is still time to give it its saying — the wait's, not a socket torn out from under it.
+test("an answer that began and went quiet says so before the first byte — 504, not a broken socket", async () => {
+  mode = "silent";
+  const r = await ask("test-key");
+  assert.equal(r.status, 504);
+  const said = (await r.json()).error.message;
+  assert.match(said, /went quiet/);
+  assert.doesNotMatch(said, /fetch failed/);
+  mode = "answer";
 });
 
 test("a stranger does not reach the model", async () => {
@@ -96,8 +124,8 @@ test("a stranger does not reach the model", async () => {
   assert.equal(requests.length, before);
 });
 
-// The wait out for an answer is not the waiting on an address no one answers at:
-// that connect times out of itself, and must stay a plain failure, not be said as
+// The wait out for an answer is not the waiting on an address no one answers at: however that
+// refusal comes — refused, or timed out of itself — it must stay a plain failure, not be said as
 // "did not answer within the wait" with the hint to give the wait more time.
 test("an address no one answers is not 'the wait came round' — it stays a plain failure", async () => {
   target = { provider: "dark", id: "m" };
