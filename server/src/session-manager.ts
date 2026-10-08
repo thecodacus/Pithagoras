@@ -63,6 +63,7 @@ import {
   sessionTools,
   setSessionTools,
   toolDefaultsForSession,
+  agentHomes,
   agentIdOf,
   routineOf,
   remembered,
@@ -2545,11 +2546,13 @@ class SessionManager extends EventEmitter {
    */
   async applyToolDefaults(layer?: string | { project?: string; agent?: string; routine?: string }): Promise<number> {
     const only = typeof layer === "string" ? { project: layer } : layer;
+    // The agents' homes read once for all of them, not once for each chat.
+    const homes = only?.agent !== undefined ? agentHomes() : [];
     const affected = [...this.live.entries()].filter(([sessionId]) => {
       if (!only) return true;
       const session = getSession(sessionId);
       if (only.project !== undefined) return projectOf(session?.workspace) === only.project;
-      if (only.agent !== undefined) return agentIdOf(session?.workspace) === only.agent;
+      if (only.agent !== undefined) return agentIdOf(session?.workspace, homes) === only.agent;
       if (only.routine !== undefined) return routineOf(session) === only.routine;
       return true;
     });

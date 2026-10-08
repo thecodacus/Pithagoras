@@ -138,8 +138,10 @@ The browser's tools are a group in that list, and having them is having the
 [browser](/guide/browser), which is signed into the agent's own accounts. For a
 routine they are off unless switched on, as the **Browser** switch that used to be
 here was: a routine that had it on keeps the browser, one that had it off stays
-without, until its browser group is switched. Every page a run opens is recorded
-in [Audit](/guide/sessions#audit).
+without, until its browser group is switched. A new routine starts without it.
+Through the API, `browser` on a routine still switches all of the browser's tools
+for it at once, and a browser tool that turns up later starts the way the
+browser was last set for the routine. Every page a run opens is recorded in [Audit](/guide/sessions#audit).
 
 ## Letting the agent manage them
 

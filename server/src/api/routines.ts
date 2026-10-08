@@ -1,5 +1,5 @@
 import express, { type Router } from "express";
-import { getDb, getDefaultReportTo, listRoutineSessions, setDefaultReportTo } from "../db.js";
+import { getDb, getDefaultReportTo, listRoutineSessions, setDefaultReportTo, setRoutineBrowser } from "../db.js";
 import { channelSupervisor } from "../channels/supervisor.js";
 import { unscopeKey } from "../agent.js";
 import { isValidSlug, slugify } from "../slug.js";
@@ -238,10 +238,6 @@ export function routinesRouter(): Router {
       sets.push("guard = ?");
       values.push(req.body.guard ? 1 : 0);
     }
-    if (typeof req.body?.browser === "boolean") {
-      sets.push("browser = ?");
-      values.push(req.body.browser ? 1 : 0);
-    }
     if ("reportChannel" in (req.body ?? {})) {
       const report = readReport(req.body);
       sets.push("report_channel = ?", "report_target = ?");
@@ -267,6 +263,8 @@ export function routinesRouter(): Router {
       getDb().prepare(`UPDATE routines SET ${sets.join(", ")} WHERE id = ?`).run(...values, row.id);
       routineSupervisor.refreshSchedules([row.id]);
     }
+    // Its tools' lists as well, which are what a run goes by: the switch alone would answer 200 and change nothing.
+    if (typeof req.body?.browser === "boolean") setRoutineBrowser(rowById(row.id)!.slug, req.body.browser);
     res.json(toApi(rowById(row.id)!));
   });
 

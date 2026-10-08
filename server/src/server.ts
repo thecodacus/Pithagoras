@@ -37,6 +37,7 @@ import {
   clearAgentTools,
   routineTools,
   setRoutineTools,
+  setRoutineBrowserSwitch,
   seenBrowserTools,
   toolDefaultsFor,
   setContextLimit,
@@ -345,15 +346,12 @@ const isToolList = (value: unknown): value is string[] => Array.isArray(value) &
 
 /**
  * Stores what a project's chats start with, given the tools it wants off: the
- * difference from the portal-wide default, which is all that is kept. What the
- * page was shown is what the portal has seen registered, and what the project
- * already holds an exception for.
+ * difference from what the layers under it leave (the portal-wide default, and
+ * an agent whose home it were in), which is all that is kept.
  */
 function saveProjectTools(project: { name: string; path: string }, off: string[]) {
-  const held = projectTools(project.name);
-  const shown = shownTools(project.path).map((t) => t.name);
-  const answered = [...shown, ...held.off, ...held.on];
-  return setProjectTools(project.name, exceptionsFor(heldOffUnshown(off, shown, held), toolDefaultsOff(), answered, held));
+  const below = toolDefaultsFor(project.path, null, "project");
+  return setProjectTools(project.name, layerExceptions(project.path, below, projectTools(project.name), off));
 }
 
 /**
@@ -429,31 +427,16 @@ app.put("/api/projects/:name/instructions", (req, res) => {
 });
 
 /**
- * The tools a chat in this project starts with, and whether each is on: the
- * portal-wide default, bent by what the project says. Shaped like a chat's own
- * list, so the page draws both the same way; `defaultOn` is the portal-wide
- * default, which is what the project disagrees with. No pi is running for a
- * project, so what is listed is what the portal has seen registered.
+ * The tools a chat in this project starts with, and whether each is on: what
+ * the layers under it leave (layerTools), bent by what the project says. No pi
+ * is running for a project, so what is listed is what the portal has seen
+ * registered.
  */
 app.get("/api/projects/:name/tools", (req, res) => {
   try {
     const project = getProject(WORKSPACE_ROOT, req.params.name);
     if (EXECUTOR_KIND === "container") return res.status(400).json(toolsUnsupported);
-    const defaults = toolDefaultsOff();
-    const exceptions = projectTools(project.name);
-    const servers = mcpServerNames();
-    res.json({
-      tools: shownTools(project.path).map((tool) => ({
-        ...tool,
-        source: toolSource(tool.name, tool.source, servers),
-        enabled: toolEnabled(tool.name, defaults, exceptions),
-        defaultOn: !defaults.includes(tool.name),
-      })),
-      live: false,
-      names: toolGroupNames(),
-      // The whole picture, as for a chat: the page sends it back on the next flip.
-      off: defaultsFor(defaults, exceptions),
-    });
+    res.json(layerTools(project.path, toolDefaultsFor(project.path, null, "project"), projectTools(project.name)));
   } catch (e) {
     projectFailure(res, e);
   }
@@ -461,8 +444,8 @@ app.get("/api/projects/:name/tools", (req, res) => {
 
 /**
  * Say which tools chats in this project start with: what is not named is on.
- * What is stored is the difference from the portal-wide default, as for a chat,
- * so a change to that default still reaches every tool the project never
+ * What is stored is the difference from the layers under it, as for a chat,
+ * so a change to the default still reaches every tool the project never
  * disagreed about. Chats running in the project are told at once; what a chat
  * itself switched stays as it was.
  */
@@ -474,7 +457,7 @@ app.put("/api/projects/:name/tools", async (req, res) => {
     if (EXECUTOR_KIND === "container") return res.status(400).json(toolsUnsupported);
     const stored = saveProjectTools(project, off);
     const applied = await sessions.applyToolDefaults(project.name);
-    res.json({ off: defaultsFor(toolDefaultsOff(), stored), applied });
+    res.json({ off: defaultsFor(toolDefaultsFor(project.path, null, "project"), stored), applied });
   } catch (e) {
     projectFailure(res, e);
   }
@@ -564,15 +547,10 @@ app.put("/api/routines/:id/tools", async (req, res) => {
   try {
     const below = toolDefaultsFor(routine.folder, null, "routine");
     const wanted = layerExceptions(routine.folder, below, routineTools(routine.slug), off);
-    // The browser's tools are answered for by the routine's old switch where its lists say nothing (routineTools).
-    // So what the page said of each is written down, even where the layers under it agree: left out, a browser
-    // switched on here would go back to what the old switch says.
-    const shown = new Set(shownTools(routine.folder).map((t) => t.name));
-    for (const name of seenBrowserTools()) {
-      if (!shown.has(name) || wanted.off.includes(name) || wanted.on.includes(name)) continue;
-      (off.includes(name) ? wanted.off : wanted.on).push(name);
-    }
     const stored = setRoutineTools(routine.slug, wanted);
+    // Its old Browser switch says what a browser tool that turns up later starts with: what the browser has here now.
+    const browser = seenBrowserTools();
+    if (browser.length) setRoutineBrowserSwitch(routine.slug, browser.some((name) => toolEnabled(name, below, stored)));
     const applied = await sessions.applyToolDefaults({ routine: routine.slug });
     res.json({ off: defaultsFor(below, stored), applied });
   } catch (e) {

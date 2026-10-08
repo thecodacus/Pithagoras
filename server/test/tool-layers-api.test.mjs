@@ -117,18 +117,35 @@ test("the browser is a routine's tools now: off unless switched on, and its old 
   const run = runOf(r, db.getSession((await json("/api/sessions", "POST", {})).id).workspace);
   const row = () => db.getSession(run);
   assert.equal(db.browserAllowed(row()), false, "a new routine has no browser");
+  assert.deepEqual(db.routineTools(r.slug), { off: ["browser_navigate"], on: [] }, "written down as it is made");
 
-  // Switched on in the tools list: its runs may drive it.
+  // Switched on in the tools list: its runs may drive it, and the old switch follows.
   await json(`/api/routines/${r.id}/tools`, "PUT", { off: ["web_fetch"] });
-  assert.deepEqual(db.routineTools(r.slug), { off: [], on: ["browser_navigate"] });
   assert.equal(db.browserAllowed(row()), true);
   assert.equal(states(await json(`/api/sessions/${run}/tools`)).browser_navigate, true);
+  assert.equal(db.getDb().prepare("SELECT browser FROM routines WHERE id = ?").get(r.id).browser === 1, true);
 
-  // A routine that had the old switch on keeps it, for browser tools it has said nothing about.
-  db.getDb().prepare("UPDATE routines SET tools_off = '', tools_on = '', browser = 1 WHERE id = ?").run(r.id);
-  assert.equal(db.browserAllowed(row()), true);
-  db.getDb().prepare("UPDATE routines SET browser = 0 WHERE id = ?").run(r.id);
+  // The old switch through the API still does what it says, after the page has saved.
+  await json(`/api/routines/${r.id}`, "PATCH", { browser: false });
   assert.equal(db.browserAllowed(row()), false);
+  await json(`/api/routines/${r.id}`, "PATCH", { browser: true });
+  assert.equal(db.browserAllowed(row()), true);
+
+  // A browser tool that turns up later starts as the old switch says.
+  db.getDb().prepare("UPDATE routines SET browser = 0 WHERE id = ?").run(r.id);
+  db.rememberTools([{ name: "browser_click", source: "browser", package: null, inline: true }]);
+  assert.ok(db.routineTools(r.slug).off.includes("browser_click"));
+  assert.ok(db.routineTools(r.slug).on.includes("browser_navigate"), "what was said stays");
+});
+
+test("the Browser page lists the chats an agent's switches give the browser", async () => {
+  const agent = await json("/api/agents", "POST", { name: "Surfer" });
+  db.setToolDefaultsOff(["web_fetch", "browser_navigate", "browser_click"]);
+  db.createSession({ id: "surfer-chat", title: "Surfing", workspace: agent.home, executor: "host" });
+  assert.ok(!db.browserExceptions().some((row) => row.id === "surfer-chat"));
+  db.setAgentTools(agent.id, { off: [], on: ["browser_navigate"] });
+  assert.ok(db.browserExceptions().some((row) => row.id === "surfer-chat"));
+  db.setToolDefaultsOff(["web_fetch"]);
 });
 
 test("an agent or routine that is not there is not found", async () => {

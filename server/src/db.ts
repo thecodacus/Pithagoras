@@ -694,6 +694,7 @@ function migrate(d: Database.Database): void {
   }
   // Last, because it reads the settings the tables above have to exist for.
   adoptBrowserGrants(d);
+  carryRoutineBrowserOnce(d);
 }
 
 export function createSession(row: {
@@ -1894,17 +1895,21 @@ export function browserExceptions(): SessionRow[] {
        ORDER BY updated_at DESC`
     )
     .all() as SessionRow[];
-  // And the chats of a project that says something about tools, which differ
-  // from the default through it without having said anything themselves. Not
-  // routines: they answer for their own runs, project or not.
+  // And the chats of a project or in the home of an agent that says something
+  // about tools, which differ from the default through it without having said
+  // anything themselves. Not routines: they answer for their own runs, project
+  // or not.
   const projects = projectsWithTools();
-  if (projects.size) {
+  const agents = new Set((getDb().prepare("SELECT agent FROM agent_tools").all() as { agent: string }[]).map((r) => r.agent));
+  if (projects.size || agents.size) {
+    const homes = agents.size ? agentHomes() : [];
     const own = new Set(rows.map((row) => row.id));
     const all = getDb().prepare("SELECT * FROM sessions WHERE kind != 'routine' ORDER BY updated_at DESC").all() as SessionRow[];
     for (const row of all) {
       if (own.has(row.id)) continue;
       const project = projectOf(row.workspace);
-      if (project && projects.has(project)) rows.push(row);
+      const agent = agents.size ? agentIdOf(row.workspace, homes) : undefined;
+      if ((project && projects.has(project)) || (agent && agents.has(agent))) rows.push(row);
     }
     rows.sort((a, b) => (a.updated_at < b.updated_at ? 1 : a.updated_at > b.updated_at ? -1 : 0));
   }
@@ -2039,33 +2044,95 @@ export function clearAgentTools(agent: string): void {
  * than through agents.ts, which reads this module. The first agent's home is
  * wherever AGENT_HOME says now.
  */
-export function agentIdOf(workspace: string | null | undefined): string | undefined {
+export function agentIdOf(workspace: string | null | undefined, homes: AgentHome[] = agentHomes()): string | undefined {
   if (!workspace) return undefined;
   const at = path.resolve(workspace);
-  const rows = getDb().prepare("SELECT id, home FROM agents").all() as { id: string; home: string }[];
-  return rows.find((a) => isWithinText(a.id === "home" ? agentHomePath() : a.home, at))?.id;
+  return homes.find((a) => isWithinText(a.home, at))?.id;
+}
+
+export interface AgentHome {
+  id: string;
+  home: string;
+}
+
+/** Every agent's home, read once for a pass over many conversations (agentIdOf). */
+export function agentHomes(): AgentHome[] {
+  const rows = getDb().prepare("SELECT id, home FROM agents").all() as AgentHome[];
+  return rows.map((a) => ({ id: a.id, home: a.id === "home" ? agentHomePath() : a.home }));
 }
 
 /**
  * What a routine says about tools, as exceptions to what its agent and project
  * leave: the same two lists a chat keeps.
  *
- * Its old **Browser** switch (the `browser` column) still answers for the
- * browser's tools where the lists say nothing about them: off unless it was
- * switched on, as it always was for a routine. Once the routine's tools are
- * switched on its page, what was shown is written down and the lists answer;
- * a browser tool that turns up later follows the column again. So a routine
- * keeps what it had, without the browser's tool names having to be known when
- * the database was upgraded.
+ * Its old **Browser** switch (the `browser` column) is written into them, for
+ * each browser tool as it becomes known (`carryRoutineBrowser`): off unless it
+ * was switched on, as it always was for a routine. From then on the lists alone
+ * answer, and the switch is what a browser tool turning up later starts with.
  */
 export function routineTools(slug: string): SessionTools {
-  const row = getDb().prepare("SELECT tools_off, tools_on, browser FROM routines WHERE slug = ?").get(
-    slug
-  ) as { tools_off: string; tools_on: string; browser: number } | undefined;
-  if (!row) return { off: [], on: [] };
-  const own = { off: parseToolsOff(row.tools_off), on: parseToolsOff(row.tools_on) };
-  const browser = seenBrowserTools().filter((name) => !own.off.includes(name) && !own.on.includes(name));
-  return row.browser === 1 ? { off: own.off, on: [...own.on, ...browser] } : { off: [...own.off, ...browser], on: own.on };
+  const row = getDb().prepare("SELECT tools_off, tools_on FROM routines WHERE slug = ?").get(slug) as
+    | { tools_off: string; tools_on: string }
+    | undefined;
+  return row ? { off: parseToolsOff(row.tools_off), on: parseToolsOff(row.tools_on) } : { off: [], on: [] };
+}
+
+/**
+ * Writes the routines' Browser switch into their tool lists for these browser
+ * tools, where a list does not name one yet: every routine, or the one named.
+ * Called the first time the portal runs with the lists, for the browser tools
+ * seen by then; for each browser tool that turns up later; and for a routine
+ * that is made. So a routine keeps what it had without the browser's tool
+ * names having to be known when the database was upgraded.
+ */
+function carryRoutineBrowser(d: Database.Database, names: string[], slug?: string): void {
+  if (!names.length) return;
+  type Row = { slug: string; tools_off: string; tools_on: string; browser: number };
+  const select = "SELECT slug, tools_off, tools_on, browser FROM routines";
+  const rows = (slug ? d.prepare(`${select} WHERE slug = ?`).all(slug) : d.prepare(select).all()) as Row[];
+  const update = d.prepare("UPDATE routines SET tools_off = ?, tools_on = ? WHERE slug = ?");
+  for (const row of rows) {
+    const off = parseToolsOff(row.tools_off);
+    const on = parseToolsOff(row.tools_on);
+    const fresh = names.filter((name) => !off.includes(name) && !on.includes(name));
+    if (!fresh.length) continue;
+    (row.browser === 1 ? on : off).push(...fresh);
+    update.run(clean(off).join("\n"), clean(on).join("\n"), row.slug);
+  }
+}
+
+/** Once: what the routines' Browser switch said, for the browser tools already seen when the lists came in. */
+function carryRoutineBrowserOnce(d: Database.Database): void {
+  const flag = d.prepare("SELECT value FROM settings WHERE key = 'routine_browser_carried'").get() as { value: string } | undefined;
+  if (flag?.value === "1") return;
+  carryRoutineBrowser(d, seenBrowserTools());
+  d.prepare(
+    "INSERT INTO settings (key, value) VALUES ('routine_browser_carried', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+  ).run();
+}
+
+/** Only the switch: what a browser tool that turns up later starts with in this routine's lists. */
+export function setRoutineBrowserSwitch(slug: string, on: boolean): void {
+  getDb().prepare("UPDATE routines SET browser = ? WHERE slug = ?").run(on ? 1 : 0, slug);
+}
+
+/** A routine was made: the browser's tools as far as they are known start as its Browser switch says. */
+export function routineMade(slug: string): void {
+  carryRoutineBrowser(getDb(), seenBrowserTools(), slug);
+}
+
+/**
+ * The routine's Browser switch, as the API still takes it: every browser tool
+ * seen so far on or off in its lists, and the switch kept for those that turn
+ * up later.
+ */
+export function setRoutineBrowser(slug: string, on: boolean): void {
+  const names = seenBrowserTools();
+  const tools = routineTools(slug);
+  const off = tools.off.filter((name) => !names.includes(name));
+  const kept = tools.on.filter((name) => !names.includes(name));
+  setRoutineBrowserSwitch(slug, on);
+  setRoutineTools(slug, on ? { off, on: [...kept, ...names] } : { off: [...off, ...names], on: kept });
 }
 
 export function setRoutineTools(slug: string, tools: SessionTools): SessionTools {
@@ -2664,6 +2731,10 @@ export function rememberTools(reported: KnownTool[]): void {
   // The first moment the browser's tools can be told apart from the rest, and
   // every moment a new one turns up.
   adoptBrowserGrants(getDb(), fresh);
+  if (fresh.length) {
+    const { servers, browsers } = serversAndBrowsers();
+    carryRoutineBrowser(getDb(), fresh.filter((name) => browserTool(name, servers, browsers)));
+  }
 }
 
 /**
