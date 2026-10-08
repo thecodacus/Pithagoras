@@ -6,10 +6,9 @@ import { fileURLToPath } from "node:url";
 import { inlineBrowserScreenshot } from "./browser-screenshot.js";
 import { cleanBrowserSnapshot, isBrowserSnapshot } from "./browser-snapshot-format.js";
 import { bareRef } from "../browser/ref.js";
-import { listToolRules, recordAudit, useGrant, type ToolRule } from "../db.js";
+import { listToolRules, mcpView, recordAudit, useGrant, type ToolRule } from "../db.js";
 import { EDIT_IMAGE_TOOL } from "../image-generation.js";
-import { PORTAL_BROWSER_TOOLS, mcpServerOf } from "../tool-policy.js";
-import { mcpServerNames } from "../api/mcp.js";
+import { PORTAL_BROWSER_TOOLS } from "../tool-policy.js";
 import { isWithinText, pathBelow, realPath, realPathAhead } from "../within.js";
 import { agentsRoot, listAgents } from "../agents.js";
 import { workspaceRoot } from "../workspaces.js";
@@ -74,10 +73,18 @@ function untrustedResult(toolName: string, input: Record<string, unknown>): bool
  * matched as well, whatever the adapter makes of it.
  *
  * A script (`mcp_script`, where the adapter's script mode is on) can call any
- * tool and says which only as it runs, so it is refused while any server's tool
- * is switched off here: it cannot be held to the switches one call at a time.
+ * tool and says which only as it runs, so it is refused while a tool the
+ * adapter reaches on a server is switched off here: it cannot be held to the
+ * switches one call at a time. Only such a tool: one the configuration leaves
+ * out is off for pi too, and the adapter would not reach it anyway; a tool of
+ * another extension whose name merely starts like a server's is no script's.
  */
-export function switchedOffVia(toolName: string, input: Record<string, unknown>, off: ReadonlySet<string>): string | undefined {
+export function switchedOffVia(
+  toolName: string,
+  input: Record<string, unknown>,
+  off: ReadonlySet<string>,
+  serverTool?: (name: string) => boolean,
+): string | undefined {
   if (!off.size) return undefined;
   const same = (name: string) => name.replace(/-/g, "_");
   if (toolName === "mcp") {
@@ -92,8 +99,8 @@ export function switchedOffVia(toolName: string, input: Record<string, unknown>,
     return undefined;
   }
   if (toolName === "mcp_script") {
-    const servers = mcpServerNames();
-    return [...off].find((name) => name !== "mcp" && mcpServerOf(name, servers) !== undefined);
+    const reaches = serverTool ?? mcpView().serverTool;
+    return [...off].find((name) => reaches(name));
   }
   return undefined;
 }

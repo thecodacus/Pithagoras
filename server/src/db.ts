@@ -2160,11 +2160,11 @@ export function knownTools(): KnownTool[] {
  * For a chat, `folder` is where it runs, whose project may bring packages of
  * its own.
  */
-export function shownTools(folder?: string): (Omit<KnownTool, "package" | "inline"> & { inline?: true; cached?: true })[] {
+export function shownTools(folder?: string, view: McpView = mcpView()): (Omit<KnownTool, "package" | "inline"> & { inline?: true; cached?: true })[] {
   const project = folder ? readProjectPiSettings(folder).packages : undefined;
   // An MCP server's tool that the adapter's configuration no longer registers
   // is not there to be switched: listing it was the list saying otherwise.
-  const offers = mcpOffers();
+  const { offers, catalogue } = view;
   // The portal's own tools belong to no package, so the packages cannot say
   // that one is not offered: image generation and image editing say so
   // themselves, while they are off.
@@ -2177,7 +2177,7 @@ export function shownTools(folder?: string): (Omit<KnownTool, "package" | "inlin
   // Every MCP server's tools, from the adapter's cache, whether a chat has had them one by one or not: a server is a
   // group like any other, whole or tool by tool. A tool a chat reported is listed as it reported it.
   const seen = new Set(known.map((t) => t.name));
-  const available = [...known, ...mcpCatalogueTools().filter((t) => !seen.has(t.name))].filter(toolAvailability(readPiSettings().packages, project));
+  const available = [...known, ...catalogue.filter((t) => !seen.has(t.name))].filter(toolAvailability(readPiSettings().packages, project));
   return [...available, ...notYetSeen(available, images, editing)]
     .filter((tool) => images || !(tool.name === GENERATE_IMAGE_TOOL && tool.inline))
     .filter((tool) => editing || !(tool.name === EDIT_IMAGE_TOOL && tool.inline))
@@ -2309,7 +2309,7 @@ function setRemovedMcpServers(names: string[]): void {
 const ADAPTER_LABEL = "pi-mcp-adapter";
 
 /** The tools that carry no server's name: the adapter's own and the portal's browser tools, which a server's name can start without them being its. */
-const noServerOf = (name: string): boolean => (PORTAL_BROWSER_TOOLS as readonly string[]).includes(name) || name === "mcp" || name === "mcpScript";
+const noServerOf = (name: string): boolean => (PORTAL_BROWSER_TOOLS as readonly string[]).includes(name) || name === "mcp" || name === "mcp_script" || name === "mcpScript";
 
 /** Does the MCP adapter register this tool? By its package where it is recorded, by the label it is filed under where it is not. */
 function adapterTool(t: Pick<KnownTool, "source" | "package">): boolean {
@@ -2317,33 +2317,49 @@ function adapterTool(t: Pick<KnownTool, "source" | "package">): boolean {
 }
 
 /**
- * What the MCP adapter does with each tool, as its configuration and cache
- * stand now (see mcp-offer.ts): undefined for a tool that is not a server's.
- * Read once per call, for a pass over a list.
+ * The MCP adapter's configuration and cache as they stand now, read once for a
+ * pass over a list (see mcp-offer.ts):
+ * - `offers`: what the adapter does with each tool, undefined for a tool that
+ *   is not a server's;
+ * - `catalogue`: every tool of the servers the configuration has on, from the
+ *   cache, as the portal remembers a tool: filed under the adapter, which
+ *   brings them, so they go with it when it is switched off;
+ * - `serverTool`: whether a name is a tool the adapter reaches on a server now,
+ *   which is what an MCP script could call.
  *
  * A configuration that cannot be read says nothing about any tool: the panel
  * offers the file to be fixed, and until it is, nothing is withdrawn over it.
  */
-export function mcpOffers(): (tool: Pick<KnownTool, "name" | "source" | "package">) => McpOffer | undefined {
-  const { config, error } = readMcpFile();
-  if (error) return () => undefined;
-  const offer = mcpOffer(config, readMcpCache());
-  return (tool) => (adapterTool(tool) && !noServerOf(tool.name) ? offer(tool.name) : undefined);
+export interface McpView {
+  offers: (tool: Pick<KnownTool, "name" | "source" | "package">) => McpOffer | undefined;
+  catalogue: KnownTool[];
+  serverTool: (name: string) => boolean;
 }
 
-/**
- * Every tool of the MCP servers the configuration has on, from the adapter's
- * cache (mcp-offer.ts), as the portal remembers a tool: filed under the
- * adapter, which brings them, so they go with it when it is switched off.
- */
-export function mcpCatalogueTools(): KnownTool[] {
+export function mcpView(): McpView {
   const { config, error } = readMcpFile();
-  if (error) return [];
-  return mcpCatalogue(config, readMcpCache()).map((t) => ({
+  if (error) return { offers: () => undefined, catalogue: [], serverTool: () => false };
+  const cache = readMcpCache();
+  const offer = mcpOffer(config, cache);
+  const catalogue: KnownTool[] = mcpCatalogue(config, cache).map((t) => ({
     name: t.name,
     source: ADAPTER_LABEL,
     ...(t.description ? { description: t.description } : {}),
   }));
+  const offers = (tool: Pick<KnownTool, "name" | "source" | "package">) =>
+    adapterTool(tool) && !noServerOf(tool.name) ? offer(tool.name) : undefined;
+  let reachable: Set<string> | undefined;
+  const serverTool = (name: string) => {
+    if (!reachable) {
+      reachable = new Set(catalogue.map((t) => t.name));
+      for (const tool of knownTools()) {
+        const state = offers(tool);
+        if (state !== undefined && state !== "withdrawn") reachable.add(tool.name);
+      }
+    }
+    return reachable.has(name);
+  };
+  return { offers, catalogue, serverTool };
 }
 
 /**
@@ -2351,15 +2367,24 @@ export function mcpCatalogueTools(): KnownTool[] {
  * chat's pi is told to have off on top of its switches, so that one still
  * holding such a tool from before the configuration changed cannot use it.
  * Told by what the portal remembers of each, which is what says it is the
- * adapter's; a name it has never seen is not judged.
+ * adapter's; a name it has never seen is not judged — unless a server the
+ * portal removed claims it: removing a server forgets its tools, and a chat
+ * still running with it would otherwise go on using the tools of a server that
+ * is gone, where one merely switched off would have them off.
  */
-export function withdrawnMcpTools(names: Iterable<string> = []): string[] {
-  const offers = mcpOffers();
+export function withdrawnMcpTools(names: Iterable<string> = [], view: McpView = mcpView()): string[] {
   const known = new Map(knownTools().map((t) => [t.name, t]));
+  const configured = readMcpFile();
+  const servers = configured.error ? [] : Object.keys(configured.config.mcpServers);
+  const gone = configured.error ? [] : removedMcpServers().filter((name) => !servers.includes(name));
   const withdrawn = new Set<string>();
   for (const name of new Set([...names, ...known.keys()])) {
     const tool = known.get(name);
-    if (tool && offers(tool) === "withdrawn") withdrawn.add(name);
+    if (tool) {
+      if (view.offers(tool) === "withdrawn") withdrawn.add(name);
+    } else if (gone.length && !noServerOf(name) && gone.includes(mcpServerOf(name, [...servers, ...gone]) ?? "")) {
+      withdrawn.add(name);
+    }
   }
   return [...withdrawn].sort();
 }

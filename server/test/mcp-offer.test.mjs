@@ -14,7 +14,7 @@ const cacheFile = (servers) => writeFileSync(path.join(agent, "mcp-cache.json"),
 
 const { mcpCatalogue, mcpOffer } = await import("../dist/mcp-offer.js");
 const { switchedOffVia, guardExtension } = await import("../dist/pi/guard.js");
-const { createSession, rememberTools, shownTools, withdrawnMcpTools } = await import("../dist/db.js");
+const { createSession, mcpServersRemoved, rememberTools, shownTools, withdrawnMcpTools } = await import("../dist/db.js");
 const { sessions } = await import("../dist/session-manager.js");
 
 mock.method(console, "warn", () => {});
@@ -42,6 +42,9 @@ test("a server switched off, a tool left out or no longer there is withdrawn", (
   assert.equal(mcpOffer(servers({ includeTools: ["search"] }), { servers: cache })("jira_search"), "cached");
   assert.equal(mcpOffer(servers({}), { servers: cache })("jira_gone"), "withdrawn", "the cache is what the adapter registers from");
   assert.equal(mcpOffer(servers({}), null)("jira_gone"), "offered", "without a cache there is nothing to go by");
+  assert.equal(mcpOffer(servers({}), { servers: { jira: { tools: [] } } })("jira_search"), "offered", "nor with an entry that lists nothing");
+  assert.equal(mcpOffer(servers({ includeTools: ["admin.delete"] }), { servers: cache })("jira_admin_delete"), "cached", "by the server's own name for it, dots and all");
+  assert.equal(mcpOffer(servers({ excludeTools: ["admin.*"] }), { servers: cache })("jira_admin_delete"), "withdrawn");
 });
 
 test("a server's tools are listed whether the model is offered them one by one or through the mcp tool", () => {
@@ -70,7 +73,8 @@ test("the mcp tool does not reach a tool that is switched off, by any of its nam
 });
 
 test("the guard refuses it before anything could allow it, and an MCP script while a server's tool is off", () => {
-  mcpFile({ mcpServers: { jira: { command: "j", directTools: true } } });
+  cacheFile(cache);
+  mcpFile({ mcpServers: { jira: { command: "j", directTools: true, excludeTools: ["admin.delete"] }, web: { command: "w" } } });
   let off = new Set(["jira_create_issue"]);
   const h = {};
   guardExtension("t", () => ({ role: "primary" }), "s", true, () => ({ allowed: true, allowlist: [] }), undefined, [], () => off)({ on: (k, f) => (h[k] = f) });
@@ -82,6 +86,8 @@ test("the guard refuses it before anything could allow it, and an MCP script whi
   off = new Set(["bash"]);
   assert.equal(h.tool_call({ toolName: "mcp", input: { tool: "jira_create_issue" } }), undefined, "read at each call");
   assert.equal(h.tool_call({ toolName: "mcp_script", input: { code: "" } }), undefined, "no server's tool is off");
+  off = new Set(["jira_admin_delete", "web_search"]);
+  assert.equal(h.tool_call({ toolName: "mcp_script", input: { code: "" } }), undefined, "one the configuration leaves out, or another extension's that starts like a server's name, is no script's");
 });
 
 const names = (list) => list.map((t) => t.name).sort();
@@ -137,6 +143,14 @@ test("a server behind the mcp tool only is switched like any other: whole, or to
   await sessions.setTools("proxy", all);
   assert.deepEqual(sessions.piOff("proxy"), [...all].sort());
   assert.ok((await sessions.getTools("proxy")).tools.filter((t) => t.name.startsWith("jira_")).every((t) => !t.enabled));
+});
+
+test("a server that was removed has its tools off in a chat still running with it", () => {
+  mcpFile({ mcpServers: { jira: { command: "j" } } });
+  mcpServersRemoved(["jira", "notes"], ["jira"]);
+  assert.deepEqual(withdrawnMcpTools(["notes_read", "jira_search", "mcp", "bash"]), ["notes_read"]);
+  mcpFile({ mcpServers: { jira: { command: "j" }, notes: { command: "n" } } });
+  assert.deepEqual(withdrawnMcpTools(["notes_read"]), [], "configured again");
 });
 
 test("a configuration that cannot be read withdraws nothing", () => {
