@@ -662,7 +662,7 @@ export function MemoryAddon({ onError }: { onError: (e: string) => void }) {
             <p className="text-[11px] text-fg-faint">
               {tx("Its model and how often it tidies up are set in its own environment ({llm}, {dream}):", { llm: <code>LLM_*</code>, dream: <code>DREAM_INTERVAL</code> })}
             </p>
-            <pre className="overflow-x-auto rounded-lg bg-fg/5 p-2 font-mono text-[11px] text-fg-muted">{COMPOSE}</pre>
+            <pre className="overflow-x-auto overflow-y-hidden rounded-lg bg-fg/5 p-2 font-mono text-[11px] text-fg-muted">{COMPOSE}</pre>
           </div>
         </details>
       )}

@@ -186,7 +186,7 @@
 .md p { @apply my-1.5 leading-relaxed; }
 .md ul, .md ol { @apply my-1.5 ml-5 list-disc space-y-1; }
 .md code { @apply rounded bg-raised px-1 py-0.5 text-[0.85em] text-fg-muted; }
-.md pre { @apply my-2 overflow-x-auto rounded-lg bg-raised p-3; }
+.md pre { @apply my-2 overflow-x-auto overflow-y-hidden rounded-lg bg-raised p-3; }
 .md pre code { @apply bg-transparent p-0 text-fg; }
 .md h1, .md h2, .md h3 { @apply mb-1 mt-3 font-semibold; }
 .md a { @apply text-accent hover:underline; }
