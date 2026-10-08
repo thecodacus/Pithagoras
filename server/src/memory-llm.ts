@@ -111,27 +111,33 @@ class Refused extends Error {
  * The wait here is of its own: long enough for one answer by default, settable from where the portal starts,
  * and when it does come round it says so (a timeout), not like a failure of the model's server.
  */
-const waitOf = (): { headers: number; body: number } => ({
-  headers: Number(process.env.UNDERSTORY_LLM_HEADERS_TIMEOUT_MS) || 30 * 60_000,
-  body: Number(process.env.UNDERSTORY_LLM_BODY_TIMEOUT_MS) || 30 * 60_000,
-});
-
-// One per wait, kept for the keep-alive of its connections; made when first asked, remade when what is asked changes.
-let upstream: { headers: number; body: number; agent: Agent } | undefined;
-const dispatcherOf = (): Agent => {
-  const { headers, body } = waitOf();
-  if (!upstream || upstream.headers !== headers || upstream.body !== body) {
-    upstream?.agent.close().catch(() => {});
-    upstream = { headers, body, agent: new Agent({ headersTimeout: headers, bodyTimeout: body }) };
-  }
-  return upstream.agent;
+// A number at least zero takes effect; undici reads 0 as "no wait at all". Anything else — empty,
+// mistyped, negative, unbounded — is a setting gone wrong, and takes the default instead of reaching undici.
+const waitMs = (raw: string | undefined, fallback: number): number => {
+  const n = raw == null || raw.trim() === "" ? NaN : Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
 };
 
-/** Whether the failure is that wait coming round — not a refusal or a server nowhere to be reached: then it answers as a timeout, so who asked knows it may ask again. */
+const waitOf = (): { headers: number; body: number } => ({
+  // Until the model's answer reaches us — its headers. An answer that does not stream sends none until it is
+  // done, which is what Understory gets while it asks without streaming, so this is the whole answer there.
+  headers: waitMs(process.env.UNDERSTORY_LLM_HEADERS_TIMEOUT_MS, 30 * 60_000),
+  body: waitMs(process.env.UNDERSTORY_LLM_BODY_TIMEOUT_MS, 30 * 60_000), // between the bytes of a streaming answer
+});
+
+// The waits change only at startup, so one agent is made when first asked and kept for its connections' keep-alive.
+let upstream: Agent | undefined;
+const dispatcherOf = (): Agent => {
+  upstream ??= new Agent({ headersTimeout: waitOf().headers, bodyTimeout: waitOf().body });
+  return upstream;
+};
+
+/** Whether the failure is that wait coming round — the wait out for the answer's headers, or between a streaming
+ * answer's bytes. An address no one answers at fails differently (a connect timeout) and stays a plain failure. */
 const timedOut = (e: unknown): boolean => {
   for (let err = e; err instanceof Error; err = err.cause instanceof Error ? err.cause : undefined) {
     const code = (err as { code?: unknown }).code;
-    if ((typeof code === "string" && /_TIMEOUT$/.test(code)) || /TimeoutError$/.test(err.name)) return true;
+    if (code === "UND_ERR_HEADERS_TIMEOUT" || code === "UND_ERR_BODY_TIMEOUT") return true;
   }
   return false;
 };
@@ -202,14 +208,21 @@ export function memoryLlmRouter(modelOf: ModelOf): Router {
       // Through pipeline, which hears the error either side raises: Understory
       // hanging up aborts the model's answer, and that must end here, quietly.
       await pipeline(Readable.fromWeb(answer.body as any), res).catch((e) => {
-        if (!stop.signal.aborted) console.error(`[portal] the model's answer ended midway: ${(e as Error).message}`);
+        // The 200 has already gone to Understory, so this cannot change it — only say in the log what happened.
+        if (!stop.signal.aborted)
+          console.error(
+            timedOut(e) ? "[portal] the wait on the model's answer came round (UNDERSTORY_LLM_BODY_TIMEOUT_MS): " : "[portal] the model's answer ended midway: ",
+            (e as Error).message,
+          );
       });
     } catch (e) {
       if ((e as Error).name === "AbortError") return;
       if (!res.headersSent && timedOut(e)) {
         const s = Math.round(waitOf().headers / 1000);
-        console.error(`[portal] the model's answer did not come within ${s}s; giving it up as a timeout`);
-        return res.status(504).json({ error: { message: `The model did not answer within ${s} seconds; give the wait more time, or Understory a faster model.` } });
+        console.error(
+          `[portal] the model's answer did not come within ${s}s (UNDERSTORY_LLM_HEADERS_TIMEOUT_MS); giving it up as a timeout`,
+        );
+        return res.status(504).json({ error: { message: `The model did not answer within ${s} seconds; give the wait more time — UNDERSTORY_LLM_HEADERS_TIMEOUT_MS — or Understory a faster model.` } });
       }
       const status = e instanceof Refused ? e.status : 502;
       if (!res.headersSent) res.status(status).json({ error: { message: (e as Error).message } });

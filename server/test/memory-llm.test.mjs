@@ -40,6 +40,12 @@ writeFileSync(path.join(process.env.PI_CODING_AGENT_DIR, "models.json"), JSON.st
       baseUrl: `http://127.0.0.1:${upstream.address().port}`, api: "openai-completions", apiKey: "none",
       models: [{ id: "m", name: "M", reasoning: false, input: ["text"], contextWindow: 10000, maxTokens: 100 }],
     },
+    // An address no one answers at: the connect times out of itself, on undici's own
+    // ten-second connect timeout — not on the wait above.
+    dark: {
+      baseUrl: "http://10.255.255.1:9", api: "openai-completions", apiKey: "none",
+      models: [{ id: "m", name: "M", reasoning: false, input: ["text"], contextWindow: 10000, maxTokens: 100 }],
+    },
   },
 }));
 
@@ -52,8 +58,9 @@ putSetting("understory_llm_token", "test-key");
 // A chat asking: the request goes to its model, which the test names.
 noteToolCall("asking-chat", "call-1", "understory_remember", "start");
 
+let target = { provider: "fake", id: "m" };
 const app = express();
-app.use(memoryLlmRouter(async () => ({ provider: "fake", id: "m" })));
+app.use(memoryLlmRouter(async () => target));
 const http = app.listen(0, "127.0.0.1");
 await once(http, "listening");
 const base = `http://127.0.0.1:${http.address().port}`;
@@ -87,4 +94,15 @@ test("a stranger does not reach the model", async () => {
   const r = await ask("not-the-key");
   assert.equal(r.status, 401);
   assert.equal(requests.length, before);
+});
+
+// The wait out for an answer is not the waiting on an address no one answers at:
+// that connect times out of itself, and must stay a plain failure, not be said as
+// "did not answer within the wait" with the hint to give the wait more time.
+test("an address no one answers is not 'the wait came round' — it stays a plain failure", async () => {
+  target = { provider: "dark", id: "m" };
+  const r = await ask("test-key");
+  assert.equal(r.status, 502);
+  assert.doesNotMatch((await r.json()).error.message, /did not answer within/);
+  target = { provider: "fake", id: "m" };
 });

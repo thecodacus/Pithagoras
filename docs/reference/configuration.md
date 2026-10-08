@@ -62,7 +62,7 @@ an empty field inherits, and clearing one hands the setting back.
 | `MEMORY_UNDERSTORY_URL` | `http://localhost:3800/mcp` | Where Settings → Add-ons → Memory looks for Understory first. |
 | `MEMORY_UNDERSTORY_AUTH_TOKEN` | — | Understory's bearer token, named in `mcp.json` rather than copied into it. |
 | `UNDERSTORY_PORT` | `3800` | The port the Understory the portal runs listens on (host network). |
-| `UNDERSTORY_LLM_HEADERS_TIMEOUT_MS` | `1800000` | How long, in ms, the portal waits for a whole answer from the model Understory thinks with before it gives up and says so — an answer that does not stream sends no byte until it is done, and Node's own fetch cuts one off after five quiet minutes. |
+| `UNDERSTORY_LLM_HEADERS_TIMEOUT_MS` | `1800000` | How long, in ms, the portal waits for an answer from the model Understory thinks with before it gives up and says so — until its headers arrive; an answer that does not stream (what Understory gets today) sends no byte until it is done, so this covers the whole of it there. Node's own fetch cuts one off after five quiet minutes. `0` sets no wait. |
 | `UNDERSTORY_LLM_BODY_TIMEOUT_MS` | `1800000` | How long, in ms, a streaming answer from that model may go quiet between bytes before it is cut off. |
 | `NPM_REGISTRY_URL` | `https://registry.npmjs.org` | Registry the package catalogue in Settings → Extensions searches. |
 | `DOCKER_SOCKET` | `/var/run/docker.sock` | The Docker socket the managed add-ons use. |
