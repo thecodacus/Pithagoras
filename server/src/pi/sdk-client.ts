@@ -407,6 +407,7 @@ export class SdkPiClient extends EventEmitter implements PiClient {
             opts.browserNow ?? (() => ({ allowed: false, allowlist: [] })),
             opts.cwd,
             [path.join(pi.getAgentDir(), "skills"), ...(builtinSkills ? [builtinSkills] : [])],
+            () => switchedOff(),
           ) },
       ];
       if (canvases) factories.push({ name: "canvases", factory: canvases.extension });

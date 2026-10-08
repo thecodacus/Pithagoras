@@ -256,6 +256,8 @@ export interface PortalTool {
   defaultOn?: boolean;
   /** One of the portal's own, not an extension's of the same name: the list groups its picture tools. */
   inline?: true;
+  /** An MCP server's tool listed from the adapter's cache: the server starts when one of its tools is first used. */
+  cached?: true;
 }
 
 /** A picture going with a message: a data: URL, which the box also shows it from. */
