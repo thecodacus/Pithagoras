@@ -429,6 +429,8 @@ and uses for the Memory page; nothing else can read the memory through it.
 | --- | --- | --- |
 | `UNDERSTORY_PORT` | `3800` | The port the portal's Understory listens on. |
 | `UNDERSTORY_VOLUME` | `pithagoras_understory-memory` | The volume that holds its memory. |
+| `UNDERSTORY_LLM_HEADERS_TIMEOUT_MS` | `1800000` | How long, in ms, to wait for the model's whole answer before it is given up on and said so as a timeout; an answer that does not stream sends no byte until it is done, and Node's own fetch cuts one off after five quiet minutes. |
+| `UNDERSTORY_LLM_BODY_TIMEOUT_MS` | `1800000` | How long, in ms, a streaming answer may go quiet between its bytes before it is cut off. |
 
 Without Docker access, or to keep running your own, see
 [Running your own](#running-your-own).

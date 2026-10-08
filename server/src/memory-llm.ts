@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import express, { type Router } from "express";
+import { Agent, fetch as modelFetch } from "undici";
 import { chatModel, getSession } from "./db.js";
 import { modelRuntime } from "./api/providers.js";
 import { UNDERSTORY } from "./features.js";
@@ -103,6 +104,38 @@ class Refused extends Error {
   }
 }
 
+/**
+ * How long an answer may take. Node's own fetch gives up on a request that has moved no bytes for five
+ * minutes — and an answer that does not stream moves none until the whole of it is done, so a local model
+ * thinking past the fifth minute died mid-generation, and its client retried a run that was otherwise sound.
+ * The wait here is of its own: long enough for one answer by default, settable from where the portal starts,
+ * and when it does come round it says so (a timeout), not like a failure of the model's server.
+ */
+const waitOf = (): { headers: number; body: number } => ({
+  headers: Number(process.env.UNDERSTORY_LLM_HEADERS_TIMEOUT_MS) || 30 * 60_000,
+  body: Number(process.env.UNDERSTORY_LLM_BODY_TIMEOUT_MS) || 30 * 60_000,
+});
+
+// One per wait, kept for the keep-alive of its connections; made when first asked, remade when what is asked changes.
+let upstream: { headers: number; body: number; agent: Agent } | undefined;
+const dispatcherOf = (): Agent => {
+  const { headers, body } = waitOf();
+  if (!upstream || upstream.headers !== headers || upstream.body !== body) {
+    upstream?.agent.close().catch(() => {});
+    upstream = { headers, body, agent: new Agent({ headersTimeout: headers, bodyTimeout: body }) };
+  }
+  return upstream.agent;
+};
+
+/** Whether the failure is that wait coming round — not a refusal or a server nowhere to be reached: then it answers as a timeout, so who asked knows it may ask again. */
+const timedOut = (e: unknown): boolean => {
+  for (let err = e; err instanceof Error; err = err.cause instanceof Error ? err.cause : undefined) {
+    const code = (err as { code?: unknown }).code;
+    if ((typeof code === "string" && /_TIMEOUT$/.test(code)) || /TimeoutError$/.test(err.name)) return true;
+  }
+  return false;
+};
+
 /** Where a model's chat completions go, and how to sign in there. */
 async function endpointOf(provider: string, id: string): Promise<{ url: string; headers: Record<string, string> }> {
   const rt = await modelRuntime();
@@ -159,16 +192,25 @@ export function memoryLlmRouter(modelOf: ModelOf): Router {
       // Stopped with the request: Understory giving up is the model's cue to stop too.
       const stop = new AbortController();
       res.on("close", () => !res.writableEnded && stop.abort());
-      const answer = await fetch(url, { method: "POST", headers, body: JSON.stringify({ ...req.body, model: id }), signal: stop.signal });
+      // Through its own undici, whose wait is of its own: Node's fetch would not take the newer Agent,
+      // and with these two as one pair no byte-flowing answer is ever cut at five minutes.
+      const answer = await modelFetch(url, { method: "POST", headers, body: JSON.stringify({ ...req.body, model: id }), signal: stop.signal, dispatcher: dispatcherOf() });
       res.status(answer.status);
       const type = answer.headers.get("content-type");
       if (type) res.setHeader("content-type", type);
       if (!answer.body) return res.end();
       // Through pipeline, which hears the error either side raises: Understory
       // hanging up aborts the model's answer, and that must end here, quietly.
-      await pipeline(Readable.fromWeb(answer.body as any), res).catch(() => {});
+      await pipeline(Readable.fromWeb(answer.body as any), res).catch((e) => {
+        if (!stop.signal.aborted) console.error(`[portal] the model's answer ended midway: ${(e as Error).message}`);
+      });
     } catch (e) {
       if ((e as Error).name === "AbortError") return;
+      if (!res.headersSent && timedOut(e)) {
+        const s = Math.round(waitOf().headers / 1000);
+        console.error(`[portal] the model's answer did not come within ${s}s; giving it up as a timeout`);
+        return res.status(504).json({ error: { message: `The model did not answer within ${s} seconds; give the wait more time, or Understory a faster model.` } });
+      }
       const status = e instanceof Refused ? e.status : 502;
       if (!res.headersSent) res.status(status).json({ error: { message: (e as Error).message } });
       else res.end();
