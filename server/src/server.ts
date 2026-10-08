@@ -58,7 +58,7 @@ import { EXECUTOR_KIND } from "./executor-kind.js";
 import { sessions, CommandFailed, IMAGE_ROOT } from "./session-manager.js";
 import { ImageError, MAX_IMAGE_BYTES, MAX_IMAGES, imagePath, mimeOf, parseImages, saveImages } from "./prompt-images.js";
 import { defaultsFor, exceptionsFor, toolEnabled, toolSource } from "./tool-policy.js";
-import { mcpRouter, mcpServerNames } from "./api/mcp.js";
+import { mcpRouter, mcpServerNames, onMcpWritten } from "./api/mcp.js";
 import { authEnabled, checkPassword, isAuthed, issueCookie, keptShortPassword, requireAuth, signOut } from "./auth.js";
 import { packagesRouter } from "./api/packages.js";
 import { extensionsRouter } from "./api/extensions.js";
@@ -1327,7 +1327,10 @@ app.use("/api", skillsRouter());
 app.use("/api", filesRouter());
 app.use("/api", gitRouter());
 // What the configuration offers is what a running chat may use: told at once, as a default is.
-app.use("/api", mcpRouter(() => void sessions.applyToolDefaults()));
+onMcpWritten(() => {
+  sessions.applyToolDefaults().catch((e) => console.error(`[portal] could not apply the MCP configuration to running chats: ${(e as Error).message}`));
+});
+app.use("/api", mcpRouter());
 app.use("/api", providersRouter());
 app.use("/api", peopleRouter());
 app.use("/api", browserRouter());

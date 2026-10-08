@@ -14,8 +14,9 @@ const cacheFile = (servers) => writeFileSync(path.join(agent, "mcp-cache.json"),
 
 const { mcpCatalogue, mcpOffer } = await import("../dist/mcp-offer.js");
 const { switchedOffVia, guardExtension } = await import("../dist/pi/guard.js");
-const { createSession, mcpServersRemoved, rememberTools, shownTools, withdrawnMcpTools } = await import("../dist/db.js");
+const { createSession, rememberTools, shownTools, withdrawnMcpTools } = await import("../dist/db.js");
 const { sessions } = await import("../dist/session-manager.js");
+const { onMcpWritten, writeMcpFile } = await import("../dist/api/mcp.js");
 
 mock.method(console, "warn", () => {});
 
@@ -70,6 +71,8 @@ test("the mcp tool does not reach a tool that is switched off, by any of its nam
   assert.equal(switchedOffVia("mcp", { search: "jira" }, off), undefined);
   assert.equal(switchedOffVia("jira_search", {}, off), undefined);
   assert.equal(switchedOffVia("mcp", { tool: "jira_create_issue" }, new Set()), undefined);
+  assert.equal(switchedOffVia("mcp", { tool: "jira_create.issue" }, off), "jira_create_issue", "dots as the adapter writes them");
+  assert.equal(switchedOffVia("mcpScript", {}, off, () => true), "jira_create_issue");
 });
 
 test("the guard refuses it before anything could allow it, and an MCP script while a server's tool is off", () => {
@@ -145,15 +148,34 @@ test("a server behind the mcp tool only is switched like any other: whole, or to
   assert.ok((await sessions.getTools("proxy")).tools.filter((t) => t.name.startsWith("jira_")).every((t) => !t.enabled));
 });
 
-test("a server that was removed has its tools off in a chat still running with it", () => {
-  mcpFile({ mcpServers: { jira: { command: "j" } } });
-  mcpServersRemoved(["jira", "notes"], ["jira"]);
+test("a server that was removed has its tools off in a chat still running with it, whoever wrote the file", () => {
+  let told = 0;
+  onMcpWritten(() => told++);
+  writeMcpFile({ mcpServers: { jira: { command: "j" }, notes: { command: "n" } } });
+  // As Features does when Understory is switched off: the file written without the panel's routes.
+  writeMcpFile({ mcpServers: { jira: { command: "j" } } });
+  assert.equal(told, 2, "the running chats are told after every write");
   assert.deepEqual(withdrawnMcpTools(["notes_read", "jira_search", "mcp", "bash"]), ["notes_read"]);
-  mcpFile({ mcpServers: { jira: { command: "j" }, notes: { command: "n" } } });
+  writeMcpFile({ mcpServers: { jira: { command: "j" }, notes: { command: "n" } } });
   assert.deepEqual(withdrawnMcpTools(["notes_read"]), [], "configured again");
+  onMcpWritten(() => {});
 });
 
-test("a configuration that cannot be read withdraws nothing", () => {
+test("a configuration that cannot be read is taken as it last could be", () => {
+  mcpFile({ mcpServers: { jira: { command: "j", disabled: true } } });
+  assert.deepEqual(withdrawnMcpTools(["jira_search"]), ["jira_create_issue", "jira_search"]);
   writeFileSync(path.join(agent, "mcp.json"), "{ not json");
-  assert.deepEqual(withdrawnMcpTools(), []);
+  assert.deepEqual(withdrawnMcpTools(["jira_search"]), ["jira_create_issue", "jira_search"], "a typo hands nothing back");
+});
+
+test("a server's tools from the cache go with the adapter's package, whatever it was installed from", () => {
+  cacheFile(cache);
+  mcpFile({ mcpServers: { jira: { command: "j" } } });
+  const source = "git:github.com/someone/pi-mcp-adapter";
+  writeFileSync(path.join(agent, "settings.json"), JSON.stringify({ packages: [source] }));
+  // One no chat has registered one by one: listed from the cache alone.
+  assert.ok(names(shownTools()).includes("jira_admin_delete"));
+  writeFileSync(path.join(agent, "settings.json"), JSON.stringify({ packages: [{ source, extensions: [] }] }));
+  assert.ok(!names(shownTools()).includes("jira_admin_delete"), "switched off");
+  writeFileSync(path.join(agent, "settings.json"), JSON.stringify({ packages: ["npm:pi-mcp-adapter@2.18.0"] }));
 });

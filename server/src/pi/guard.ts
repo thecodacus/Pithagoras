@@ -86,19 +86,22 @@ export function switchedOffVia(
   serverTool?: (name: string) => boolean,
 ): string | undefined {
   if (!off.size) return undefined;
-  const same = (name: string) => name.replace(/-/g, "_");
+  // The adapter takes a name with hyphens for underscores (findToolByName); dots as well, which it
+  // writes as underscores, so a name it might take one day is not a way round.
+  const same = (name: string) => name.replace(/[-.]/g, "_");
   if (toolName === "mcp") {
     const server = typeof input.server === "string" && input.server ? same(input.server) : undefined;
     for (const key of ["tool", "describe"]) {
       const asked = input[key];
       if (typeof asked !== "string" || !asked) continue;
-      const wanted = [same(asked), ...(server ? [`${server}_${same(asked.replace(/\./g, "_"))}`] : [])];
+      const wanted = [same(asked), ...(server ? [`${server}_${same(asked)}`] : [])];
       const hit = [...off].find((name) => wanted.includes(same(name)));
       if (hit) return hit;
     }
     return undefined;
   }
-  if (toolName === "mcp_script") {
+  // `mcpScript` too: the name the portal's own lists have for it, should an adapter register it so.
+  if (toolName === "mcp_script" || toolName === "mcpScript") {
     const reaches = serverTool ?? mcpView().serverTool;
     return [...off].find((name) => reaches(name));
   }
@@ -938,7 +941,7 @@ export function guardExtension(
         return {
           block: true,
           reason:
-            event.toolName === "mcp_script"
+            event.toolName !== "mcp"
               ? `Refused: "${offTool}" is switched off in this conversation, and an MCP script could reach it. ` +
                 "Call the MCP tools you need one at a time instead."
               : `Refused: "${offTool}" is switched off in this conversation, and the mcp tool does not reach it ` +
