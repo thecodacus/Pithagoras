@@ -5,7 +5,7 @@ import { EDIT_IMAGE_SOURCE, EDIT_IMAGE_TOOL, GENERATE_IMAGE_SOURCE, GENERATE_IMA
 import { PORTAL_BROWSER_TOOLS, browserTool, defaultsFor, mcpServerOf, toolEnabled } from "./tool-policy.js";
 import { projectOf } from "./workspaces.js";
 import { browserServers, dropMcpCache, mcpServerNames, readMcpCache, readMcpFile, serversAndBrowsers } from "./api/mcp.js";
-import { mcpOffer, unlisted, type McpOffer } from "./mcp-offer.js";
+import { mcpCatalogue, mcpOffer, unlisted, type McpOffer } from "./mcp-offer.js";
 import { mkdirSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { isWithinText } from "./within.js";
@@ -2295,7 +2295,11 @@ export function shownTools(folder?: string): (Omit<KnownTool, "package" | "inlin
   // called image-generation.ts has the label the portal's factory has.
   const images = imageGenerationReady();
   const editing = imageEditingReady();
-  const available = knownTools().filter(toolAvailability(readPiSettings().packages, project));
+  const known = knownTools();
+  // Every MCP server's tools, from the adapter's cache, whether a chat has had them one by one or not: a server is a
+  // group like any other, whole or tool by tool. A tool a chat reported is listed as it reported it.
+  const seen = new Set(known.map((t) => t.name));
+  const available = [...known, ...mcpCatalogueTools().filter((t) => !seen.has(t.name))].filter(toolAvailability(readPiSettings().packages, project));
   return [...available, ...notYetSeen(available, images, editing)]
     .filter((tool) => images || !(tool.name === GENERATE_IMAGE_TOOL && tool.inline))
     .filter((tool) => editing || !(tool.name === EDIT_IMAGE_TOOL && tool.inline))
@@ -2447,6 +2451,21 @@ export function mcpOffers(): (tool: Pick<KnownTool, "name" | "source" | "package
   if (error) return () => undefined;
   const offer = mcpOffer(config, readMcpCache());
   return (tool) => (adapterTool(tool) && !noServerOf(tool.name) ? offer(tool.name) : undefined);
+}
+
+/**
+ * Every tool of the MCP servers the configuration has on, from the adapter's
+ * cache (mcp-offer.ts), as the portal remembers a tool: filed under the
+ * adapter, which brings them, so they go with it when it is switched off.
+ */
+export function mcpCatalogueTools(): KnownTool[] {
+  const { config, error } = readMcpFile();
+  if (error) return [];
+  return mcpCatalogue(config, readMcpCache()).map((t) => ({
+    name: t.name,
+    source: ADAPTER_LABEL,
+    ...(t.description ? { description: t.description } : {}),
+  }));
 }
 
 /**

@@ -72,6 +72,7 @@ import {
   recordAudit,
   shownTools,
   mcpOffers,
+  mcpCatalogueTools,
   withdrawnMcpTools,
   browserAllowlist,
   routineGuards,
@@ -2451,27 +2452,34 @@ class SessionManager extends EventEmitter {
    */
   /**
    * What a running chat reported, less the MCP servers' tools the adapter's
-   * configuration no longer registers one by one — still loaded from before it
-   * changed, and off where the configuration says no to them (piOff) — and with
-   * those it lists from its cache marked.
+   * configuration says no to — still loaded from before it changed, and off
+   * (piOff) — with those it lists from its cache marked. And the servers' tools
+   * the chat has not registered one by one, which it reaches through `mcp`: a
+   * server is a group like any other, switched whole or tool by tool.
    */
-  private offered(reported: PiTool[]): PiTool[] {
+  private offered(reported: PiTool[], workspace: string | null | undefined): PiTool[] {
     if (!reported.length) return reported;
     const offers = mcpOffers();
-    return reported.flatMap((tool) => {
+    const listed = reported.flatMap((tool) => {
       const offer = offers(tool);
       if (unlisted(offer)) return [];
       return [offer === "cached" ? { ...tool, cached: true as const } : tool];
     });
+    const have = new Set(listed.map((t) => t.name));
+    const catalogue = new Set(mcpCatalogueTools().map((t) => t.name));
+    const proxied = shownTools(workspace ?? undefined)
+      .filter((t) => catalogue.has(t.name) && !have.has(t.name))
+      .map((t) => ({ ...t, enabled: true }));
+    return [...listed, ...proxied];
   }
 
   async getTools(sessionId: string): Promise<{ tools: PiTool[]; live: boolean }> {
     const client = this.live.get(sessionId)?.client;
     const reported = client?.getTools ? await client.getTools() : [];
     if (reported.length) rememberTools(reported.map(remembered));
-    const listed = this.offered(reported);
     const session = getSession(sessionId);
     const workspace = session?.workspace;
+    const listed = this.offered(reported, workspace);
     // What the chat's agent, project and routine start it with, which is what it is "default" against.
     const defaults = toolDefaultsForSession(session);
     const exceptions = sessionTools(sessionId);
@@ -2503,7 +2511,7 @@ class SessionManager extends EventEmitter {
     const client = this.live.get(sessionId)?.client;
     const reported = client?.getTools ? await client.getTools() : [];
     // Not what the adapter no longer registers: the page did not show it, so it said nothing about it.
-    const listed = this.offered(reported);
+    const listed = this.offered(reported, getSession(sessionId)?.workspace);
     // What this call is answering about: the tools this session registered,
     // plus the ones it already holds an exception for. Not the portal-wide
     // catalogue — a tool that is merely not loaded in this run was not on the
