@@ -430,6 +430,7 @@ export class SdkPiClient extends EventEmitter implements PiClient {
             opts.browserNow ?? (() => ({ allowed: false, allowlist: [] })),
             opts.cwd,
             [path.join(pi.getAgentDir(), "skills"), ...(builtinSkills ? [builtinSkills] : [])],
+            () => switchedOff(),
           ) },
       ];
       // While the sandbox is on, pi's own tools do what they do to the system as the sandbox user: see sandbox/.
