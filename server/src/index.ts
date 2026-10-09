@@ -1,4 +1,7 @@
 import path from "node:path";
+// Node's fetch gave up after five quiet minutes whatever anyone asked; before anything in
+// the process may reach out, it is given waits of its own.
+import "./fetch-waits.js";
 import { DATA_DIR } from "./data-dir.js";
 import { holdDataDir } from "./instance-lock.js";
 import { piCli } from "./pi/package.js";
