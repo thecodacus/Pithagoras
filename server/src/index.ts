@@ -1,7 +1,5 @@
 import path from "node:path";
-// Node's fetch gave up after five quiet minutes whatever anyone asked; before anything in
-// the process may reach out, it is given waits of its own.
-import "./fetch-waits.js";
+import { installFetchWaits } from "./fetch-waits.js";
 import { DATA_DIR } from "./data-dir.js";
 import { holdDataDir } from "./instance-lock.js";
 import { piCli } from "./pi/package.js";
@@ -13,6 +11,10 @@ import { piCli } from "./pi/package.js";
  * a second server on it would mark the running one's chats interrupted. One
  * that is turned away has loaded nothing else.
  */
+// Node's fetch gave up after five quiet minutes whatever anyone asked; before anything in
+// the process may reach out, it is given waits of its own.
+installFetchWaits();
+
 let ours: boolean;
 try {
   ours = await holdDataDir(DATA_DIR);

@@ -6,7 +6,9 @@ import http from "node:http";
 // The waits the whole process's fetch is given — set short, as a run of the portal would ask for.
 process.env.PORTAL_FETCH_HEADERS_TIMEOUT_MS = "400";
 process.env.PORTAL_FETCH_BODY_TIMEOUT_MS = "600";
-const { globalWaits } = await import("../dist/fetch-waits.js");
+// Importing no longer changes how fetch behaves — the test, like the portal's entry, asks for it.
+const { globalWaits, installFetchWaits } = await import("../dist/fetch-waits.js");
+installFetchWaits();
 
 test("the waits are read from where the portal starts", () => {
   assert.equal(globalWaits.headers, 400);
@@ -15,7 +17,8 @@ test("the waits are read from where the portal starts", () => {
 
 test("a fetch given the process's wait is cut off at it, not at node's five minutes", async () => {
   // An address that receives the ask and answers none of it — as Understory does while its model thinks.
-  const server = http.createServer((req, res) => setTimeout(() => res.end("{}"), 5_000));
+  const late = new Set();
+  const server = http.createServer((req, res) => late.add(setTimeout(() => res.end("{}"), 5_000)));
   await once(server.listen(0, "127.0.0.1"), "listening");
   const port = server.address().port;
 
@@ -30,10 +33,15 @@ test("a fetch given the process's wait is cut off at it, not at node's five minu
     }
     const elapsed = Date.now() - began;
     assert.ok(failed, "a headers timeout was raised");
-    // The wait that cut it off was the one asked for — long of nothing to do with five minutes.
-    assert.ok(elapsed >= 300 && elapsed < 1_500, `it was cut at its own wait (${elapsed} ms), not node's`);
+    // The wait that cut it off was the one asked for. Undici's timers fire coarse — about a second — so
+    // only the order is asserted: this side of the server's own five-second answer, long out of node's
+    // five quiet minutes.
+    assert.ok(elapsed >= 300 && elapsed < 4_000, `it was cut at its own wait (${elapsed} ms), not node's`);
   } finally {
-    // Even on an assertion failure: the open listener would outlive the failed test and hold the process.
+    // Even on an assertion failure: the delayed answers would outlive a failed test and hold the event
+    // loop, and the open listener the sockets.
+    for (const t of late) clearTimeout(t);
+    server.closeAllConnections();
     server.close();
   }
 });
