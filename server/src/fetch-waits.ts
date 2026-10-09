@@ -1,8 +1,11 @@
 import { Agent, EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
 
-/** A wait in milliseconds as it is asked for: whole numbers only, `0` being no wait at all; what is not
- * a number stays the default. Taken here rather than kept twice: memory-llm's model waits are cut with
- * the same knife. */
+/** How long an answer may take — and how such a wait is said. Node's own fetch gives up on a request that
+ * has moved no bytes for five minutes; the timer here is between bytes, not against the clock, so the wait
+ * is long enough for one full answer by default, settable from where the portal starts, `0` turning it off.
+ * A wait as said must be whole milliseconds: a negative or a fraction would not be a wait at all, and past
+ * what a timer may hold there is nothing to wait for, so what is not a number stays the default.
+ * Taken here rather than kept twice: memory-llm's model waits are cut with the same knife. */
 export const waitMs = (raw: string | undefined, fallback: number): number => {
   if (raw == null) return fallback;
   const t = raw.trim();
@@ -18,21 +21,20 @@ export const waitMs = (raw: string | undefined, fallback: number): number => {
  * is between bytes, not against the clock: a flowing answer may go on as long as it flows.
  *
  * They ride on every fetch the process makes — pi's provider calls and any extension's included — so the default
- * is a ceiling of quiet, not of work: ten minutes of silence ends a hung upstream, while an answer that keeps
- * moving is never cut by these waits. */
+ * is a ceiling of quiet, not of work: half an hour of silence ends a hung upstream, while an answer that keeps
+ * moving is never cut by these waits. It must outlast Understory's own model wait (thirty minutes, memory-llm)
+ * or the tool call would die of the same death this exists to stop, one minute later than before. */
 export const globalWaits = {
-  headers: waitMs(process.env.PORTAL_FETCH_HEADERS_TIMEOUT_MS, 10 * 60_000), // between the ask and the first byte of the answer
-  body: waitMs(process.env.PORTAL_FETCH_BODY_TIMEOUT_MS, 10 * 60_000), // between the bytes of a streaming answer
+  headers: waitMs(process.env.PORTAL_FETCH_HEADERS_TIMEOUT_MS, 30 * 60_000), // between the ask and the first byte of the answer
+  body: waitMs(process.env.PORTAL_FETCH_BODY_TIMEOUT_MS, 30 * 60_000), // between the bytes of a streaming answer
 };
 
-/** Whether node itself was asked to route through the environment's proxies. Node takes `NODE_USE_ENV_PROXY=1`
- * (or its own --use-env-proxy flag, which nothing here can see); this takes any truthy saying of it, because the
- * cost of taking it when not needed is nil — a proxy agent with no proxies in the environment behaves as the
- * plain one — while missing a real one strands every outbound fetch behind the operator's corporate proxy. */
-const throughEnvProxies = (): boolean => {
-  const said = (process.env.NODE_USE_ENV_PROXY ?? "").trim().toLowerCase();
-  return said !== "" && said !== "0" && said !== "false";
-};
+/** Whether node itself was asked to route through the environment's proxies — the portal's rule for its fetches,
+ * and now the same rule that decides whether every fetch it makes is proxied. It takes only what node takes, `1`:
+ * taken wider, any truthy saying would send this process's local MCP and model calls to a corporate proxy on an
+ * operator's machine that never asked for them. Node's own --use-env-proxy flag nothing here can see — operators
+ * using it should say `NODE_USE_ENV_PROXY=1` as well. */
+const throughEnvProxies = (): boolean => (process.env.NODE_USE_ENV_PROXY ?? "").trim() === "1";
 
 /** An agent carrying a pair of waits — the portal's own when node was asked to take the environment's proxies,
  * the plain one otherwise. Memory-llm's model agent is made the same way, so the rule lives here once. */

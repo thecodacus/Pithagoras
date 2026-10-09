@@ -11,8 +11,9 @@ import { piCli } from "./pi/package.js";
  * a second server on it would mark the running one's chats interrupted. One
  * that is turned away has loaded nothing else.
  */
-// Node's fetch gave up after five quiet minutes whatever anyone asked; before anything in
-// the process may reach out, it is given waits of its own.
+// Node's fetch gave up after five quiet minutes whatever anyone asked. The imports above have finished
+// loading by the time this line runs, and none of them reach out at load; everything else that does —
+// every server life of the process — gets its waits here first.
 installFetchWaits();
 
 let ours: boolean;

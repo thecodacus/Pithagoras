@@ -104,18 +104,13 @@ class Refused extends Error {
   }
 }
 
-/**
- * How long an answer may take. Node's own fetch gives up on a request that has moved no bytes for five
- * minutes — and an answer that does not stream moves none until the whole of it is done, so a local model
- * thinking past the fifth minute died mid-generation, and its client retried a run that was otherwise sound.
- * The wait here is of its own: long enough for one answer by default, settable from where the portal starts,
- * and when it does come round it says so (a timeout), not like a failure of the model's server.
- */
-
-
 /** A wait as it will be said — seconds when whole, milliseconds when finer. */
 const sayWait = (ms: number): string => (ms % 1000 === 0 ? `${ms / 1000} seconds` : `${Math.round(ms)} milliseconds`);
 
+/** The model's own waits — long enough for one answer by default, settable from where the portal starts. A
+ * local model thinking past Node's five quiet minutes used to die mid-generation and be retried; these give it
+ * its full run, and when one of them does come round the error says so (a timeout), not like a failure of the
+ * model's server. The knife — whole milliseconds only, `0` being no wait at all — is the shared one. */
 const waitOf = (): { headers: number; body: number } => ({
   // Until the model's answer reaches us — its headers. An answer that does not stream sends none until it is
   // done, which is what Understory gets while it asks without streaming, so this is the whole answer there.
