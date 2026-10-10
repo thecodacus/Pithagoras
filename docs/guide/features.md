@@ -431,6 +431,8 @@ and uses for the Memory page; nothing else can read the memory through it.
 | `UNDERSTORY_VOLUME` | `pithagoras_understory-memory` | The volume that holds its memory. |
 | `UNDERSTORY_LLM_HEADERS_TIMEOUT_MS` | `1800000` | How long, in ms, to wait for the model's answer — until its headers arrive — before it is given up on and said so as a timeout; an answer that does not stream (what Understory gets today) sends no byte until it is done, so this covers the whole of it there. `0` sets no wait. |
 | `UNDERSTORY_LLM_BODY_TIMEOUT_MS` | `1800000` | How long, in ms, a streaming answer may go quiet between its bytes before it is cut off. `0` turns the wait off. |
+| `PORTAL_FETCH_HEADERS_TIMEOUT_MS` | `1800000` | A ceiling of quiet, not of work: how long, in ms, any fetch the portal's process makes — pi's MCP tool calls among them — may wait for an answer's first byte before it is cut off; Node's own fetch cuts one off after five quiet minutes. The default outlasts Understory's own model wait, so a run allowed to think half an hour is not cut off mid-thought by the client waiting on it. `0` sets no wait. |
+| `PORTAL_FETCH_BODY_TIMEOUT_MS` | `1800000` | How long, in ms, a streaming answer to such a fetch may go quiet between its bytes before it is cut off; an answer that keeps moving is never cut by these waits. `0` turns the wait off. |
 
 Without Docker access, or to keep running your own, see
 [Running your own](#running-your-own).
