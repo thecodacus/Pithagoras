@@ -17,7 +17,7 @@ import { freePort, inProcessHome } from "./server-harness.mjs";
 // src/schema-version.ts (once for the release, not once for each change),
 // pin the new version and fingerprint here, and have an upgrade test for what
 // changed (below) that starts from a database made before it.
-const PINNED = { version: 4, fingerprint: "e40d3b7b0f6575145b65a873f53267fa097c833d3b323ccd410229dac424b1c9" };
+const PINNED = { version: 4, fingerprint: "711770588b2ec1297c8c665c572be78387f751101651666ca73cd5ad3fb04c67" };
 
 const home = inProcessHome("pithagoras-schema-");
 
@@ -218,4 +218,34 @@ test("a database of v0.1.0 is brought to the pinned schema, and each routine kee
   assert.deepEqual(result.project, { off: ["bash"], on: [] });
   assert.deepEqual(result.defaults, ["web_search"]);
   assert.equal(result.agentTools, 0, "no agent says anything yet");
+});
+
+// Version 4 added the paired devices and which chat may use which (the Devices add-on). A database of version 3 is the
+// fresh one of this version without them; it is upgraded like any other, and has them after.
+test("a database of version 3 gets the device tables, after its backup", async () => {
+  const dir = path.join(home, "from-v3-devices");
+  mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, "portal.db");
+  await getDb().backup(file);
+  const before = new Database(file);
+  before.exec("DROP INDEX idx_session_devices_device; DROP TABLE session_devices; DROP TABLE devices;");
+  before.pragma("user_version = 3");
+  before.pragma("journal_mode = DELETE");
+  before.prepare("INSERT INTO sessions (id, title, workspace) VALUES ('chat1', 'Before devices', '/data/ws/chat1')").run();
+  before.close();
+  assert.deepEqual(upgradeCheck(file), { needed: true, from: 3 });
+
+  const run = startUpgrade(dir, await freePort());
+  const exited = await new Promise((resolve) => run.child.on("exit", resolve));
+  assert.equal(exited, 0, run.output());
+  assert.match(run.output(), new RegExp(`upgrading the database from version 3 to ${SCHEMA_VERSION}`));
+  const backups = backupsIn(path.join(dir, "backups"));
+  assert.equal(backups.length, 1);
+  assert.match(path.basename(backups[0]), /^portal-v3-\d{8}-\d{6}\.db$/);
+
+  const d = new Database(file, { readonly: true });
+  assert.equal(d.pragma("user_version", { simple: true }), SCHEMA_VERSION);
+  assert.equal(schemaFingerprint(d), PINNED.fingerprint);
+  assert.equal(d.prepare("SELECT title FROM sessions WHERE id = 'chat1'").get().title, "Before devices");
+  d.close();
 });

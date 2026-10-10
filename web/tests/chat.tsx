@@ -1,5 +1,5 @@
 // Development-only fixture: the chat's activity, thinking, tools and compaction, without a server.
-// Open /tests/chat.html?phase=model|prefill|thinking|reasoning|compacting|tools|agents|interrupted|turns to see each state,
+// Open /tests/chat.html?phase=model|prefill|thinking|reasoning|compacting|tools|agents|interrupted|turns|devices|devices-blocked to see each state,
 // and add &loading=1 for the conversation still arriving.
 import React from 'react';
 import { createRoot } from 'react-dom/client';
@@ -230,6 +230,55 @@ if (phase === 'git') {
   });
 }
 
+// A chat with paired devices, one granted from the chip and a call made on it: `?phase=devices`. What the page sent is in window.sentDevices.
+if (phase === 'devices' || phase === 'devices-blocked') {
+  events.push(
+    ev('tool_execution_start', { toolCallId: 'd1', toolName: 'bash', args: { command: 'cargo test', device: 'laptop' } }, 10),
+    ev('tool_execution_end', { toolCallId: 'd1', toolName: 'bash', result: { content: [{ type: 'text', text: 'test result: ok' }] } }, 9),
+    // Another extension's tool with a `device` parameter of its own: not a paired computer.
+    ev('tool_execution_start', { toolCallId: 'd2', toolName: 'lights_set', args: { device: 'kitchen', on: true } }, 8),
+    ev('tool_execution_end', { toolCallId: 'd2', toolName: 'lights_set', result: { content: [{ type: 'text', text: 'lights on' }] } }, 7),
+  );
+  const sent: unknown[] = ((window as any).sentDevices = []);
+  const owned = 'Another extension owns bash in this chat, so they cannot take a device';
+  type Shown = { id: string; name: string; os: string; online: boolean; granted: boolean; cwd: string | null; home: string | null; mode: string | null; folders: { path: string; access: string; execute: boolean }[]; offered: boolean; why: string | null; blocked: string | null };
+  let devices: Shown[] = phase === 'devices-blocked'
+    // Granted before the chat's pi was loaded, in a chat whose bash another extension owns.
+    ? [{ id: 'd3', name: 'tower', os: 'linux', online: true, granted: true, cwd: '/home/alice', home: '/home/alice', mode: 'ask', folders: [], offered: false, why: owned, blocked: owned }]
+    : [
+        { id: 'd1', name: 'laptop', os: 'linux', online: true, granted: false, cwd: null, home: '/home/alice', mode: 'ask', folders: [{ path: '/home/alice/src', access: 'rw', execute: true }], offered: true, why: null, blocked: null },
+        { id: 'd2', name: 'desk', os: 'windows', online: false, granted: false, cwd: null, home: null, mode: null, folders: [], offered: false, why: 'desk is not connected', blocked: null },
+      ];
+  // The chat's tools as the portal lists them once it has a device: pi's own file and shell tools, which the grant registers again, among the rest.
+  // What the page sent is in window.sentTools.
+  (window as any).sentTools = [];
+  let off: string[] = [];
+  mockFetch((u, init) => {
+    if (!/\/api\/sessions\/preview\/tools$/.test(u)) return undefined;
+    if (init?.method === 'PUT') {
+      off = JSON.parse(init.body as string).off;
+      (window as any).sentTools.push(off);
+      return { off };
+    }
+    return { live: true, off, names: {}, tools: [
+      ...['bash', 'edit', 'find', 'grep', 'ls', 'read', 'write'].map((name) => ({ name, source: 'built in', enabled: !off.includes(name), defaultOn: true })),
+      { name: 'web_search', source: 'pi-web-access', enabled: !off.includes('web_search'), defaultOn: true },
+    ] };
+  });
+  mockFetch((u, init) => {
+    // The questions a device holds for the chat are the test's own: what it serves outlives a reload, as the portal's would.
+    if (!u.includes('/api/sessions/preview/devices') || u.includes('/devices/approvals')) return undefined;
+    const method = init?.method ?? 'GET';
+    if (method === 'GET') return { devices };
+    const id = decodeURIComponent(u.split('/').pop()!);
+    const body = init?.body ? JSON.parse(init.body as string) : null;
+    sent.push({ method, id, body });
+    devices = devices.map((d) => (d.id !== id ? d : method === 'DELETE' ? { ...d, granted: false, cwd: null } : { ...d, granted: true, cwd: body?.cwd ?? d.home }));
+    // A folder moved while the chat works is taken up after its run.
+    return { ok: true, cwd: body?.cwd ?? '/home/alice', reload: body?.cwd ? 'waiting' : 'reloaded' };
+  });
+}
+
 const session: Session = { id: 'preview', title: 'Fix the build', workspace: '/workspaces/pithagoras', executor: 'host', status: phase === 'interrupted' ? 'interrupted' : phase === 'args' || phase === 'pictures' || phase === 'stats' ? 'idle' : 'running', created_at: '', updated_at: '', last_error: null, pinned: false, provider: 'llama-server', model: 'Model A', thinking_level: 'medium' } as Session;
 const noop = async () => {};
 // An extension moves its status twenty times a second: how often the chat asks for /background is counted.
@@ -247,6 +296,10 @@ function Fixture() {
   const [v, setV] = React.useState('b');
   const [which, setWhich] = React.useState(phase === 'switch' ? 'first' : session.id);
   const [shownEvents, setShownEvents] = React.useState(events);
+  // The run of the preview chat is over (`endRun()`), or another chat is open instead (`openChat('other')`), as in the app.
+  const [ended, setEnded] = React.useState(false);
+  (window as any).endRun = () => setEnded(true);
+  (window as any).openChat = setWhich;
   const paste = () => fillFrom(session.id, { seq: -now * 1000 - 10, type: 'extension_ui_request', at: now, payload: { method: 'setEditorText', text: 'the ', paste: true } });
   React.useEffect(() => { for (const ev of fills) fillFrom(session.id, ev); }, []);
   (window as any).think = (delta: string) => setShownEvents((list) => [...list, { seq: ++seq, type: 'message_update', at: Date.now(), payload: { streamId: 's', assistantMessageEvent: { type: 'thinking_delta', delta } } }]);
@@ -266,7 +319,7 @@ function Fixture() {
     }, 50);
     return () => clearInterval(t);
   }, []);
-  const shown = which === session.id ? session : { ...session, id: which, title: which === 'first' ? 'First chat' : 'Second chat', status: 'idle' as const };
+  const shown = which === session.id ? (ended ? { ...session, status: 'idle' as const } : session) : { ...session, id: which, title: which === 'first' ? 'First chat' : 'Second chat', status: 'idle' as const };
   return <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
     <div style={{ padding: 8, display: 'flex', gap: 8 }}><Select aria-label="Preview select" size="sm" className="w-64" value={v} onChange={setV} options={[{ value: 'a', label: 'Project notes' }, { value: 'b', label: 'Release plan', hint: 'Temporary — not stored' }, { value: 'c', label: 'Meeting summary' }]} /><label className="flex items-center gap-2 text-xs"><input type="checkbox" defaultChecked />Checkbox</label><input type="range" defaultValue={40} />{phase === 'switch' && <button onClick={() => setWhich('second')}>Open the second chat</button>}{phase === 'switch' && <button onClick={() => setWhich('first')}>Open the first chat</button>}{phase === 'paste' && <button onClick={paste}>Paste from the extension</button>}</div>
     <div style={{ flex: 1, minHeight: 0 }}><Chat session={shown} events={shownEvents} onSend={async (message) => { (window as any).sent = [...((window as any).sent ?? []), message]; }} onEditMessage={noop} onDeleteMessage={noop} onAbort={noop} onClientCommand={noop} onRename={noop} loading={new URLSearchParams(location.search).has('loading')} /></div>

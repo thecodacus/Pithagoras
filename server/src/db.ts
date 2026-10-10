@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import { inTurnWithSettings, piSetting, readPiSettings, readProjectPiSettings } from "./pi-settings.js";
 import { packageIndex, packageKey, packageLabel, toolAvailability } from "./extension-switch.js";
 import { EDIT_IMAGE_SOURCE, EDIT_IMAGE_TOOL, GENERATE_IMAGE_SOURCE, GENERATE_IMAGE_TOOL, SHOW_IMAGE_SOURCE, imageEditingReady, imageGenerationReady } from "./image-generation.js";
-import { PORTAL_BROWSER_TOOLS, browserTool, defaultsFor, mcpServerOf, toolEnabled } from "./tool-policy.js";
+import { BUILT_IN_SOURCE, PORTAL_BROWSER_TOOLS, browserTool, defaultsFor, mcpServerOf, piToolOfDevices, toolEnabled } from "./tool-policy.js";
 import { projectOf } from "./workspaces.js";
 import { browserServers, dropMcpCache, mcpAdapter, mcpCachePath, mcpConfigPath, mcpServerNames, onMcpWritten, readMcpCache, readMcpFile, readableMcpConfig, serversAndBrowsers } from "./api/mcp.js";
 import { mcpCatalogue, mcpOffer, unlisted, type McpOffer } from "./mcp-offer.js";
@@ -465,6 +465,31 @@ function schema(db: Database.Database): void {
       read_at TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_activity_agent ON activity(agent_id, at DESC);
+
+    -- The computers paired with the portal (the Devices add-on, see sync/hub.ts).
+    -- The connector token is kept as its sha256 only: it is 256 random bits, so
+    -- the hash cannot be turned back, and a copy of the database does not let
+    -- anybody connect as the device. The name is what the agent passes as
+    -- "device", unique and renamable.
+    CREATE TABLE IF NOT EXISTS devices (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      os TEXT NOT NULL,
+      arch TEXT NOT NULL,
+      token_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      last_seen TEXT
+    );
+
+    -- Which chats may use which device, and in which folder there. A chat
+    -- starts with none; the grant goes with the chat and with the device.
+    CREATE TABLE IF NOT EXISTS session_devices (
+      session_id TEXT NOT NULL,
+      device_id TEXT NOT NULL,
+      cwd TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (session_id, device_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_devices_device ON session_devices(device_id);
   `);
   migrate(db);
   if ((db.pragma("user_version", { simple: true }) as number) < SCHEMA_VERSION) db.pragma(`user_version = ${SCHEMA_VERSION}`);
@@ -825,7 +850,24 @@ export function updateSession(
 
 // One transaction: the chat of a delete that failed stays, and it takes messages again, so it must still have its transcript and canvases.
 // Inside the bulk routes' own transaction this is a savepoint, so they still remove all of their chats or none.
-export const deleteSession = (id: string): void => getDb().transaction(() => removeSession(id))();
+export function deleteSession(id: string): void {
+  const devices = (getDb().prepare("SELECT device_id FROM session_devices WHERE session_id = ?").all(id) as { device_id: string }[]).map((r) => r.device_id);
+  getDb().transaction(() => removeSession(id))();
+  // Told once the bulk route's own transaction is over, and only when the chat is really gone: a rollback would have kept its grants.
+  if (devices.length && deletedHooks.length) {
+    setImmediate(() => {
+      if (getSession(id)) return;
+      for (const hook of deletedHooks) hook(id, devices);
+    });
+  }
+}
+
+const deletedHooks: ((sessionId: string, devices: string[]) => void)[] = [];
+
+/** Hears of each deleted chat that had devices granted, with those devices: see sync/grants.ts. */
+export function onSessionDeleted(hook: (sessionId: string, devices: string[]) => void): void {
+  deletedHooks.push(hook);
+}
 
 function removeSession(id: string): void {
   const d = getDb();
@@ -836,6 +878,7 @@ function removeSession(id: string): void {
   d.prepare("DELETE FROM sessions WHERE id = ?").run(id);
   setSessionSubagentModel(id, null);
   d.prepare("DELETE FROM open_subagents WHERE session_id = ?").run(id);
+  d.prepare("DELETE FROM session_devices WHERE session_id = ?").run(id);
   // The pictures stay in the chat's folder, which is not the chat's to take away, and so they stay in the gallery, as pictures of that folder with what they were asked for.
   // Nothing else may name the folder once the chat is gone, so it is kept with them (see image-gallery.ts).
   let real: string | undefined;
@@ -1629,6 +1672,13 @@ export interface AuditRow {
 
 /** Keeps the log from growing without bound; old entries are not evidence. */
 export const AUDIT_KEEP = 2000;
+/**
+ * What a device's own reports (`kind = 'device'`) may keep of it. They are the
+ * device's word, and a stolen token speaks as the device, so they are trimmed
+ * among themselves: however many it sends, the portal's own entries (what the
+ * guard refused, who was let in) stay.
+ */
+export const AUDIT_DEVICE_KEEP = 500;
 
 export function recordAudit(entry: {
   kind: string;
@@ -1650,9 +1700,12 @@ export function recordAudit(entry: {
     entry.personKey ?? null,
     entry.sessionId ?? null
   );
+  // The newest AUDIT_KEEP of the portal's own, and the newest AUDIT_DEVICE_KEEP of the devices', each trimmed by what it adds.
+  const device = entry.kind === "device";
+  const own = device ? "kind = 'device'" : "kind != 'device'";
   db.prepare(
-    `DELETE FROM audit WHERE id <= (SELECT MAX(id) FROM audit) - ?`
-  ).run(AUDIT_KEEP);
+    `DELETE FROM audit WHERE ${own} AND id <= (SELECT id FROM audit WHERE ${own} ORDER BY id DESC LIMIT 1 OFFSET ?)`
+  ).run(device ? AUDIT_DEVICE_KEEP : AUDIT_KEEP);
 }
 
 export const listAudit = (limit = 200): AuditRow[] =>
@@ -2320,16 +2373,30 @@ export function knownTools(): KnownTool[] {
     if (!Array.isArray(parsed)) return [];
     return parsed
       .filter((t) => t && typeof t.name === "string")
-      .map((t) => ({
-        name: String(t.name),
-        source: String(t.source ?? ""),
-        ...(typeof t.description === "string" && t.description ? { description: t.description } : {}),
-        ...(typeof t.package === "string" && t.package ? { package: t.package } : t.package === null ? { package: null } : {}),
-        ...(typeof t.inline === "boolean" ? { inline: t.inline } : {}),
-      }));
+      .map((t) =>
+        ownedByPi({
+          name: String(t.name),
+          source: String(t.source ?? ""),
+          ...(typeof t.description === "string" && t.description ? { description: t.description } : {}),
+          ...(typeof t.package === "string" && t.package ? { package: t.package } : t.package === null ? { package: null } : {}),
+          ...(typeof t.inline === "boolean" ? { inline: t.inline } : {}),
+        }),
+      );
   } catch {
     return [];
   }
+}
+
+/**
+ * Pi's seven file and shell tools as the catalogue has them: built in, whatever a chat with a device reported.
+ *
+ * Such a chat registers them again as the devices extension's (see `piToolOfDevices`), and a catalogue that took
+ * that at its word filed them under "devices" and left the Built-in box with nothing in it. Read like this, a
+ * catalogue that already holds them that way is right again without anything being rewritten; the next report
+ * writes them back the right way.
+ */
+function ownedByPi(tool: KnownTool): KnownTool {
+  return piToolOfDevices(tool.name, tool.source, tool.inline) ? { ...tool, source: BUILT_IN_SOURCE, package: null, inline: false } : tool;
 }
 
 /**
@@ -2686,9 +2753,9 @@ export function rememberTools(reported: KnownTool[]): void {
     !noServerOf(t.name) &&
     // Told apart from the configured servers too: `notes` removed leaves `notes_staging_read` to the server that is still there.
     gone.includes(mcpServerOf(t.name, [...Object.keys(configured.config.mcpServers), ...gone]) ?? "");
-  const tools = reported.filter(
-    (t) => (typeof t.package !== "string" || !listed || listed.has(packageKey(t.package))) && !noServer(t),
-  );
+  const tools = reported
+    .filter((t) => (typeof t.package !== "string" || !listed || listed.has(packageKey(t.package))) && !noServer(t))
+    .map(ownedByPi);
   if (!tools.length) return;
   const merged = new Map(knownTools().map((t) => [t.name, t]));
   const fresh = tools.map((t) => t.name).filter((name) => !merged.has(name));

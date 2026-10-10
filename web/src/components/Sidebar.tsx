@@ -13,6 +13,7 @@ import {
   LuGlobe,
   LuBrain,
   LuImage,
+  LuLaptop,
   LuMessagesSquare,
   LuPlus,
   LuSearch,
@@ -42,6 +43,7 @@ export const Sidebar = memo(function Sidebar({
   hasBrowser,
   hasMemory = false,
   hasImages = false,
+  hasDevices = false,
   places,
   onSelect,
   onNewChat,
@@ -57,13 +59,15 @@ export const Sidebar = memo(function Sidebar({
   executor: string;
   activeId: string | null;
   /** Which top-level destination is showing, so the nav can mark it. */
-  view: "chat" | "sessions" | "projects" | "agents" | "routines" | "browser" | "memory" | "images" | "audit";
+  view: "chat" | "sessions" | "projects" | "agents" | "routines" | "browser" | "memory" | "images" | "devices" | "audit";
   /** Whether the optional browser service is there at all. */
   hasBrowser: boolean;
   /** Understory is the agent's memory: its page is there to read. */
   hasMemory?: boolean;
   /** Image generation is on and has an address: the Images page is there to make pictures in and to look through them. */
   hasImages?: boolean;
+  /** The Devices add-on is on: its page pairs computers and shows them. */
+  hasDevices?: boolean;
   /** Where Home and the projects are, to list the chats by folder: undefined until known, null if they could not be. */
   places?: Places | null;
   onSelect: (id: string) => void;
@@ -187,6 +191,8 @@ export const Sidebar = memo(function Sidebar({
     ...(hasMemory ? [{ to: "memory" as const, icon: <LuBrain />, label: t("Memory") }] : []),
     // And only while there is an image endpoint to make pictures with.
     ...(hasImages ? [{ to: "images" as const, icon: <LuImage />, label: t("Images") }] : []),
+    // And only while the Devices add-on is on.
+    ...(hasDevices ? [{ to: "devices" as const, icon: <LuLaptop />, label: t("Devices") }] : []),
     { to: "audit", icon: <LuShield />, label: t("Audit") },
   ];
   const anyRunning = sessions.some((s) => s.status === "running");
@@ -353,7 +359,7 @@ const GroupLabel = ({ children }: { children: ReactNode }) => (
   </p>
 );
 
-type Destination = "sessions" | "projects" | "agents" | "routines" | "browser" | "memory" | "images" | "audit";
+type Destination = "sessions" | "projects" | "agents" | "routines" | "browser" | "memory" | "images" | "devices" | "audit";
 
 function RailButton({
   icon,

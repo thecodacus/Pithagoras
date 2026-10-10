@@ -38,6 +38,7 @@ const AuditPage = lazyComponent(() => import("./components/AuditPanel"), "AuditP
 const BrowserPage = lazyComponent(() => import("./components/BrowserPage"), "BrowserPage");
 const MemoryPage = lazyComponent(() => import("./components/MemoryPage"), "MemoryPage");
 const ImagesPage = lazyComponent(() => import("./components/ImagesPage"), "ImagesPage");
+const DevicesPage = lazyComponent(() => import("./components/DevicesPage"), "DevicesPage");
 const ConfigModal = lazyComponent(() => import("./components/ConfigModal"), "ConfigModal");
 const SetupAssistant = lazyComponent(() => import("./components/SetupAssistant"), "SetupAssistant");
 
@@ -127,6 +128,7 @@ export default function App() {
       <Route path="/browser" element={<Shell view="browser" />} />
       <Route path="/memory" element={<Shell view="memory" />} />
       <Route path="/images" element={<Shell view="images" />} />
+      <Route path="/devices" element={<Shell view="devices" />} />
       <Route path="/audit" element={<Shell view="audit" />} />
       <Route path="/s/:sessionId" element={<Shell />} />
       <Route path="/s/:sessionId/settings" element={<Shell settings />} />
@@ -147,7 +149,7 @@ function Shell({
   view = "chat",
 }: {
   settings?: boolean;
-  view?: "chat" | "sessions" | "projects" | "agents" | "routines" | "browser" | "memory" | "images" | "audit";
+  view?: "chat" | "sessions" | "projects" | "agents" | "routines" | "browser" | "memory" | "images" | "devices" | "audit";
 }) {
   const { sessionId, tab } = useParams<{ sessionId?: string; tab?: string }>();
   const navigate = useNavigate();
@@ -197,6 +199,8 @@ function Shell({
   const [hasMemory, setHasMemory] = useState(false);
   // Likewise whether image generation is on and has an address, which is when the Images page is.
   const [hasImages, setHasImages] = useState(false);
+  // And whether the Devices add-on is on, which is when the Devices page is.
+  const [hasDevices, setHasDevices] = useState(false);
   useEffect(() => {
     const ask = () =>
       api
@@ -204,10 +208,11 @@ function Shell({
         .then((f) => {
           setHasMemory(f.understory?.enabled === true);
           setHasImages(f.images?.enabled === true);
+          setHasDevices(f.devices?.enabled === true);
         })
         .catch(() => {});
     ask();
-    // Said by Settings when it switches Understory (Add-ons) or the images (Agent → Images), so the sidebar follows at once.
+    // Said by Settings when it switches Understory or Devices (Add-ons) or the images (Agent → Images), so the sidebar follows at once.
     window.addEventListener("features-changed", ask);
     return () => window.removeEventListener("features-changed", ask);
   }, []);
@@ -690,6 +695,7 @@ function Shell({
         hasBrowser={hasBrowser}
         hasMemory={hasMemory}
         hasImages={hasImages}
+        hasDevices={hasDevices}
         places={places}
         onNavigate={onNavigate}
         onOpenFolder={onOpenFolder}
@@ -754,6 +760,8 @@ function Shell({
           <MemoryPage />
         ) : view === "images" ? (
           <ImagesPage />
+        ) : view === "devices" ? (
+          <DevicesPage />
         ) : view === "audit" ? (
           <AuditPage />
         ) : active ? (

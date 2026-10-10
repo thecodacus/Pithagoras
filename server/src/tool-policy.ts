@@ -12,6 +12,8 @@
  * project starts it with" and nothing else here has to know projects exist.
  */
 
+import { DEVICE_TOOLS_SOURCE, PI_TOOLS } from "./sync/protocol.js";
+
 /**
  * The MCP the portal attaches the agent's browser as.
  *
@@ -92,6 +94,21 @@ export function browserTool(
   return server !== undefined && browsers.includes(server);
 }
 
+
+/** What pi's own tools are filed under in every list, and what the page's group of them is keyed by. */
+export const BUILT_IN_SOURCE = "built in";
+
+/**
+ * Is this report of a tool the devices extension's second registration of one of pi's seven file and shell tools?
+ *
+ * A chat that is granted a device registers `read`, `write`, `edit`, `bash`, `grep`, `find` and `ls` again under their
+ * own names with a `device` parameter (sync/tools.ts), so what pi says of them is the extension's `<inline:devices>`.
+ * They are still the same seven tools, the ones every list calls built in, and the lists must not take them for the
+ * extension's: the Built-in box would be empty and a "devices" box hold them in its place. `source` is the label they
+ * are filed under; `inline` is false for a loose extension file of the same name, which is not the portal's.
+ */
+export const piToolOfDevices = (name: string, source: string, inline?: boolean): boolean =>
+  (PI_TOOLS as readonly string[]).includes(name) && source === DEVICE_TOOLS_SOURCE && inline !== false;
 
 /** What to file a tool under: its MCP server where it has one, its package otherwise. */
 export function toolSource(name: string, source: string, servers: Iterable<string>): string {

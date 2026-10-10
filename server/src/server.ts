@@ -88,6 +88,9 @@ import { adoptPortalBrowser, browserRouter, pinConnection } from "./api/browser.
 import { endAllTerminals, terminalRouter } from "./api/terminal.js";
 import { BACKGROUND_SUPPORTED, MARKER, clearFinished, listJobs, readOutput, stopJob, stopJobsIn } from "./background.js";
 import { attachBrowserUpgrade, mountBrowserProxy } from "./browser-proxy.js";
+import { attachSyncUpgrade, dropAll } from "./sync/hub.js";
+import { pairRouter } from "./sync/pair.js";
+import { devicesRouter } from "./api/devices.js";
 import { watchBrowserFrames } from "./extensions/browser-frames.js";
 import { startLlamaProxy } from "./llama-progress.js";
 import { applyOnStart } from "./sandbox/apply.js";
@@ -143,7 +146,8 @@ const IMAGE_EDIT_ROUTE = "/api/images/edit";
 const smallJson = express.json({ limit: "2mb" });
 app.use((req, res, next) => {
   // Understory's requests for a model carry whole conversations: its route reads its own.
-  if (UPLOAD_ROUTE.test(req.path) || PROMPT_ROUTE.test(req.path) || req.path === IMAGE_EDIT_ROUTE || req.path.startsWith("/understory-llm/")) return next();
+  // A device's pairing is read by its own route too, with room for its four short fields only.
+  if (UPLOAD_ROUTE.test(req.path) || PROMPT_ROUTE.test(req.path) || req.path === IMAGE_EDIT_ROUTE || req.path.startsWith("/understory-llm/") || req.path.startsWith("/sync/")) return next();
   smallJson(req, res, next);
 });
 app.use(cookieParser());
@@ -172,6 +176,8 @@ app.post("/api/auth/logout", (req, res) => {
 
 // Understory's model server, in "the chat's" mode: its own token, not a portal login.
 app.use(memoryLlmRouter((id) => sessions.currentModel(id)));
+// A device trading its one-time code for a token: the code is its login (sync/pair.ts).
+app.use(pairRouter());
 app.use("/api", requireAuth);
 
 // --- global settings (defaults for every new session) ---
@@ -1447,6 +1453,7 @@ app.use("/api", sandboxRouter(sessions));
 app.use("/api", voiceRouter());
 app.use("/api", terminalRouter());
 app.use("/api", canvasesRouter());
+app.use("/api", devicesRouter());
 // Before the SPA fallback, which answers everything that is not /api.
 mountBrowserProxy(app);
 
@@ -1561,6 +1568,8 @@ const cannotListen = (e: Error) => {
 };
 server.once("error", cannotListen);
 server.once("listening", () => server.off("error", cannotListen));
+// The devices' connections first: the browser's listener answers every other upgrade.
+attachSyncUpgrade(server);
 attachBrowserUpgrade(server);
 // Keeps the agent's browser rendering when nobody has the panel open.
 watchBrowserFrames();
@@ -1606,6 +1615,8 @@ async function stop(signal: string) {
   // However long the rest takes, and no longer than docker waits before it kills.
   setTimeout(() => process.exit(0), 10_000).unref();
   routineSupervisor.stop();
+  // The devices reconnect on their own once the portal is back.
+  dropAll();
   // Alongside the rest: their shells are given a moment to wind down.
   const shells = endAllTerminals();
   await channelSupervisor.shutdown();

@@ -1042,6 +1042,8 @@ class SessionManager extends EventEmitter {
       role: session.role,
       toolsOff: this.piOff(sessionId),
       subagentModel: () => sessionSubagentModel(sessionId) ?? undefined,
+      // Only a chat in the portal: its owner answers a device's approvals there, which a channel cannot.
+      devices: session.kind === "task",
       // A heartbeat is the agent looking around on its own: its own context,
       // but held to reading by a role of its own. See heartbeat.ts.
       ...(session.kind === "heartbeat"
@@ -1209,6 +1211,7 @@ class SessionManager extends EventEmitter {
         this.inRun.delete(sessionId);
         this.settleWaiting(sessionId);
         if (!this.failed.delete(sessionId)) this.mark(sessionId, "idle");
+        if (this.reloadAfterRun.delete(sessionId)) void this.reloadSoon(sessionId);
       }
     });
 
@@ -2594,6 +2597,31 @@ class SessionManager extends EventEmitter {
    * another tab, a channel — waits for the extensions to be back rather than
    * starting a run among half of them.
    */
+  /** Chats to load again once their run is over: what a reload would have stopped. */
+  private reloadAfterRun = new Set<string>();
+
+  /**
+   * Loads one chat's pi again, now when it is idle or once its run is over: a
+   * device granted or taken back changes its tools. "not running" when it has
+   * no pi, which loads them when it starts.
+   */
+  async reloadSoon(sessionId: string): Promise<"reloaded" | "waiting" | "not running"> {
+    const live = this.live.get(sessionId);
+    if (!live) return "not running";
+    if (this.isBusy(sessionId) || this.compacting.has(sessionId) || this.editing.has(sessionId) || this.backgroundWork(sessionId)) {
+      this.reloadAfterRun.add(sessionId);
+      return "waiting";
+    }
+    try {
+      await this.withEdit(sessionId, () => live.client.reload());
+      return "reloaded";
+    } catch (e) {
+      console.error(`[portal] could not reload ${sessionId}: ${(e as Error).message}`);
+      this.reloadAfterRun.add(sessionId);
+      return "waiting";
+    }
+  }
+
   async reloadIdle(): Promise<{ reloaded: number; waiting: number }> {
     let waiting = 0;
     const done = await Promise.all(

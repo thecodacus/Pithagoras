@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { LuBan, LuCircleCheck, LuGlobe, LuKeyRound, LuRefreshCw, LuShield, LuTrash2, LuUserX } from "react-icons/lu";
+import { LuBan, LuCircleCheck, LuGlobe, LuKeyRound, LuLaptop, LuRefreshCw, LuShield, LuTrash2, LuUserX } from "react-icons/lu";
 import { confirmDialog } from "./ConfirmDialog";
 import { PageHeader, Stat } from "./PageHeader";
 import { ErrorBanner, LoadFailed, Segments } from "./SettingsUi";
@@ -25,6 +25,8 @@ const KIND: Record<string, { label: string; icon: JSX.Element; tone: string }> =
   answered: { label: msg("You answered"), icon: <LuShield className="h-3.5 w-3.5" />, tone: "text-accent" },
   browsed: { label: msg("Page opened"), icon: <LuGlobe className="h-3.5 w-3.5" />, tone: "text-fg-muted" },
   cleared: { label: msg("Log cleared"), icon: <LuTrash2 className="h-3.5 w-3.5" />, tone: "text-fg-muted" },
+  // What a paired device decided about a call to it, as it reported it: its name and the decision are in the reason.
+  device: { label: msg("Device"), icon: <LuLaptop className="h-3.5 w-3.5" />, tone: "text-fg-muted" },
 };
 
 const FILTERS = [

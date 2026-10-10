@@ -47,6 +47,9 @@ const hostOf = (url: string) => {
  */
 export const SHELL_TOOL = /^(bash|shell|terminal|exec_command)$/i;
 
+/** The tools that take a paired computer in their `device`: any other tool's parameter of that name is its own. */
+export const DEVICE_TOOL = /^(read|write|edit|bash|grep|find|ls)$/;
+
 /**
  * The call as the agent made it. The MCP adapter puts every server's tools
  * behind one `mcp` tool, so a web search and a database query would both read

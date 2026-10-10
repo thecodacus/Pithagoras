@@ -29,6 +29,8 @@ import { activity, buildTranscript, keepItems, type Item, type SentImage } from 
 import { HAS_MERMAID, loadMermaidPlugin } from "../mermaid";
 import { useResolvedTheme } from "../theme";
 import { ComposerBar } from "./ComposerBar";
+import { ChatDeviceApprovals } from "./DeviceApprovalCard";
+import { DeviceChip } from "./DeviceChip";
 import { useChatPictures } from "./ChatPictures";
 import { confirmDialog } from "./ConfirmDialog";
 import { ErrorBoundary, PartFailed } from "./ErrorBoundary";
@@ -1725,6 +1727,8 @@ export function Chat({
               <LuBot />
             </PanelToggle>
           )}
+          {/* The portal's own chats only: a device's approvals are answered here, which a channel cannot. */}
+          {(session.kind ?? "task") === "task" && <DeviceChip sessionId={session.id} />}
           {browserUp && (
             <PanelToggle
               open={watching}
@@ -1879,6 +1883,8 @@ export function Chat({
         }}
         className="px-4 pb-4 pt-2 sm:px-6 sm:pb-5"
       >
+        {/* The portal's own chats only: the devices' questions are answered here, which a channel cannot. */}
+        {(session.kind ?? "task") === "task" && <ChatDeviceApprovals sessionId={session.id} running={running} events={events} />}
         <div className="prompt-shell relative mx-auto w-full max-w-3xl">
         {/* Scrolled up to read, the way back to the end is one click rather
             than a long drag — and during a run, where the new output is. */}

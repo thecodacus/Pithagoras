@@ -34,6 +34,9 @@ import { contextWindowFor, getSkipThinkingProviders, getVoiceInstructions, porta
 import { configStamp, isLlamaProvider } from "../providers.js";
 import { rereadConfig } from "./model-runtime.js";
 import { UNDERSTORY_RULE, understoryOn } from "../features.js";
+import { deviceTools } from "../sync/tools.js";
+import { DEVICE_TOOLS_SOURCE } from "../sync/protocol.js";
+import { BUILT_IN_SOURCE, piToolOfDevices } from "../tool-policy.js";
 
 /** A message on its way into pi: see SdkPiClient.prompt(). */
 interface Handoff {
@@ -234,7 +237,7 @@ function sourceLabel(info: any): string {
   // pi writes its own as <builtin:read> and the portal's inline ones as
   // <inline:canvases>. The second is worth naming; the first is the agent.
   const marker = /^<(builtin|inline):([^>]+)>$/.exec(path);
-  if (marker) return marker[1] === "inline" ? marker[2] : "built in";
+  if (marker) return marker[1] === "inline" ? marker[2] : BUILT_IN_SOURCE;
 
   const pkg = /node_modules\/((?:@[^/]+\/)?[^/]+)/.exec(path);
   if (pkg) return pkg[1];
@@ -245,11 +248,11 @@ function sourceLabel(info: any): string {
     const name = file.replace(/\.[cm]?[jt]sx?$/, "");
     // An extension in a directory of its own is named by the directory, which
     // is what its author called it — "index" is not a name.
-    return name === "index" ? (parts.pop() ?? name) : name || "built in";
+    return name === "index" ? (parts.pop() ?? name) : name || BUILT_IN_SOURCE;
   }
 
   const source = typeof info?.source === "string" ? info.source.trim() : "";
-  return source || "built in";
+  return source || BUILT_IN_SOURCE;
 }
 
 /**
@@ -379,6 +382,8 @@ export class SdkPiClient extends EventEmitter implements PiClient {
     subagentModel?: () => string | undefined;
     /** The agent whose heartbeat this is: gives it the note tool. See heartbeat.ts. */
     heartbeatAgent?: string;
+    /** A chat that may be granted paired devices: its file and shell tools take a `device` once it is. See sync/tools.ts. */
+    devices?: boolean;
   }): Promise<SdkPiClient> {
     // Imported lazily so the server still boots (and the container executor
     // still works) if the SDK cannot initialise in this environment.
@@ -410,6 +415,8 @@ export class SdkPiClient extends EventEmitter implements PiClient {
       voiceSpeaks,
     );
     const canvases = opts.sessionId ? new CanvasTools(opts.sessionId) : undefined;
+    // The session, once there is one: the device tools run pi's own server tools, as it built them, when no device is named.
+    let built: any;
     try {
       // Both are required: the constructor resolves each and throws on
       // undefined, which previously left every session with no extensions.
@@ -433,6 +440,13 @@ export class SdkPiClient extends EventEmitter implements PiClient {
             () => switchedOff(),
           ) },
       ];
+      // Registers nothing until the chat is granted a device: see sync/tools.ts.
+      if (opts.sessionId && opts.devices) {
+        factories.push({
+          name: DEVICE_TOOLS_SOURCE,
+          factory: deviceTools({ sessionId: opts.sessionId, cwd: opts.cwd, pi, serverTool: (name) => built?._baseToolDefinitions?.get?.(name) }),
+        });
+      }
       // While the sandbox is on, pi's own tools do what they do to the system as the sandbox user: see sandbox/.
       factories.push({ name: "sandbox", factory: await sandboxTools(pi, opts.cwd) });
       if (canvases) factories.push({ name: "canvases", factory: canvases.extension });
@@ -549,6 +563,7 @@ export class SdkPiClient extends EventEmitter implements PiClient {
       ...(opts.thinkingLevel ? { thinkingLevel: opts.thinkingLevel } : {}),
     });
 
+    built = session;
     const client = new SdkPiClient(session, modelRuntime, () => {});
     switchedOff = () => client.switchedOff;
     client.portalSessionId = opts.sessionId;
@@ -674,7 +689,12 @@ export class SdkPiClient extends EventEmitter implements PiClient {
         const id = randomUUID();
         let settled = false;
         let timer: ReturnType<typeof setTimeout> | undefined;
-        const abort = () => finish(fallback);
+        // Taken back by whoever asked: the dialog goes from the chat too, as when it runs out.
+        let shown = false;
+        const abort = () => {
+          if (!settled && shown) this.emit("event", { type: "extension_ui_cancel", id });
+          finish(fallback);
+        };
         const finish = (value: unknown) => {
           if (settled) return;
           settled = true;
@@ -696,6 +716,7 @@ export class SdkPiClient extends EventEmitter implements PiClient {
         opts?.signal?.addEventListener?.("abort", abort, { once: true });
         if (opts?.signal?.aborted) { abort(); return; }
 
+        shown = true;
         this.emit("event", { type: "extension_ui_request", id, ...payload });
       });
 
@@ -1251,14 +1272,20 @@ export class SdkPiClient extends EventEmitter implements PiClient {
   async getTools(): Promise<PiTool[]> {
     const all: any[] = this.session.getAllTools?.() ?? [];
     const offered = this.wanted.size ? all.filter((tool) => this.wanted.has(String(tool.name))) : all;
-    return offered.map((tool) => ({
-      name: String(tool.name),
-      description: typeof tool.description === "string" ? tool.description : undefined,
-      source: sourceLabel(tool.sourceInfo),
-      package: packageOf(tool.sourceInfo),
-      ...(isInline(tool.sourceInfo) ? { inline: true as const } : {}),
-      enabled: !this.switchedOff.has(String(tool.name)),
-    }));
+    return offered.map((tool) => {
+      const name = String(tool.name);
+      const label = sourceLabel(tool.sourceInfo);
+      // A device grant registers pi's file and shell tools again (sync/tools.ts), which are no extension's to anybody.
+      const own = piToolOfDevices(name, label, isInline(tool.sourceInfo));
+      return {
+        name,
+        description: typeof tool.description === "string" ? tool.description : undefined,
+        source: own ? BUILT_IN_SOURCE : label,
+        package: packageOf(tool.sourceInfo),
+        ...(isInline(tool.sourceInfo) && !own ? { inline: true as const } : {}),
+        enabled: !this.switchedOff.has(name),
+      };
+    });
   }
 
   /**

@@ -24,6 +24,7 @@ import * as service from "../extensions/understory-service.js";
 import { readModelsJson } from "../providers.js";
 import { pi } from "./packages.js";
 import { serverTimeZone } from "../time-zone.js";
+import { devicesEnabled } from "../sync/store.js";
 
 const adapterEntry = () => mcpAdapter();
 
@@ -158,7 +159,7 @@ export function featuresRouter(): Router {
    */
   router.get("/features/flags", (_req, res) => {
     try {
-      res.json({ subagent: { enabled: subagentState().enabled }, understory: { enabled: understoryOn() }, images: { enabled: imageGenerationReady() || imageEditingReady() } });
+      res.json({ subagent: { enabled: subagentState().enabled }, understory: { enabled: understoryOn() }, images: { enabled: imageGenerationReady() || imageEditingReady() }, devices: { enabled: devicesEnabled() } });
     } catch (e) {
       res.status(500).json({ error: (e as Error).message });
     }

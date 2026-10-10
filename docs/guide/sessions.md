@@ -488,6 +488,7 @@ and, for a tool, which tool and what it was asked to do:
 | Page opened | The agent's [browser](/guide/browser) was pointed at a page |
 | `allowed-by-exemption` | A routine whose [injection guard](/guide/routines#the-injection-guard) is off did something the guard would have stopped |
 | Log cleared | Somebody emptied the log, and how many entries went |
+| Device | A paired [device](/guide/devices) decided about a call to it: its name, the decision and why |
 
 The buttons above the list filter it: **Everything**, **Refused**, **Allowed**
 (every kind of allowed) or **Strangers**, with counts of each and how many are shown. The

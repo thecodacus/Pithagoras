@@ -5,6 +5,7 @@ import type { Express } from "express";
 import { isAuthedUpgrade, requireAuth } from "./auth.js";
 import { config } from "./extensions/browser-service.js";
 import { viewerConnected, viewerDisconnected } from "./extensions/browser-frames.js";
+import { isSyncUpgrade } from "./sync/hub.js";
 
 /**
  * The agent's browser, served through the portal.
@@ -123,6 +124,8 @@ export function attachBrowserUpgrade(server: http.Server): void {
     // timeout, no answer — so one that is not the browser's is answered too, and
     // a client that resets the connection is not an error nobody listens to.
     socket.on("error", () => {});
+    // The devices' connection has a listener of its own (sync/hub.ts).
+    if (isSyncUpgrade(req.url)) return;
     if (!isBrowserUrl(req.url)) return refuse(socket, 404, "Not Found");
     // Express never sees an upgrade, so requireAuth did not either: the same
     // login, asked here. And a page of another site may not open the stream with

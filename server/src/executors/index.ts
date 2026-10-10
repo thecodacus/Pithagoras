@@ -38,6 +38,8 @@ export interface LaunchOptions {
   subagentModel?: () => string | undefined;
   /** The agent whose heartbeat this session is, when it is one: gives it the note tool. */
   heartbeatAgent?: string;
+  /** A chat that may be granted paired devices. */
+  devices?: boolean;
 }
 
 export interface Executor {
@@ -87,6 +89,7 @@ export class HostExecutor implements Executor {
       toolsOff: opts.toolsOff,
       subagentModel: opts.subagentModel,
       heartbeatAgent: opts.heartbeatAgent,
+      devices: opts.devices,
       provider: opts.provider,
       modelId: opts.model,
       thinkingLevel: opts.thinkingLevel,

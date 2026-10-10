@@ -19,13 +19,15 @@
     "nanoid": "^5.0.9",
     "playwright-core": "1.63.0",
     "typebox": "^1.1.38",
-    "undici": "^8.11.2"
+    "undici": "^8.11.2",
+    "ws": "^8.22.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
     "@types/cookie-parser": "^1.4.8",
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.0",
+    "@types/ws": "^8.18.2",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }

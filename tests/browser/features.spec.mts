@@ -282,15 +282,30 @@ test('forgetting the memory asks first', async ({ page }) => {
   expect(sent.at(-1)!.path).toBe('/api/features/understory/install?memory=forget');
 });
 
-test('the four add-on tabs fit a phone', async ({ page }) => {
+test('the five add-on tabs fit a phone, each with its whole name', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 800 });
   await portal(page);
   await page.goto('/settings/add-ons');
   const tabs = addons(page).getByRole('tab');
-  await expect(tabs).toHaveCount(4);
+  await expect(tabs).toHaveCount(5);
   const width = await page.evaluate(() => document.documentElement.scrollWidth);
   expect(width).toBeLessThanOrEqual(390);
-  for (const name of ['Browser', 'Voice', 'Subagents', 'Memory']) await expect(addons(page).getByRole('tab', { name })).toBeVisible();
+  for (const name of ['Browser', 'Voice', 'Subagents', 'Memory', 'Devices']) {
+    const tab = addons(page).getByRole('tab', { name });
+    await expect(tab).toBeVisible();
+    expect(await tab.evaluate((el) => el.scrollWidth <= el.clientWidth), name).toBe(true);
+    // The name is inside the tab's own room, not spilling over onto its neighbours' padding. A name that spills evenly to both sides
+    // is not counted by scrollWidth until it passes the padding, which a font a little wider than this one's does.
+    expect(await tab.evaluate((el) => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const style = getComputedStyle(el);
+      return range.getBoundingClientRect().width <= el.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) + 1;
+    }), `${name} within its tab`).toBe(true);
+  }
+  // Tabs that would not fit scroll in their row; the page does not.
+  const row = addons(page).getByRole('tablist', { name: 'Add-ons' });
+  expect(await row.evaluate((el) => getComputedStyle(el).overflowX)).toBe('auto');
 });
 
 test("a tidy-up that fails says why, not the status it came with", async ({ page }) => {

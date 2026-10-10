@@ -1,6 +1,6 @@
 import { useEffect, useId, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { LuBot, LuBrain, LuCheck, LuDownload, LuImage, LuMinus, LuPlus, LuRefreshCw, LuTrash2, LuTriangleAlert, LuWandSparkles } from "react-icons/lu";
+import { LuBot, LuBrain, LuCheck, LuDownload, LuImage, LuLaptop, LuMinus, LuPlus, LuRefreshCw, LuTrash2, LuTriangleAlert, LuWandSparkles } from "react-icons/lu";
 import { api, type AvailableModel, type Features, type ImagesFeaturePatch, type ManagedUnderstory, type SubagentMode, type UnderstoryLlmChoice } from "../api";
 import { MAX_SIZE, TIMEOUT_SECONDS } from "../../../server/src/image-settings";
 import { confirmDialog } from "./ConfirmDialog";
@@ -1025,6 +1025,65 @@ export function ImagesAddon({ onError }: { onError: (e: string) => void }) {
         <p className="flex items-center gap-2 text-xs text-fg-subtle">
           <LuRefreshCw className="h-3.5 w-3.5 animate-spin" /> {t("Applying…")}
         </p>
+      )}
+      {note && !busy && <p role="status" className="text-xs text-fg-muted">{note()}</p>}
+    </div>
+  );
+}
+
+/**
+ * The Devices add-on: the owner's own computers, paired with the portal, that a
+ * chat may be given to work on. Off in a fresh install; nothing about devices
+ * answers, not even pairing, until it is on.
+ */
+export function DevicesAddon({ onError }: { onError: (e: string) => void }) {
+  const [devices, setDevices, failed, retry] = useFirstRead(api.devicesFeature);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<(() => string) | null>(null);
+
+  if (!devices) return failed ? <ReadFailed error={failed} onRetry={retry} /> : <Loading />;
+
+  const change = async (enabled: boolean) => {
+    setBusy(true);
+    setNote(null);
+    try {
+      const { waiting, ...saved } = await api.setDevicesFeature(enabled);
+      setDevices({ enabled: saved.enabled, switchedOn: saved.switchedOn, refused: saved.refused });
+      setNote(() => () => reloadNote(waiting));
+      // The sidebar has the Devices page while the add-on is on.
+      window.dispatchEvent(new Event("features-changed"));
+    } catch (e) {
+      onError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-4 space-y-3">
+      <div className="rounded-xl border border-line bg-raised/40 p-3">
+        <Header Icon={LuLaptop} title={t("Devices")}>
+          {t("Your own computers, paired with the portal through the Pithagoras Sync client. A chat you give a device to can read, change and run things there, as far as the device's own settings let it.")}
+        </Header>
+      </div>
+      <SwitchRow
+        title={t("Devices")}
+        detail={
+          devices.enabled
+            ? t("On: devices can pair and connect.")
+            : devices.switchedOn
+              ? t("Switched on, but nothing answers while the portal runs without a password. Paired devices wait.")
+              : t("Off: no device can pair or connect, and paired ones wait until it is on again.")
+        }
+        on={devices.enabled || devices.switchedOn}
+        onChange={(enabled) => void change(enabled)}
+        disabled={busy || (!devices.switchedOn && devices.refused !== null)}
+        note={!devices.enabled && devices.refused !== null ? t("The portal runs without a password, and a paired computer would be open to anyone who reaches it. Set PORTAL_PASSWORD first.") : undefined}
+      />
+      {devices.enabled && (
+        <Link to="/devices" className="inline-block text-xs text-accent hover:underline">
+          {t("Pair and manage devices")}
+        </Link>
       )}
       {note && !busy && <p role="status" className="text-xs text-fg-muted">{note()}</p>}
     </div>

@@ -82,6 +82,18 @@ say it was refused rather than to find another route. A [routine](/guide/routine
 can have the blocking turned off for itself; what the rules would have stopped is
 then recorded instead.
 
+The rules hold for a call on a paired computer as for one on the server, and
+the computer is told that the chat is tainted, so that it can ask its owner
+where it would not otherwise ([Devices](/guide/devices#what-is-trusted)).
+
+An agent's shell on the server is not shut out of the portal itself, though: it
+runs as the portal's user, with the portal's password in its environment, and
+can reach the portal's API and files. A chat that may run commands on the
+server could therefore grant itself a paired computer and answer that
+computer's approvals. What the computer enforces on its own (its mode's
+folders, denied paths and command rules, and the tools it has switched off)
+still holds. See [What is trusted](/guide/devices#what-is-trusted).
+
 ## What this does not do
 
 These are heuristics, and the rules are public. Somebody who already has code

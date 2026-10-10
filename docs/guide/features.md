@@ -4,7 +4,7 @@ Three capabilities ship with Pithagoras and are **off** until you switch them on
 in **Settings**: a **subagent tool** and **Understory** as the agent's memory
 under **Add-ons**, and **image generation and editing** under **Agent → Images**. A fresh
 install has none of them. (The Add-ons page also holds the Docker-based
-[Browser and Voice](/guide/add-ons).) Switching on
+[Browser and Voice](/guide/add-ons), and [Devices](/guide/devices).) Switching on
 the first two writes them into pi's own configuration — a package, an MCP
 server — so they can also be seen, and undone, from Settings → Extensions and
 Settings → MCP. Switching one off removes it. Image generation and editing are

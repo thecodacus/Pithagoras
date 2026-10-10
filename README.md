@@ -62,6 +62,12 @@ Browsers install the portal as an app (PWA) only over HTTPS or on `localhost`.
 - **Add-ons** — the agent's own browser, and opt-in features: a subagent tool, Understory
   memory with a Memory page, and image generation and editing through an endpoint you choose,
   with an Images page to make pictures without a chat and a gallery of them.
+- **Devices** — an add-on (off by default) that lets a chat work on your own computers: read
+  and change files and run commands there. A small client, [Pithagoras
+  Sync](https://github.com/Piggidragon/Pithagoras-Sync), runs on the laptop or server and
+  pairs it with the portal. Each device has its own sandbox and permissions, and the portal
+  asks you in the chat before a command runs where the device says to ask. See
+  [Devices](https://thecodacus.github.io/pithagoras/guide/devices).
 - **Channels and people** — reach the agent from Telegram, Slack, Discord or a webhook, with
   roles, approvals and an audit log.
 - **Routines** — scheduled runs that report to a channel.
