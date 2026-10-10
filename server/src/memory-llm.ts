@@ -1,7 +1,8 @@
 import { timingSafeEqual } from "node:crypto";
 import { Readable } from "node:stream";
 import express, { type Router } from "express";
-import { Agent, EnvHttpProxyAgent, fetch as modelFetch } from "undici";
+import { fetch as modelFetch } from "undici";
+import { waitsAgent, waitMs } from "./fetch-waits.js";
 import { chatModel, getSession } from "./db.js";
 import { modelRuntime } from "./api/providers.js";
 import { UNDERSTORY } from "./features.js";
@@ -103,26 +104,13 @@ class Refused extends Error {
   }
 }
 
-/**
- * How long an answer may take. Node's own fetch gives up on a request that has moved no bytes for five
- * minutes — and an answer that does not stream moves none until the whole of it is done, so a local model
- * thinking past the fifth minute died mid-generation, and its client retried a run that was otherwise sound.
- * The wait here is of its own: long enough for one answer by default, settable from where the portal starts,
- * and when it does come round it says so (a timeout), not like a failure of the model's server.
- */
-// Whole milliseconds at least zero take effect — undici reads 0 as "no wait at all". Anything else, an
-// empty or mistyped value in any guise (negative, fractional, unbounded, beyond what a timer can hold),
-// is a setting gone wrong and takes the default instead of reaching undici.
-const waitMs = (raw: string | undefined, fallback: number): number => {
-  if (raw == null) return fallback;
-  const t = raw.trim();
-  if (!/^\d+$/.test(t)) return fallback;
-  return Math.min(Number(t), 2_147_483_647);
-};
-
 /** A wait as it will be said — seconds when whole, milliseconds when finer. */
 const sayWait = (ms: number): string => (ms % 1000 === 0 ? `${ms / 1000} seconds` : `${Math.round(ms)} milliseconds`);
 
+/** The model's own waits — long enough for one answer by default, settable from where the portal starts. A
+ * local model thinking past Node's five quiet minutes used to die mid-generation and be retried; these give it
+ * its full run, and when one of them does come round the error says so (a timeout), not like a failure of the
+ * model's server. The knife — whole milliseconds only, `0` being no wait at all — is the shared one. */
 const waitOf = (): { headers: number; body: number } => ({
   // Until the model's answer reaches us — its headers. An answer that does not stream sends none until it is
   // done, which is what Understory gets while it asks without streaming, so this is the whole answer there.
@@ -131,17 +119,13 @@ const waitOf = (): { headers: number; body: number } => ({
 });
 
 // The waits change only at startup, so the agent is made once with them — the same waits for the
-// agent and for what is said when one of them comes round. Asked by node itself to route through the
-// environment's proxies (NODE_USE_ENV_PROXY=1), it asks that too: a model reached through a proxy
-// must not be the one address the portal cannot reach. Exposed so a test can close it — its
-// keep-alive sockets outlive the servers.
+// agent and for what is said when one of them comes round. It takes its routing from the process's own
+// rule (fetch-waits): a model reached through a proxy must not be the one address the portal cannot
+// reach. Exposed so a test can close it — its keep-alive sockets outlive the servers.
 const upstreamWaits = waitOf();
 export const upstream = {
   waits: upstreamWaits,
-  agent:
-    process.env.NODE_USE_ENV_PROXY === "1"
-      ? new EnvHttpProxyAgent({ headersTimeout: upstreamWaits.headers, bodyTimeout: upstreamWaits.body })
-      : new Agent({ headersTimeout: upstreamWaits.headers, bodyTimeout: upstreamWaits.body }),
+  agent: waitsAgent(upstreamWaits),
 };
 
 /** Whether the failure is that wait coming round — the wait out for the answer's headers, or between a streaming
@@ -210,8 +194,8 @@ export function memoryLlmRouter(modelOf: ModelOf): Router {
       // Stopped with the request: Understory giving up is the model's cue to stop too.
       const stop = new AbortController();
       res.on("close", () => !res.writableEnded && stop.abort());
-      // Through its own undici, whose wait is of its own: Node's fetch would not take the newer Agent,
-      // and with these two as one pair no byte-flowing answer is ever cut at five minutes.
+      // Through an agent carrying the model waits (UNDERSTORY_LLM_*): its own pair, said differently when
+      // they come round — not the process-wide ones fetch-waits installed for everyone else in here.
       const answer = await modelFetch(url, { method: "POST", headers, body: JSON.stringify({ ...req.body, model: id }), signal: stop.signal, dispatcher: upstream.agent });
       res.status(answer.status);
       const type = answer.headers.get("content-type");
